@@ -1,0 +1,184 @@
+@import "tailwindcss";
+
+/*
+  Instrumental Futurism.
+  Paper, graphite, warm black. One accent, used only for action or state.
+  No gradients, no glow, no glass. Typography carries the interface.
+*/
+
+:root {
+  --color-bg: #f2ede2;
+  --color-bg-raised: #ece5d5;
+  --color-surface: #e7dfcb;
+  --color-surface-2: #ded4bc;
+  --color-border: #c9bda2;
+  --color-border-strong: #a89877;
+  --color-text: #26221a;
+  --color-text-muted: #6b6250;
+  --color-text-faint: #8f846c;
+  --color-accent: #a84a24;
+  --color-accent-strong: #8a3b1c;
+  --color-accent-contrast: #f7efdf;
+  --color-danger: #8c3b2e;
+  --color-positive: #4c6650;
+
+  --shadow-instrument: none;
+  --radius-control: 3px;
+  --radius-surface: 4px;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #16130e;
+  --color-bg-raised: #1b1712;
+  --color-surface: #211c15;
+  --color-surface-2: #292219;
+  --color-border: #3c3325;
+  --color-border-strong: #52462f;
+  --color-text: #ece3d0;
+  --color-text-muted: #a6997e;
+  --color-text-faint: #7d7360;
+  --color-accent: #d97a3f;
+  --color-accent-strong: #ea8f52;
+  --color-accent-contrast: #16130e;
+  --color-danger: #d98066;
+  --color-positive: #8fb094;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #16130e;
+    --color-bg-raised: #1b1712;
+    --color-surface: #211c15;
+    --color-surface-2: #292219;
+    --color-border: #3c3325;
+    --color-border-strong: #52462f;
+    --color-text: #ece3d0;
+    --color-text-muted: #a6997e;
+    --color-text-faint: #7d7360;
+    --color-accent: #d97a3f;
+    --color-accent-strong: #ea8f52;
+    --color-accent-contrast: #16130e;
+    --color-danger: #d98066;
+    --color-positive: #8fb094;
+  }
+}
+
+@theme inline {
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-text);
+  --font-sans: var(--font-ui);
+  --font-serif: var(--font-editorial);
+  --font-mono: var(--font-technical);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+html:has([data-theme="dark"]) {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui), ui-sans-serif, system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-accent-contrast);
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Scrollbars: thin, instrument-like, no default OS chrome */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.font-editorial {
+  font-family: var(--font-editorial), ui-serif, Georgia, serif;
+}
+.font-technical {
+  font-family: var(--font-technical), ui-monospace, monospace;
+}
+
+/* Reduced motion respected globally */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.focus-ring:focus-visible {
+  outline: 1.5px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* Long-form conversation text */
+.prose-magi {
+  font-family: var(--font-editorial), ui-serif, Georgia, serif;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--color-text);
+}
+.prose-magi p { margin: 0 0 1em 0; }
+.prose-magi p:last-child { margin-bottom: 0; }
+.prose-magi ul, .prose-magi ol { margin: 0 0 1em 1.25em; }
+.prose-magi code {
+  font-family: var(--font-technical), ui-monospace, monospace;
+  font-size: 0.85em;
+  background: var(--color-surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-control);
+}
+.prose-magi pre {
+  font-family: var(--font-technical), ui-monospace, monospace;
+  font-size: 0.85em;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  padding: 0.75em 1em;
+  border-radius: var(--radius-surface);
+  overflow-x: auto;
+  margin: 0 0 1em 0;
+}
+.prose-magi h1, .prose-magi h2, .prose-magi h3 {
+  font-family: var(--font-ui), sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 1.4em 0 0.5em 0;
+}
+.prose-magi h1:first-child, .prose-magi h2:first-child, .prose-magi h3:first-child { margin-top: 0; }
+.prose-magi blockquote {
+  border-left: 2px solid var(--color-border-strong);
+  padding-left: 1em;
+  color: var(--color-text-muted);
+  margin: 0 0 1em 0;
+}

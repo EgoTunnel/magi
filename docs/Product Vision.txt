@@ -1,0 +1,2620 @@
+# MAGI
+
+## Comprehensive Product Vision, Functional Specification & Design Philosophy
+
+### Working tagline
+
+**A personal instrument for thinking.**
+
+### Design motto
+
+**Made for the long future.**
+
+### Foundational principle
+
+> **The models will change. Your environment should not have to.**
+
+---
+
+# 1. The Vision
+
+**Magi** is a persistent, personal AI environment designed to become an enduring workspace for thinking, creating, researching, remembering, and collaborating with artificial intelligence.
+
+Magi is not simply a chatbot.
+
+It is not primarily a wrapper around one particular AI model.
+
+It is an environment in which:
+
+* conversations persist
+* Projects develop over time
+* knowledge accumulates
+* memory can be deliberately retained
+* past conversations remain searchable
+* Projects can selectively draw upon one another
+* multiple AI models can collaborate and deliberate
+* specialized tools can be invoked by AI or by the user
+* reusable Skills can orchestrate tools and models
+* specialized Agents can pursue tasks
+* Councils can coordinate multiple intelligences
+* documents and research become persistent resources
+* images, characters, and visual styles can be maintained over time
+* AI-generated artifacts can evolve through versions
+* the user remains in control of accumulated context
+* the underlying AI models can be replaced without destroying the user's environment
+
+The fundamental premise is:
+
+> **The user's relationship with AI should persist independently of any particular conversation, application, model, or provider.**
+
+Magi therefore places the **user's accumulated context** at the centre of the experience rather than placing any particular AI model at the centre.
+
+Models are instruments.
+
+Magi is the environment in which those instruments are used.
+
+---
+
+# 2. The Problem Magi Solves
+
+AI is changing extraordinarily quickly.
+
+Models that were considered exceptional two years ago can already be obsolete or dramatically surpassed. New providers appear. Existing providers change their interfaces, pricing, capabilities, and policies. Specialized models emerge for reasoning, coding, image generation, research, audio, video, and other tasks.
+
+This creates a fundamental problem.
+
+A user's intellectual relationship with AI can become fragmented across:
+
+* ChatGPT
+* Claude
+* Gemini
+* coding environments
+* image-generation applications
+* research tools
+* note-taking applications
+* cloud drives
+* local files
+* browser sessions
+* custom scripts
+* increasingly specialized AI agents
+
+Each system develops its own context.
+
+None necessarily constitutes **the user's AI environment**.
+
+Magi should occupy that missing layer.
+
+The user should be able to change models without having to change *where their intellectual life with AI lives*.
+
+---
+
+# 3. Magi as the Durable Layer
+
+Magi should sit conceptually **above the model layer**.
+
+```text
+                         USER
+                           │
+                           ▼
+                         MAGI
+                           │
+        ┌──────────────────┼──────────────────┐
+        │                  │                  │
+     PROJECTS            MEMORY             ARCHIVE
+        │                  │                  │
+        └──────────────────┼──────────────────┘
+                           │
+                    INTELLIGENCE LAYER
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+        MODELS           SKILLS           AGENTS
+          │                │                │
+          └────────────────┼────────────────┘
+                           │
+                          TOOLS
+                           │
+                           ▼
+                    EXTERNAL WORLD
+```
+
+The model layer should therefore be replaceable.
+
+A future model should be able to enter Magi and immediately become useful because Magi already possesses:
+
+* the user's Projects
+* context
+* memory
+* documents
+* tools
+* Skills
+* artifacts
+* preferences
+* workflows
+
+This is one of the central reasons for building Magi.
+
+---
+
+# 4. Why "Magi"
+
+The name **Magi** has several layers of meaning.
+
+It evokes the **Magi of Evangelion**: multiple artificial intelligences whose distinct perspectives contribute to a larger decision-making system.
+
+It also evokes the **biblical Magi**: seekers of knowledge who travel toward something significant, bringing different gifts and perspectives.
+
+Most importantly, the name suggests that intelligence need not be singular.
+
+Magi can contain:
+
+* one AI
+* several AIs
+* competing AIs
+* specialized AIs
+* human judgment
+* accumulated human knowledge
+
+The system's intelligence emerges from the **relationship between them**.
+
+The Evangelion reference should remain subtle. Magi should not visually imitate Evangelion.
+
+The deeper idea is:
+
+> **Multiple intelligences, brought together in pursuit of understanding.**
+
+---
+
+# 5. The Product Philosophy
+
+Magi should be guided by seven principles.
+
+## 5.1 Context belongs to the user
+
+The user's accumulated knowledge, Projects, conversations, and creative work should not conceptually belong to any particular AI model.
+
+Models may change.
+
+Providers may change.
+
+Interfaces may change.
+
+The user's intellectual environment persists.
+
+---
+
+## 5.2 A conversation is an episode, not a home
+
+Conversations are valuable records of thought, but they are not the fundamental organizational unit.
+
+A conversation belongs to a larger Project.
+
+A Project belongs to the larger personal environment.
+
+---
+
+## 5.3 Memory should be deliberate
+
+Something said once should not automatically become permanent knowledge.
+
+Magi should distinguish between:
+
+* conversation history
+* retrieved context
+* Project knowledge
+* Project memory
+* global memory
+* established facts
+* AI suggestions
+
+---
+
+## 5.4 Boundaries matter
+
+Projects should remain meaningfully separate.
+
+Cross-project knowledge should be possible, but controlled.
+
+Magi should never silently blur boundaries.
+
+---
+
+## 5.5 Intelligence can be plural
+
+A single model is not always the best way to approach a difficult problem.
+
+Magi should support:
+
+* independent analysis
+* debate
+* critique
+* revision
+* red-teaming
+* expert panels
+* synthesis
+
+---
+
+## 5.6 Tools should belong to the environment
+
+Models should not be the user's only interface to capabilities.
+
+Magi should provide a stable tool layer that models can use.
+
+A model can change while the capability remains.
+
+---
+
+## 5.7 The interface should endure
+
+Magi should not chase visual fashions.
+
+It should feel like technology designed to remain useful for decades.
+
+> **Not futuristic-looking technology.
+> Technology designed for the future.**
+
+---
+
+# 6. The Aesthetic: Instrumental Futurism
+
+Magi's visual language can be described as:
+
+## **Instrumental Futurism**
+
+It imagines a future in which technology has matured.
+
+The future no longer needs to announce itself with neon, gradients, holograms, or spectacle.
+
+Technology is simply there.
+
+Precise.
+
+Powerful.
+
+Quiet.
+
+Durable.
+
+The aesthetic draws inspiration from:
+
+* Braun industrial design
+* the Ulm School
+* mid-century modernism
+* scientific instruments
+* observatories
+* libraries
+* early computing
+* technical drawing
+* architectural drafting
+* Japanese information design
+* restrained retrofuturism
+* excellent editorial typography
+
+The references should influence **principles rather than decoration**.
+
+---
+
+# 7. What Magi Should Not Look Like
+
+Magi should reject the generic visual language of contemporary AI products.
+
+Avoid:
+
+* purple AI gradients
+* glowing neural networks
+* excessive glassmorphism
+* floating translucent cards
+* neon accents
+* cyber effects
+* decorative particles
+* fake holograms
+* robot imagery
+* excessive rounded corners
+* pill-shaped interfaces everywhere
+* giant empty-state illustrations
+* excessive emoji
+* startup visual clichés
+
+It should not look like:
+
+> "another AI app."
+
+It should also not become retro cosplay.
+
+No fake CRT scanlines.
+
+No fake rivets.
+
+No fake mechanical switches.
+
+No decorative pseudo-industrial details.
+
+The goal is not to recreate 1965.
+
+It is:
+
+> **Imagine what serious designers of an earlier technological age would have created if they possessed today's capabilities.**
+
+---
+
+# 8. The Emotional Experience
+
+The intended progression is:
+
+### First encounter
+
+> "That's unusual."
+
+### First use
+
+> "Oh. This makes sense."
+
+### Repeated use
+
+> "This is remarkably efficient."
+
+### After months
+
+> "This feels like my machine."
+
+The final feeling is the goal.
+
+Magi should become familiar rather than constantly demanding attention.
+
+---
+
+# 9. Quiet Surface, Deep System
+
+Magi may contain extraordinary complexity:
+
+* hundreds of models
+* thousands of conversations
+* extensive memory
+* semantic search
+* Projects
+* documents
+* image generation
+* Councils
+* Skills
+* Agents
+* research
+* tools
+* artifacts
+
+But the main interface should not expose all of this simultaneously.
+
+Complexity should exist **behind progressive disclosure**.
+
+Simple actions should remain simple.
+
+Advanced capabilities should become available when needed.
+
+---
+
+# 10. The Magi Workspace
+
+The primary experience should feel like entering a **workbench**, not opening a dashboard.
+
+Conceptually:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│ MAGI                                      Search    ○ User   │
+├──────────────┬──────────────────────────────────────────────┤
+│              │                                              │
+│  WORKSPACE   │                 CURRENT WORK                 │
+│              │                                              │
+│  Projects    │                                              │
+│              │                                              │
+│  Archive     │                                              │
+│  Memory      │                                              │
+│              │                                              │
+│  Image Lab   │                                              │
+│              │                                              │
+│  Councils    │                                              │
+│              │                                              │
+│  Skills      │                                              │
+│              │                                              │
+├──────────────┴──────────────────────────────────────────────┤
+│ Project / Conversation / Model                    ⌘K       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The exact layout can evolve.
+
+The hierarchy should remain stable.
+
+---
+
+# 11. Projects as Places
+
+A Project should feel like entering a room or workspace.
+
+It is not merely a folder.
+
+A Project can contain:
+
+* purpose
+* instructions
+* conversations
+* documents
+* research
+* memory
+* artifacts
+* open questions
+* related Projects
+* images
+* characters
+* styles
+* terminology
+* decisions
+* Skills
+* preferred models
+* Council configurations
+
+The Project should give the user an immediate sense of **where the work stands**.
+
+---
+
+# 12. Persistent Project Context
+
+Every Project should have persistent context.
+
+The user should not repeatedly explain:
+
+* what the Project is
+* why it exists
+* its goals
+* its terminology
+* important decisions
+* established facts
+* constraints
+* preferred approaches
+
+The AI should understand the Project as an evolving intellectual environment.
+
+---
+
+# 13. Project Instructions
+
+Projects should support explicit instructions defining:
+
+* AI role
+* desired tone
+* analytical framework
+* goals
+* constraints
+* formatting
+* terminology
+* preferred approaches
+* things to avoid
+
+Project instructions should override general preferences where appropriate.
+
+---
+
+# 14. Conversations
+
+Projects contain many conversations.
+
+Users should be able to:
+
+* create
+* rename
+* archive
+* search
+* move
+* duplicate
+* branch
+* delete
+* export
+
+Conversations should remain meaningful historical records.
+
+---
+
+# 15. The Conversation Interface
+
+The conversation should feel closer to an **editorial page or laboratory notebook** than a messaging application.
+
+Avoid excessive message bubbles.
+
+Prioritize:
+
+* reading
+* writing
+* thinking
+* references
+* artifacts
+* visual hierarchy
+
+---
+
+# 16. The Input Field
+
+The primary input should function as a natural-language control surface.
+
+The user can say:
+
+> "Search my archive."
+
+> "Find the discussion where I first developed this."
+
+> "Ask the Council."
+
+> "Use the Research Skill."
+
+> "Compare these documents."
+
+> "Create an image using our established style."
+
+The user should not need to know the internal architecture.
+
+---
+
+# 17. Universal Command Palette
+
+A universal command interface such as **⌘K** should expose the deeper system.
+
+It should provide access to:
+
+* Projects
+* conversations
+* memory
+* search
+* models
+* Councils
+* Skills
+* tools
+* Image Studio
+* artifacts
+* settings
+
+The command palette should be an optional power surface, not something every user has to learn.
+
+---
+
+# 18. Context Transparency
+
+Magi should make its current context inspectable.
+
+For example:
+
+```text
+CONTEXT
+
+Externalized Intelligence
+Project knowledge
+12 documents
+Recent conversations
+Project memory
+
++ 3 retrieved sources
+```
+
+The user should be able to see why Magi knows something.
+
+---
+
+# 19. Provenance
+
+Important information should retain its origin.
+
+Magi should distinguish between:
+
+* user-provided information
+* Project knowledge
+* previous conversation
+* global memory
+* uploaded documents
+* web research
+* AI-generated material
+* external sources
+* another Project
+* tool output
+
+The user should be able to ask:
+
+> "Where did that come from?"
+
+and receive a meaningful answer.
+
+---
+
+# 20. Global Memory
+
+Global memory contains information deliberately made available broadly.
+
+Examples:
+
+* persistent preferences
+* recurring goals
+* terminology
+* working preferences
+* stable instructions
+
+Users should be able to:
+
+* inspect
+* add
+* edit
+* delete
+* restrict
+* relocate information
+
+---
+
+# 21. Project Memory
+
+Project memory contains information relevant to a particular Project.
+
+Examples:
+
+* decisions
+* terminology
+* research conclusions
+* recurring characters
+* Project conventions
+
+It remains distinct from raw conversation history.
+
+---
+
+# 22. The Archive
+
+The archive is the user's accumulated history.
+
+Everything need not become memory.
+
+A conversation can simply remain historical evidence.
+
+The distinction is:
+
+> **Memory tells Magi what should persist as knowledge.
+> The archive tells Magi what has happened.**
+
+---
+
+# 23. Semantic Search
+
+Magi should provide semantic search across:
+
+* conversations
+* Projects
+* documents
+* ideas
+* decisions
+* images
+* artifacts
+* memory
+
+The user should be able to search by meaning rather than exact wording.
+
+---
+
+# 24. Ask My Archive
+
+Magi should support:
+
+> **Ask my archive.**
+
+Examples:
+
+> "What have I been thinking about lately?"
+
+> "When did I first develop this idea?"
+
+> "What conclusions have I reached?"
+
+> "What have I changed my mind about?"
+
+> "What unresolved questions keep recurring?"
+
+This transforms conversation history into an intellectual resource.
+
+---
+
+# 25. Cross-Project Intelligence
+
+Users should be able to explicitly request information from elsewhere.
+
+> "Search my other Projects for relevant discussions."
+
+Magi should:
+
+1. identify relevant material
+2. retrieve it
+3. preserve provenance
+4. use it as contextual information
+5. maintain Project boundaries
+
+Cross-project retrieval should feel like research, not psychic memory.
+
+---
+
+# 26. Connections Between Projects
+
+Magi should be able to identify relationships between Projects.
+
+For example:
+
+> "What ideas in my Transactional Analysis Project might be useful to my Education Project?"
+
+The Projects remain separate while their intellectual connections become discoverable.
+
+---
+
+# 27. Model Independence
+
+Magi should be model-agnostic.
+
+Users should be able to:
+
+* select models
+* compare models
+* switch models
+* assign models to roles
+* use different models for different Projects
+* use different models for different tasks
+
+Changing the model should not destroy context.
+
+---
+
+# 28. Models as Replaceable Instruments
+
+A model should be treated conceptually like a replaceable instrument in a laboratory.
+
+Today:
+
+> Model A
+
+Tomorrow:
+
+> Model B
+
+Later:
+
+> Model C
+
+The Project remains.
+
+The archive remains.
+
+The Skills remain.
+
+The tools remain.
+
+The user's intellectual history remains.
+
+This is one of Magi's defining advantages.
+
+---
+
+# 29. Intelligent Model Selection
+
+Magi should eventually recommend or automatically select models.
+
+Examples:
+
+**Simple task →** fast inexpensive model
+
+**Complex reasoning →** advanced reasoning model
+
+**Coding →** coding specialist
+
+**Large document →** large-context model
+
+**Vision →** vision model
+
+**Creative writing →** preferred creative model
+
+**Image generation →** appropriate image model
+
+The user should always be able to override the choice.
+
+---
+
+# 30. Model Roles
+
+Models can be assigned roles within Magi.
+
+For example:
+
+* researcher
+* reasoner
+* critic
+* writer
+* editor
+* programmer
+* synthesizer
+* image director
+
+The role should matter more than the provider.
+
+A user might say:
+
+> "Use my preferred research model."
+
+rather than needing to reconstruct a technical model configuration every time.
+
+---
+
+# 31. Cost Awareness
+
+Magi should make model economics visible.
+
+The user should be able to understand:
+
+* estimated interaction cost
+* Project cost
+* monthly cost
+* model-specific spending
+* usage
+* cost by task
+
+The user should be able to establish limits.
+
+For example:
+
+> "Don't use expensive models without asking."
+
+---
+
+# 32. Tools
+
+Tools are **capabilities available to Magi**.
+
+The model can decide that a tool is appropriate, but Magi is responsible for executing it.
+
+Conceptually:
+
+```text
+USER
+  │
+  ▼
+MAGI
+  │
+  ▼
+MODEL
+  │
+  │ requests tool
+  ▼
+MAGI TOOL LAYER
+  │
+  ▼
+EXTERNAL SYSTEM
+  │
+  ▼
+MAGI
+  │
+  ▼
+MODEL
+  │
+  ▼
+USER
+```
+
+This distinction should be fundamental to the architecture.
+
+The model supplies intelligence and intent.
+
+Magi supplies capabilities, execution, context, and permissions.
+
+---
+
+# 33. Tool Categories
+
+Magi should eventually support tools such as:
+
+### Information
+
+* web search
+* web browsing
+* document retrieval
+* databases
+* APIs
+
+### Computation
+
+* calculator
+* Python
+* data analysis
+* code execution
+
+### Files
+
+* filesystem
+* documents
+* PDFs
+* spreadsheets
+* presentations
+
+### Creation
+
+* image generation
+* image editing
+* document generation
+* media tools
+
+### Communication
+
+* email
+* messaging
+* calendar
+
+### Development
+
+* Git repositories
+* issue trackers
+* coding environments
+* local development tools
+
+### External services
+
+* arbitrary APIs
+* specialized applications
+* user-defined integrations
+
+The initial version need only implement a small subset.
+
+The architecture should anticipate the broader system.
+
+---
+
+# 34. Permissions
+
+Tools should operate through explicit permissions.
+
+A model should not automatically inherit unlimited access to everything available to Magi.
+
+The user should be able to specify:
+
+```text
+Web Search          ✓
+Read Project Files  ✓
+Generate Images     ✓
+Run Code            Ask
+Send Email          Ask
+Access Project X    Ask
+Delete Files        Never
+```
+
+Permissions should exist at appropriate levels:
+
+* global
+* Project
+* Skill
+* Agent
+* individual operation
+
+Potentially dangerous actions should require confirmation.
+
+---
+
+# 35. Skills
+
+Skills are **reusable methods for accomplishing classes of tasks**.
+
+A Skill is more than a tool.
+
+A tool says:
+
+> "Search the web."
+
+A Skill says:
+
+> "Conduct a rigorous research investigation."
+
+A Skill may combine:
+
+* instructions
+* tools
+* models
+* Project context
+* decision rules
+* output formats
+* validation
+* iterative processes
+
+---
+
+# 36. Example Skills
+
+### Research Skill
+
+1. formulate questions
+2. search
+3. gather sources
+4. evaluate sources
+5. cross-check
+6. synthesize
+7. cite
+8. save useful findings
+
+### Literature Review Skill
+
+1. identify literature
+2. extract findings
+3. compare methodologies
+4. identify disagreements
+5. synthesize
+
+### Writing Skill
+
+1. establish purpose
+2. develop structure
+3. draft
+4. critique
+5. revise
+6. proofread
+
+### Historical Research Skill
+
+1. identify primary evidence
+2. establish chronology
+3. compare interpretations
+4. distinguish evidence from inference
+5. produce a sourced synthesis
+
+---
+
+# 37. Skills as Persistent Objects
+
+Skills should be persistent entities in Magi.
+
+A user could create:
+
+> **Historical Research**
+
+and define how it should operate.
+
+It could then be invoked repeatedly.
+
+Skills could belong to:
+
+* Magi globally
+* the user
+* a Project
+* an organization
+* potentially a shared community
+
+---
+
+# 38. Agents
+
+Agents are more autonomous than Skills.
+
+A Skill describes **how to do something**.
+
+An Agent is an actor capable of **pursuing an objective using Skills, models, and tools**.
+
+For example:
+
+> "Investigate whether this historical claim is defensible and produce a report."
+
+An Agent might:
+
+1. formulate research questions
+2. search
+3. read documents
+4. compare evidence
+5. ask another model to critique the findings
+6. revise
+7. produce a report
+8. save the result as a Project artifact
+
+Agents should operate within explicit boundaries.
+
+---
+
+# 39. Skills, Agents, Models and Tools
+
+The conceptual hierarchy becomes:
+
+```text
+TOOL
+A capability.
+
+SKILL
+A reusable method.
+
+MODEL
+A source of intelligence.
+
+AGENT
+An actor pursuing an objective.
+
+COUNCIL
+Multiple intelligences/agents working together.
+
+MAGI
+The environment coordinating everything.
+```
+
+This hierarchy should inform the architecture without forcing the user to understand it.
+
+---
+
+# 40. Collective Intelligence
+
+One of Magi's defining capabilities should be the orchestration of multiple AI models.
+
+The user should be able to ask models to:
+
+* independently analyze
+* critique each other
+* debate
+* red-team
+* revise
+* compare conclusions
+* synthesize
+
+---
+
+# 41. The Magi Council
+
+The flagship implementation of collective intelligence should be the **Magi Council**.
+
+The user might simply say:
+
+> **"Magi Council: deliberate on this."**
+
+Magi can assemble appropriate models and roles.
+
+Conceptually:
+
+```text
+                    MAGI COUNCIL
+
+                 ┌──────────────┐
+                 │   QUESTION   │
+                 └──────┬───────┘
+                        │
+          ┌─────────────┼─────────────┐
+          ▼             ▼             ▼
+       REASONER       CRITIC       RESEARCHER
+          │             │             │
+          └─────────────┼─────────────┘
+                        ▼
+                    SYNTHESIZER
+                        │
+                        ▼
+                   MAGI CONCLUSION
+```
+
+---
+
+# 42. Council Modes
+
+Magi should support:
+
+### Independent Analysis
+
+Several models answer independently.
+
+### Debate
+
+Models argue opposing positions.
+
+### Critique
+
+One model evaluates another.
+
+### Revision
+
+One model improves another's work.
+
+### Red Team
+
+A model attacks the argument.
+
+### Expert Panel
+
+Models assume different expert roles.
+
+### Iterative Refinement
+
+Draft → critique → revision → critique → final.
+
+### Synthesis
+
+Several analyses are reconciled.
+
+---
+
+# 43. Persistent Councils
+
+Projects should be able to define recurring Council configurations.
+
+### Research Council
+
+* researcher
+* skeptic
+* domain specialist
+* synthesizer
+
+### Writing Council
+
+* writer
+* developmental editor
+* copy editor
+* hostile reader
+
+### Programming Council
+
+* architect
+* implementer
+* security reviewer
+* tester
+
+### Creative Council
+
+* concept developer
+* art director
+* continuity editor
+* style critic
+
+---
+
+# 44. Preserving Disagreement
+
+Magi should not automatically collapse disagreement.
+
+If three models disagree:
+
+> **Consensus: Moderate**
+
+> Two models support A.
+> One supports B.
+
+> **Key disagreement:**
+> The conclusions depend primarily on different interpretations of X.
+
+The user should be able to inspect the underlying arguments.
+
+---
+
+# 45. Tools Within Councils
+
+Different Council members can have different capabilities.
+
+For example:
+
+**Historian**
+
+→ research tools
+
+**Skeptic**
+
+→ web + archive
+
+**Data analyst**
+
+→ calculation + code
+
+**Editor**
+
+→ Project documents
+
+**Synthesizer**
+
+→ relevant Council outputs
+
+Thus a Council is not merely:
+
+> several chatbots talking.
+
+It is:
+
+> **several intelligences operating within a shared computational environment, each with appropriate instruments.**
+
+---
+
+# 46. Documents
+
+Projects should contain persistent documents.
+
+Magi should be able to:
+
+* read
+* summarize
+* compare
+* extract
+* analyze
+* synthesize
+* revise
+* generate
+* cite
+
+Documents remain available to future conversations, Skills, Agents, and Councils.
+
+---
+
+# 47. Artifacts
+
+Important outputs should become persistent artifacts.
+
+Examples:
+
+* reports
+* essays
+* course outlines
+* presentations
+* spreadsheets
+* code
+* research summaries
+* character sheets
+* images
+
+Artifacts should have identities independent of the conversation that created them.
+
+---
+
+# 48. Versioning
+
+Important artifacts should support:
+
+* versions
+* comparison
+* restoration
+* branching
+* history
+
+For example:
+
+**Course Outline v1**
+
+→ **v2**
+
+→ **v3**
+
+This turns Magi into a genuine workspace rather than a conversation archive.
+
+---
+
+# 49. AI Suggestions vs Established Knowledge
+
+Magi should distinguish:
+
+**AI proposal**
+
+from:
+
+**Project knowledge**
+
+A model's suggestion should not automatically become truth.
+
+The user should be able to promote material into established knowledge.
+
+---
+
+# 50. Web Research
+
+Magi should be able to conduct research when requested.
+
+It should:
+
+* search
+* inspect sources
+* compare evidence
+* synthesize findings
+* cite sources
+* save useful research
+* distinguish external information from the user's own ideas
+
+Research can become persistent Project knowledge when retained.
+
+---
+
+# 51. Image Studio
+
+Magi should include a dedicated Image Studio.
+
+It should feel like a **creative atelier**, not a prompt playground.
+
+Users should be able to:
+
+* generate images
+* edit images
+* transform images
+* create variations
+* reuse references
+* organize images
+* compare generations
+* save successful generations
+* maintain visual continuity
+
+---
+
+# 52. Image Projects
+
+An Image Project can contain:
+
+* images
+* reference images
+* Style Guides
+* characters
+* locations
+* props
+* palettes
+* composition references
+* approved examples
+* generation history
+
+---
+
+# 53. Style Guides
+
+A Style Guide should define an established visual language.
+
+It can include:
+
+* medium
+* line quality
+* palette
+* lighting
+* composition
+* rendering
+* proportions
+* mood
+* typography
+* brand identity
+* prohibited treatments
+
+It should become persistent context for image generation.
+
+---
+
+# 54. Character Libraries
+
+Characters should be persistent entities.
+
+A character can contain:
+
+* name
+* appearance
+* clothing
+* personality
+* distinguishing characteristics
+* reference images
+* canonical poses
+* expressions
+* relationships
+* appearances
+
+The goal is visual and narrative continuity.
+
+---
+
+# 55. Brand Libraries
+
+Brands can similarly contain:
+
+* logos
+* colours
+* fonts
+* visual rules
+* imagery
+* tone
+* approved examples
+* prohibited treatments
+
+Generated material can inherit these rules.
+
+---
+
+# 56. Creative Continuity
+
+Text and image generation should share Project context.
+
+For example:
+
+> "Create a character sheet for Mira."
+
+Magi can know:
+
+* who Mira is
+* what she looks like
+* the established visual style
+* relevant references
+
+The user should not reconstruct this information every time.
+
+---
+
+# 57. Long-Term Creative Worlds
+
+Magi should support creative worlds that persist for years.
+
+A Project might accumulate:
+
+* characters
+* locations
+* relationships
+* histories
+* timelines
+* images
+* stories
+* styles
+* artifacts
+
+The AI should understand that accumulated world when generating new material.
+
+---
+
+# 58. Project Dashboard
+
+Every Project should provide an overview of:
+
+* purpose
+* instructions
+* current work
+* recent conversations
+* knowledge
+* documents
+* artifacts
+* memory
+* open questions
+* related Projects
+* images
+* creative assets
+* Skills
+* Council configurations
+
+---
+
+# 59. Interoperability
+
+Magi should be designed from the beginning to coexist with other AI environments rather than attempting to replace everything.
+
+The user may continue to use:
+
+* coding environments
+* local AI tools
+* specialist image applications
+* research applications
+* productivity software
+* external agents
+
+Magi should act as the **contextual and organizational layer** around them where useful.
+
+It should be possible to move information and work between systems.
+
+---
+
+# 60. Coding Environments
+
+Magi does not need to replace specialized coding environments.
+
+Tools such as dedicated IDEs can remain the place where code is actually written and tested.
+
+Magi can provide:
+
+* Project requirements
+* architectural decisions
+* research
+* specifications
+* design discussions
+* prior reasoning
+* relevant documentation
+
+The coding environment remains optimized for coding.
+
+Magi remains optimized for **the larger context of the work**.
+
+---
+
+# 61. Model and Provider Independence
+
+The system should avoid unnecessary dependence on any single AI provider.
+
+Where practical, Magi should maintain a provider-neutral representation of:
+
+* conversations
+* Projects
+* memory
+* documents
+* artifacts
+* Skills
+* tool definitions
+* Agent configurations
+* Council configurations
+
+Provider-specific adaptations should live at the integration layer.
+
+---
+
+# 62. Portability
+
+The user should be able to export their intellectual environment.
+
+At minimum, export should eventually encompass:
+
+* Projects
+* conversations
+* memory
+* documents
+* artifacts
+* images
+* Style Guides
+* characters
+* Skills
+* configurations
+* metadata
+
+The exact implementation can evolve.
+
+The principle should not.
+
+> **Your accumulated intellectual environment should not be held hostage by the application.**
+
+---
+
+# 63. Import
+
+Magi should eventually be able to ingest material from other AI systems.
+
+A user should be able to bring in:
+
+* old conversations
+* exported histories
+* documents
+* images
+* project instructions
+* other AI-generated artifacts
+
+The imported material should retain provenance where possible.
+
+---
+
+# 64. The User's AI History
+
+Over years, Magi should become a record not merely of what the user asked, but of **how their thinking developed**.
+
+The user might ask:
+
+> "When did I start thinking about this?"
+
+> "How has my position changed?"
+
+> "What ideas have I repeatedly returned to?"
+
+> "Which projects are connected?"
+
+> "What questions remain unresolved?"
+
+Magi should be able to reconstruct intellectual trajectories from the archive.
+
+---
+
+# 65. Cost and Resource Management
+
+Because Magi can use multiple providers, it should eventually function as a resource manager.
+
+The user should be able to establish preferences such as:
+
+* minimize cost
+* maximize quality
+* prioritize speed
+* use specific models for specific tasks
+* ask before exceeding a threshold
+* prefer local models where possible
+
+This makes model selection a practical resource decision rather than a branding decision.
+
+---
+
+# 66. Security and Control
+
+Because Magi may eventually have access to:
+
+* files
+* accounts
+* APIs
+* email
+* code
+* external services
+
+security must be fundamental.
+
+The user should understand:
+
+* what a model can access
+* what a Skill can access
+* what an Agent can access
+* what a Council can access
+* what external services are connected
+* what actions require confirmation
+
+Power should always be accompanied by control.
+
+---
+
+# 67. The Visual Language
+
+Magi's interface should rely heavily on:
+
+* typography
+* spacing
+* alignment
+* restrained borders
+* subtle surfaces
+* carefully controlled hierarchy
+
+rather than:
+
+* gradients
+* excessive shadows
+* decorative cards
+* visual noise
+
+The interface should feel like **one instrument**.
+
+---
+
+# 68. Typography
+
+Typography should communicate:
+
+> **library + laboratory**
+
+rather than:
+
+> startup + social network.
+
+The system should use:
+
+* highly legible interface typography
+* restrained display typography
+* readable long-form text
+* technical/monospaced typography where appropriate
+
+Typography should carry much of the brand.
+
+---
+
+# 69. Colour
+
+The foundation should be restrained:
+
+* warm off-white
+* paper
+* charcoal
+* graphite
+* warm black
+* muted grey
+
+One controlled accent colour can establish identity.
+
+Potential directions:
+
+* oxidized orange
+* vermilion
+* deep ochre
+* dark teal
+* muted blue
+* warm amber
+
+The accent indicates **action or state**, not decoration.
+
+---
+
+# 70. Light and Dark Modes
+
+Both should exist.
+
+### Light
+
+Paper + graphite + instrument.
+
+### Dark
+
+Dark laboratory + warm instrumentation.
+
+Dark mode should avoid pure black and remain comfortable for long sessions.
+
+---
+
+# 71. Physicality Without Skeuomorphism
+
+Magi should possess subtle physical qualities through:
+
+* precise borders
+* small surface differences
+* restrained shadows
+* tactile controls
+* deliberate spacing
+* strong alignment
+
+A control should feel like a control.
+
+A document should feel like an object.
+
+A Project should feel like a place.
+
+A Council should feel like a group being convened.
+
+But none should become theatrical.
+
+---
+
+# 72. Motion
+
+Animation should communicate:
+
+* transition
+* causality
+* hierarchy
+* state
+
+It should not communicate:
+
+> "Look how futuristic we are."
+
+Council stages might subtly move through:
+
+**Question → Analysis → Critique → Synthesis**
+
+Motion should explain rather than decorate.
+
+---
+
+# 73. Icons
+
+Icons should be:
+
+* simple
+* geometric
+* restrained
+* consistent
+
+Typography should carry more of the interface than icons.
+
+---
+
+# 74. The Magi Mark
+
+The logo should be simple enough to work:
+
+* at 16px
+* as an app icon
+* in monochrome
+* in print
+* embossed
+* on light and dark surfaces
+
+Possible conceptual foundations:
+
+* three points
+* three converging lines
+* three sources becoming one
+* abstract M
+* tripartite geometry
+
+The symbolism can subtly represent:
+
+**the three Magi**
+
+and:
+
+**multiple intelligences converging.**
+
+---
+
+# 75. Mobile
+
+Desktop should provide the fullest Magi experience.
+
+Mobile should prioritize:
+
+* conversations
+* Project navigation
+* search
+* memory
+* voice
+* image generation
+* reviewing artifacts
+* Council results
+
+It should not simply be a shrunken desktop interface.
+
+---
+
+# 76. Accessibility
+
+The aesthetic must never compromise usability.
+
+Magi should support:
+
+* strong contrast
+* scalable text
+* keyboard navigation
+* screen readers
+* reduced motion
+* clear focus states
+* touch-friendly controls
+* non-colour state indicators
+
+---
+
+# 77. Representative User Story: Research
+
+A user asks:
+
+> "Is this historical claim actually defensible?"
+
+Magi recognizes that this is a substantial research question.
+
+The user says:
+
+> "Use the Historical Research Skill."
+
+Magi invokes the Skill.
+
+The Skill uses appropriate tools.
+
+Several models investigate independently.
+
+A Council compares their findings.
+
+A skeptic attacks the emerging conclusion.
+
+A synthesizer produces a report.
+
+The user approves the report.
+
+Magi saves it as a Project artifact and optionally promotes key conclusions into Project knowledge.
+
+The original conversation remains in the archive.
+
+The research remains available for future work.
+
+---
+
+# 78. Representative User Story: Creative Work
+
+A user enters an Image Project.
+
+They say:
+
+> "Create a new illustration of Mira."
+
+Magi knows:
+
+* the character
+* the Style Guide
+* canonical references
+* relevant Project context
+
+The user generates several variations.
+
+One becomes the preferred reference.
+
+Magi records it.
+
+Later:
+
+> "Put Mira into the new scene we're developing."
+
+The character and visual language persist.
+
+---
+
+# 79. Representative User Story: Cross-Project Thinking
+
+The user is working on a new educational Project.
+
+They ask:
+
+> "Have I thought about this before?"
+
+Magi searches the archive.
+
+It finds discussions in several Projects.
+
+It presents the relevant material and provenance.
+
+The user says:
+
+> "Bring the useful parts into this Project, but don't merge the Projects."
+
+Magi retrieves and contextualizes the information.
+
+The Projects remain distinct.
+
+---
+
+# 80. Representative User Story: Council
+
+The user encounters a difficult philosophical question.
+
+They say:
+
+> "Magi Council. Three independent analyses. Then have them critique one another. I want the final synthesis, but show me the major disagreement."
+
+Magi:
+
+1. selects appropriate models
+2. runs independent analyses
+3. circulates their conclusions
+4. conducts critique
+5. identifies disagreements
+6. synthesizes
+7. presents the final answer
+8. preserves the Council record
+
+The user can later return to the deliberation.
+
+---
+
+# 81. Representative User Story: Model Replacement
+
+A user has worked on a Project for two years.
+
+Their preferred model becomes obsolete.
+
+They switch to a new model.
+
+The Project does not need to be recreated.
+
+The new model receives the relevant:
+
+* Project context
+* memory
+* documents
+* artifacts
+* instructions
+* Skills
+* tools
+
+The user continues working.
+
+This is the central durability promise.
+
+---
+
+# 82. Representative User Story: External Tools
+
+The user says:
+
+> "Analyze this dataset."
+
+Magi selects an appropriate analysis Skill.
+
+The Skill invokes a computational tool.
+
+The tool produces results.
+
+The model interprets them.
+
+The resulting analysis becomes an artifact.
+
+The user never needs to care which underlying tool executed the computation unless they want to inspect it.
+
+---
+
+# 83. Representative User Story: Agent
+
+The user says:
+
+> "Investigate this question and prepare a report by tomorrow."
+
+Magi creates an Agent task within appropriate boundaries.
+
+The Agent can:
+
+* research
+* read
+* analyze
+* consult models
+* use Skills
+* produce an artifact
+
+The user can inspect its progress and intervene.
+
+The Agent cannot exceed its permissions.
+
+---
+
+# 84. Core User Stories
+
+### Projects
+
+**US-001**
+As a user, I want persistent Projects so that different areas of work retain their own context.
+
+**US-002**
+As a user, I want multiple conversations within a Project.
+
+**US-003**
+As a user, I want persistent Project instructions.
+
+**US-004**
+As a user, I want Project knowledge and memory.
+
+---
+
+### Archive
+
+**US-005**
+As a user, I want to search my entire history.
+
+**US-006**
+As a user, I want semantic search.
+
+**US-007**
+As a user, I want Magi to identify earlier discussions of an idea.
+
+---
+
+### Memory
+
+**US-008**
+As a user, I want global memory.
+
+**US-009**
+As a user, I want Project-specific memory.
+
+**US-010**
+As a user, I want to inspect, edit, and delete memory.
+
+---
+
+### Cross-Project Intelligence
+
+**US-011**
+As a user, I want to search other Projects explicitly.
+
+**US-012**
+As a user, I want to use information from other Projects without merging them.
+
+---
+
+### Models
+
+**US-013**
+As a user, I want to select models.
+
+**US-014**
+As a user, I want to switch models without losing context.
+
+**US-015**
+As a user, I want different models assigned to different roles.
+
+**US-016**
+As a user, I want Magi to recommend models.
+
+**US-017**
+As a user, I want cost visibility.
+
+---
+
+### Tools
+
+**US-018**
+As a user, I want Magi to use external tools.
+
+**US-019**
+As a user, I want to control tool permissions.
+
+**US-020**
+As a user, I want dangerous actions to require confirmation.
+
+---
+
+### Skills
+
+**US-021**
+As a user, I want reusable Skills.
+
+**US-022**
+As a user, I want to create my own Skills.
+
+**US-023**
+As a user, I want Project-specific Skills.
+
+**US-024**
+As a user, I want Skills to combine models, tools, instructions, and context.
+
+---
+
+### Agents
+
+**US-025**
+As a user, I want Agents to pursue longer-running objectives.
+
+**US-026**
+As a user, I want Agents to operate within explicit permissions.
+
+**US-027**
+As a user, I want to inspect and interrupt Agents.
+
+---
+
+### Councils
+
+**US-028**
+As a user, I want multiple models to independently analyze a question.
+
+**US-029**
+As a user, I want models to critique one another.
+
+**US-030**
+As a user, I want debate and red-team modes.
+
+**US-031**
+As a user, I want persistent Council configurations.
+
+**US-032**
+As a user, I want disagreements surfaced rather than hidden.
+
+---
+
+### Documents and Artifacts
+
+**US-033**
+As a user, I want persistent Project documents.
+
+**US-034**
+As a user, I want persistent artifacts.
+
+**US-035**
+As a user, I want artifact versioning.
+
+---
+
+### Images
+
+**US-036**
+As a user, I want persistent Image Projects.
+
+**US-037**
+As a user, I want Style Guides.
+
+**US-038**
+As a user, I want persistent Characters.
+
+**US-039**
+As a user, I want Brand Libraries.
+
+**US-040**
+As a user, I want reusable visual references.
+
+---
+
+### Interoperability
+
+**US-041**
+As a user, I want to import previous AI conversations.
+
+**US-042**
+As a user, I want to export my Projects and knowledge.
+
+**US-043**
+As a user, I want to use Magi alongside specialist applications.
+
+**US-044**
+As a user, I want my information to remain usable if I change AI providers.
+
+---
+
+# 85. The Mature Magi Experience
+
+After years of use, Magi should contain an evolving body of:
+
+* conversations
+* Projects
+* research
+* documents
+* memories
+* ideas
+* decisions
+* artifacts
+* images
+* characters
+* styles
+* Skills
+* Agents
+* Council records
+* experiments
+* unfinished thoughts
+
+The system becomes more useful partly because the models improve, but also because **the user's environment becomes richer**.
+
+---
+
+# 86. Magi as Personal Infrastructure
+
+The ultimate goal is not merely to create another application.
+
+Magi should become a piece of **personal infrastructure**.
+
+Like a personal library.
+
+Like a workshop.
+
+Like a studio.
+
+Like a laboratory.
+
+The user may change tools within it.
+
+But the environment itself persists.
+
+---
+
+# 87. What Magi Should Not Become
+
+Magi should not become:
+
+* a social network
+* an AI marketplace first and foremost
+* a collection of disconnected AI gimmicks
+* a replacement for every specialist application
+* an opaque autonomous system
+* a model-specific product
+* a dashboard overloaded with capabilities
+* a system that silently decides what the user believes or remembers
+
+Its purpose is narrower and deeper:
+
+> **Give one person a durable environment in which artificial intelligence can be used intelligently.**
+
+---
+
+# 88. The Long-Term Possibility
+
+If built correctly, Magi could become an interface between the user and an increasingly diverse AI ecosystem.
+
+Today's models might be:
+
+* GPT
+* Claude
+* Gemini
+* specialized reasoning models
+* image models
+* coding models
+* local models
+
+Tomorrow's models may be entirely different.
+
+Magi does not need to predict which will win.
+
+It needs to make their changing capabilities **available within a stable environment**.
+
+The user should be able to say:
+
+> "Use the best tool for this."
+
+without having to rebuild their entire workflow every time the AI industry changes.
+
+---
+
+# 89. The Deeper Product Idea
+
+Magi changes the unit of AI interaction.
+
+The dominant paradigm is:
+
+> **Prompt → Response**
+
+Magi's paradigm is:
+
+> **Person → Environment → Context → Intelligence → Tools → Creation → Memory**
+
+The user's accumulated knowledge becomes part of the interface.
+
+The Project becomes part of the intelligence.
+
+The archive becomes searchable.
+
+Different models become collaborators rather than competitors.
+
+Tools become instruments.
+
+Skills become reusable methods.
+
+Agents become delegated actors.
+
+Councils become collective intelligence.
+
+Images become persistent creative assets.
+
+AI outputs become artifacts rather than disposable messages.
+
+The system grows with the user.
+
+---
+
+# 90. The Core Conceptual Stack
+
+The whole product can ultimately be understood as seven layers:
+
+```text
+                         ┌─────────────┐
+                         │    MAGI     │
+                         │ ENVIRONMENT │
+                         └──────┬──────┘
+                                │
+                         ┌──────▼──────┐
+                         │  PROJECTS   │
+                         │   MEMORY    │
+                         │   ARCHIVE   │
+                         └──────┬──────┘
+                                │
+                         ┌──────▼──────┐
+                         │   SKILLS    │
+                         └──────┬──────┘
+                                │
+                         ┌──────▼──────┐
+                         │   AGENTS    │
+                         └──────┬──────┘
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+              ┌─────▼─────┐          ┌─────▼─────┐
+              │   MODELS  │          │   TOOLS   │
+              └─────┬─────┘          └─────┬─────┘
+                    │                       │
+                    └───────────┬───────────┘
+                                │
+                         ┌──────▼──────┐
+                         │    WORLD    │
+                         └─────────────┘
+```
+
+Councils operate across the model, Skill, Agent, and tool layers.
+
+The user remains above the system.
+
+---
+
+# 91. The Central Design Paradox
+
+Magi combines:
+
+### Old values
+
+* permanence
+* craftsmanship
+* restraint
+* clarity
+* intellectual seriousness
+* human judgment
+* ownership
+* continuity
+
+with:
+
+### New capabilities
+
+* multimodal AI
+* multiple simultaneous models
+* semantic retrieval
+* persistent memory
+* web research
+* image generation
+* adaptive interfaces
+* natural-language commands
+* AI agents
+* automated deliberation
+* external tool integration
+
+The interface is where these worlds meet.
+
+> **Ancient values. New machinery.**
+
+---
+
+# 92. Magi's Personality
+
+If Magi were a person, it would be:
+
+**quiet**
+
+**precise**
+
+**curious**
+
+**serious**
+
+**warm**
+
+**cultured**
+
+**capable**
+
+**unhurried**
+
+It should feel like the kind of instrument found in an excellent library, laboratory, observatory, or design studio.
+
+Not because it imitates those places.
+
+Because it shares their relationship with knowledge.
+
+---
+
+# 93. The Design Question
+
+The most important design question is not:
+
+> "What will make this interface look futuristic?"
+
+It is:
+
+> **"What will still feel right in 2045?"**
+
+That question should govern both the software architecture and the visual design.
+
+The architecture should survive changing models.
+
+The data should survive changing providers.
+
+The interface should survive changing fashions.
+
+The Projects should survive changing workflows.
+
+The user's knowledge should survive changing applications.
+
+---
+
+# 94. The Ultimate Promise
+
+Magi is not trying to predict which AI will be best.
+
+It is trying to ensure that **the user remains in a position to benefit from whichever AI is best.**
+
+The models are temporary.
+
+The providers are temporary.
+
+The interfaces are temporary.
+
+The user's accumulated intellectual environment is the thing worth preserving.
+
+Magi is therefore ultimately a project about **continuity in a rapidly changing technological landscape**.
+
+---
+
+# 95. Final Product Definition
+
+> **Magi is a persistent personal AI environment in which conversations, Projects, memory, knowledge, research, models, collective intelligence, tools, Skills, Agents, documents, and creative assets form one coherent workspace that grows with the user over time.**
+
+It is part:
+
+* AI assistant
+* knowledge environment
+* research laboratory
+* creative studio
+* archive
+* collaborative intelligence system
+* personal workspace
+* AI orchestration layer
+
+But it should not feel like seven applications glued together.
+
+It should feel like **one instrument**.
+
+---
+
+# 96. Final Design Principle
+
+The ideal reaction after years of use is not:
+
+> "What an amazing AI app."
+
+It is:
+
+> **"This is my instrument."**
+
+And the ultimate promise of Magi is:
+
+> **Ancient values. New machinery.**
+>
+> **A personal instrument for thinking.**
+>
+> **An enduring environment for working with intelligence.**
+>
+> **Made for the long future.**
