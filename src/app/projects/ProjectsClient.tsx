@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
@@ -27,6 +27,9 @@ export function ProjectsClient() {
   const [purpose, setPurpose] = useState("");
   const [instructions, setInstructions] = useState("");
   const [creating, setCreating] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function load() {
     setLoading(true);
@@ -59,13 +62,51 @@ export function ProjectsClient() {
     router.push(`/projects/${data.project.id}`);
   }
 
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      const text = await file.text();
+      const bundle = JSON.parse(text);
+      const res = await fetch("/api/projects/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bundle),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setImportError(data.error ?? "Import failed.");
+        setImporting(false);
+        return;
+      }
+      router.refresh();
+      router.push(`/projects/${data.project.id}`);
+    } catch {
+      setImportError("That file isn't valid JSON.");
+      setImporting(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl px-8 py-8">
-      <div className="mb-4 flex justify-end">
+      <div className="mb-4 flex justify-end gap-2">
+        <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportFile} />
+        <Button variant="default" onClick={() => fileInputRef.current?.click()} disabled={importing}>
+          {importing ? "Importing…" : "Import Project"}
+        </Button>
         <Button variant="accent" onClick={() => setFormOpen((v) => !v)}>
           <IconPlus /> New Project
         </Button>
       </div>
+
+      {importError && (
+        <div className="mb-4 rounded-[4px] border border-[var(--color-danger)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
+          {importError}
+        </div>
+      )}
 
       {formOpen && (
         <Panel className="mb-6 px-5 py-5">

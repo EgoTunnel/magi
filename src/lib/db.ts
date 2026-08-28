@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS model_roles (
   model_id TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  objective TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running',
+  steps TEXT NOT NULL DEFAULT '[]',
+  artifact_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   kind, ref_id, project_id, title, content, created_at
 );
@@ -137,6 +148,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project_id);
 CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project_id);
 CREATE INDEX IF NOT EXISTS idx_skills_project ON skills(project_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id);
 `;
 
 db.exec(SCHEMA);

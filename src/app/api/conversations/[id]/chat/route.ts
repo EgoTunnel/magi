@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { addMessage, getConversation, listMessages } from "@/lib/repo/conversations";
 import { buildSystemPrompt } from "@/lib/contextBuilder";
 import { getModel, modelForRole } from "@/lib/models/registry";
-import type { ModelMessage, ModelRoleId } from "@/lib/models/types";
+import type { ModelMessage, ModelRoleId, ToolCallRecord } from "@/lib/models/types";
+import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -34,11 +35,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   const encoder = new TextEncoder();
   let full = "";
+  const toolLog: ToolCallRecord[] = [];
+  const projectId = conversation.project_id;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const chunk of resolved.provider.stream({ model: modelId, system, messages: history })) {
+        const generator = resolved.provider.stream({
+          model: modelId,
+          system,
+          messages: history,
+          tools: TOOL_SPECS,
+          onToolCall: (name, input) => executeTool(name, input, { projectId }),
+          toolLog,
+        });
+        for await (const chunk of generator) {
           full += chunk;
           controller.enqueue(encoder.encode(chunk));
         }
@@ -47,14 +58,20 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
           role: "assistant",
           content: full || "(no response)",
           model: modelId,
-          provenance,
+          provenance: { ...provenance, toolCalls: toolLog },
         });
         controller.close();
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
         controller.enqueue(encoder.encode(`\n\n[Magi encountered an error: ${message}]`));
         if (full) {
-          addMessage({ conversationId: id, role: "assistant", content: full, model: modelId, provenance });
+          addMessage({
+            conversationId: id,
+            role: "assistant",
+            content: full,
+            model: modelId,
+            provenance: { ...provenance, toolCalls: toolLog },
+          });
         }
         controller.close();
       }

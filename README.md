@@ -10,10 +10,12 @@ passing through. See [`docs/Product Vision.txt`](docs/Product%20Vision.txt) for 
 build is working toward.
 
 This repository is an early, working subset of that vision: Projects with persistent instructions,
-streaming conversations, deliberate memory (global and per-Project), full-text archive search, an
-"Ask my archive" mode, reusable Skills, and the Magi Council for multi-role deliberation. The model
-layer currently has one provider (Anthropic), wired through an abstraction built to add others
-without touching the rest of the app.
+streaming conversations with tool use, deliberate memory (global and per-Project), full-text archive
+search, an "Ask my archive" mode, reusable Skills, the Magi Council for multi-role deliberation,
+Agents that pursue a multi-step objective and can be watched and stopped mid-run, and Project
+export/import. The model layer has two providers — Anthropic directly, and OpenRouter (which in turn
+proxies most of the industry) — wired through an abstraction built to add more without touching the
+rest of the app.
 
 ## Running it
 
@@ -23,9 +25,11 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). On first run, go to **Settings** and add an
-Anthropic API key — Magi needs one before it can think. The key is stored locally in Magi's own
-SQLite database (`data/magi.db`, gitignored) and used only to call Anthropic's API directly from
-your local server.
+API key for at least one provider — Magi needs one before it can think. Anthropic is a direct
+integration; OpenRouter is a one-stop shop for most other providers' models, with its catalog fetched
+live from OpenRouter's own API rather than hardcoded. Keys are stored locally in Magi's own SQLite
+database (`data/magi.db`, gitignored) and used only to call that provider's API directly from your
+local server.
 
 ## How it's built
 
@@ -33,14 +37,21 @@ your local server.
   mutations and the streaming chat endpoint.
 - **SQLite** (`better-sqlite3`), local-first — this is the user's own environment; nothing is sent
   anywhere except to whichever model provider a conversation actually calls.
-- **Model provider abstraction** (`src/lib/models/`) — Skills, Councils, and conversations request a
-  *role* ("the reasoner," "the critic"), never a hardcoded model. Reassigning a role in Settings
-  upgrades every caller at once. Adding a provider means writing one adapter and registering it.
+- **Model provider abstraction** (`src/lib/models/`) — Skills, Councils, Agents, and conversations
+  request a *role* ("the reasoner," "the critic"), never a hardcoded model. Reassigning a role in
+  Settings upgrades every caller at once, regardless of which provider it comes from. Adding a
+  provider means writing one adapter and registering it.
 - **Full-text search** (SQLite FTS5) over Projects, conversations, memory, documents, artifacts, and
   Skills, plus an "Ask my archive" mode that hands matching material to a model to synthesize.
+- **Tool layer** (`src/lib/tools/`) — the model requests a tool (`search_archive`, `calculator`);
+  Magi's tool layer is what actually executes it, never the model itself. Cross-Project search is a
+  user-controlled permission, not an assumption.
+- **Agents** (`src/lib/agent.ts`) — given an objective, an Agent plans, researches (with tools),
+  drafts, critiques itself, revises, and saves the result as a Project artifact. Runs as a
+  fire-and-forget background job on Magi's own server, polled by the client, stoppable mid-run.
 
 ## What's not built yet
 
-The Image Studio, Agents, cross-Project connection discovery, and import/export are part of the
-vision but not this build — the architecture anticipates them without pretending they exist. See
-the Image Lab page in the app for where that stands.
+The full Image Studio and cross-Project connection discovery are part of the vision but not this
+build — the architecture anticipates them without pretending they exist. See the Image Lab page in
+the app for where that stands.

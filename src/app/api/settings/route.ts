@@ -1,18 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
+import {
+  getSetting,
+  setSetting,
+  deleteSetting,
+  getCrossProjectSearchEnabled,
+  setCrossProjectSearchEnabled,
+} from "@/lib/settings";
 import { isAnyProviderConfigured } from "@/lib/models/registry";
+import { refreshOpenRouterModels, getCachedOpenRouterModels } from "@/lib/models/openrouter";
+
+function preview(key: string | null): string | null {
+  return key ? `${"•".repeat(Math.max(key.length - 4, 0))}${key.slice(-4)}` : null;
+}
 
 export async function GET() {
-  const key = getSetting("anthropic_api_key");
+  const anthropicKey = getSetting("anthropic_api_key");
+  const openRouterKey = getSetting("openrouter_api_key");
+  const { models, fetchedAt } = getCachedOpenRouterModels();
   return NextResponse.json({
-    anthropicKeySet: !!key || !!process.env.ANTHROPIC_API_KEY,
-    anthropicKeyPreview: key ? `${"•".repeat(Math.max(key.length - 4, 0))}${key.slice(-4)}` : null,
+    anthropicKeySet: !!anthropicKey || !!process.env.ANTHROPIC_API_KEY,
+    anthropicKeyPreview: preview(anthropicKey),
+    openRouterKeySet: !!openRouterKey || !!process.env.OPENROUTER_API_KEY,
+    openRouterKeyPreview: preview(openRouterKey),
+    openRouterModelCount: models.length,
+    openRouterModelsFetchedAt: fetchedAt,
     configured: isAnyProviderConfigured(),
+    crossProjectSearchEnabled: getCrossProjectSearchEnabled(),
   });
 }
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
+
   if (typeof body.anthropicApiKey === "string") {
     if (body.anthropicApiKey.trim()) {
       setSetting("anthropic_api_key", body.anthropicApiKey.trim());
@@ -20,5 +39,25 @@ export async function POST(req: NextRequest) {
       deleteSetting("anthropic_api_key");
     }
   }
-  return NextResponse.json({ ok: true });
+
+  let openRouterRefreshError: string | null = null;
+  if (typeof body.openRouterApiKey === "string") {
+    if (body.openRouterApiKey.trim()) {
+      setSetting("openrouter_api_key", body.openRouterApiKey.trim());
+      // Populate the model catalog immediately so role defaults have something real to pick from.
+      try {
+        await refreshOpenRouterModels();
+      } catch (err) {
+        openRouterRefreshError = err instanceof Error ? err.message : "Could not load the OpenRouter model list.";
+      }
+    } else {
+      deleteSetting("openrouter_api_key");
+    }
+  }
+
+  if (typeof body.crossProjectSearchEnabled === "boolean") {
+    setCrossProjectSearchEnabled(body.crossProjectSearchEnabled);
+  }
+
+  return NextResponse.json({ ok: true, openRouterRefreshError });
 }

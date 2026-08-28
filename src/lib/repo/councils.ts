@@ -78,6 +78,7 @@ export interface CouncilTranscriptEntry {
   modelId: string;
   stage: "analysis" | "critique" | "synthesis";
   content: string;
+  toolCalls?: { name: string; input: unknown; result: string }[];
 }
 
 export interface CouncilRun {

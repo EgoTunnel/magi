@@ -72,6 +72,18 @@ export default async function CouncilRunPage({ params }: PageProps<"/councils/ru
                         <p key={j}>{line || " "}</p>
                       ))}
                     </div>
+                    {e.toolCalls && e.toolCalls.length > 0 && (
+                      <div className="mt-3 flex flex-col gap-1 border-t border-[var(--color-border)] pt-3">
+                        {e.toolCalls.map((t, k) => (
+                          <div key={k} className="text-[11.5px] text-[var(--color-text-faint)] font-technical">
+                            used {t.name}
+                            {t.name === "search_archive" && typeof t.input === "object" && t.input && "query" in t.input
+                              ? ` — "${(t.input as { query: string }).query}"`
+                              : ""}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </Panel>
                 ))}
               </div>

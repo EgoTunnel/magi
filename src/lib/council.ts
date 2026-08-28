@@ -1,22 +1,31 @@
 import { getModel, modelForRole } from "@/lib/models/registry";
-import type { ModelRoleId } from "@/lib/models/types";
+import type { ModelRoleId, ToolCallRecord } from "@/lib/models/types";
 import type { CouncilRole, CouncilTranscriptEntry } from "@/lib/repo/councils";
 import { updateCouncilRun } from "@/lib/repo/councils";
 import { getProject } from "@/lib/repo/projects";
+import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
 
-async function completeAs(role: CouncilRole, prompt: string): Promise<{ content: string; modelId: string }> {
+async function completeAs(
+  role: CouncilRole,
+  prompt: string,
+  opts: { withTools?: boolean; projectId?: string | null } = {}
+): Promise<{ content: string; modelId: string; toolCalls: ToolCallRecord[] }> {
   const modelId = modelForRole((role.modelRole as ModelRoleId) ?? "default");
   const resolved = getModel(modelId);
   if (!resolved || !resolved.provider.isConfigured()) {
     throw new Error("NO_API_KEY");
   }
+  const toolLog: ToolCallRecord[] = [];
   const content = await resolved.provider.complete({
     model: modelId,
     system: role.systemPrompt,
     messages: [{ role: "user", content: prompt }],
-    maxTokens: 1400,
+    maxTokens: 3000,
+    tools: opts.withTools ? TOOL_SPECS : undefined,
+    onToolCall: opts.withTools ? (name, input) => executeTool(name, input, { projectId: opts.projectId }) : undefined,
+    toolLog,
   });
-  return { content, modelId };
+  return { content, modelId, toolCalls: toolLog };
 }
 
 function extractSection(text: string, label: string): string | null {
@@ -44,12 +53,22 @@ export async function runCouncilDeliberation(opts: {
     const analysisPrompt = `Question put to the Magi Council:\n\n${opts.question}${projectContext}\n\nGive your independent analysis. Be concise but substantive.`;
     const analyses = await Promise.all(
       opts.roles.map(async (role) => {
-        const { content, modelId } = await completeAs(role, analysisPrompt);
-        return { role, modelId, content };
+        const { content, modelId, toolCalls } = await completeAs(role, analysisPrompt, {
+          withTools: true,
+          projectId: opts.projectId,
+        });
+        return { role, modelId, content, toolCalls };
       })
     );
     for (const a of analyses) {
-      transcript.push({ role: a.role.name, modelRole: a.role.modelRole, modelId: a.modelId, stage: "analysis", content: a.content });
+      transcript.push({
+        role: a.role.name,
+        modelRole: a.role.modelRole,
+        modelId: a.modelId,
+        stage: "analysis",
+        content: a.content,
+        toolCalls: a.toolCalls,
+      });
     }
     updateCouncilRun(opts.runId, { transcript, status: "running" });
 

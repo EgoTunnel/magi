@@ -214,6 +214,21 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                   </div>
                 )}
                 {provenance.skillUsed && <div>Skill: {provenance.skillUsed.name}</div>}
+                {provenance.toolCalls && provenance.toolCalls.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[var(--color-text-faint)]">Tools used</div>
+                    <ul className="flex flex-col gap-1">
+                      {provenance.toolCalls.map((t, i) => (
+                        <li key={i} className="font-technical text-[11.5px]">
+                          {t.name}
+                          {t.name === "search_archive" && typeof t.input === "object" && t.input && "query" in t.input
+                            ? ` — "${(t.input as { query: string }).query}"`
+                            : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-[12.5px] text-[var(--color-text-faint)]">Send a message to see what Magi drew on.</p>

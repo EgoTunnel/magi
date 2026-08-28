@@ -5,10 +5,29 @@ export interface ModelMessage {
 
 export interface ModelInfo {
   id: string;
-  provider: "anthropic";
+  provider: "anthropic" | "openrouter";
   label: string;
   description: string;
   speed: "fast" | "balanced" | "deep";
+}
+
+// A tool Magi's model layer can call mid-turn. The model only ever sees
+// name/description/inputSchema; execution happens in Magi's tool layer
+// (src/lib/tools), never inside the provider itself — see Product Vision §32.
+export interface ToolSpec {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+  };
+}
+
+export interface ToolCallRecord {
+  name: string;
+  input: unknown;
+  result: string;
 }
 
 export interface CompleteOptions {
@@ -16,6 +35,9 @@ export interface CompleteOptions {
   system?: string;
   messages: ModelMessage[];
   maxTokens?: number;
+  tools?: ToolSpec[];
+  onToolCall?: (name: string, input: unknown) => Promise<string>;
+  toolLog?: ToolCallRecord[];
 }
 
 export interface ModelProvider {

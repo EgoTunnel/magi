@@ -21,3 +21,19 @@ export function deleteSetting(key: string) {
 export function getAnthropicApiKey(): string | null {
   return getSetting("anthropic_api_key") || process.env.ANTHROPIC_API_KEY || null;
 }
+
+export function getOpenRouterApiKey(): string | null {
+  return getSetting("openrouter_api_key") || process.env.OPENROUTER_API_KEY || null;
+}
+
+// Whether Magi's search_archive tool is allowed to look beyond the current
+// Project. Defaults on (the vision treats this as ordinary research, not a
+// silently blurred boundary) but the user can turn it off in Settings.
+export function getCrossProjectSearchEnabled(): boolean {
+  const value = getSetting("cross_project_search_enabled");
+  return value === null ? true : value === "true";
+}
+
+export function setCrossProjectSearchEnabled(enabled: boolean) {
+  setSetting("cross_project_search_enabled", enabled ? "true" : "false");
+}

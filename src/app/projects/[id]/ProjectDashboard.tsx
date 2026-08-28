@@ -42,6 +42,12 @@ interface Artifact {
   type: string;
   version: number;
 }
+interface AgentRun {
+  id: string;
+  objective: string;
+  status: "running" | "stopping" | "stopped" | "complete" | "error";
+  created_at: string;
+}
 
 export function ProjectDashboard({ projectId }: { projectId: string }) {
   const router = useRouter();
@@ -61,6 +67,12 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [docTitle, setDocTitle] = useState("");
   const [docContent, setDocContent] = useState("");
 
+  const [agentRuns, setAgentRuns] = useState<AgentRun[]>([]);
+  const [agentFormOpen, setAgentFormOpen] = useState(false);
+  const [objectiveDraft, setObjectiveDraft] = useState("");
+  const [launchingAgent, setLaunchingAgent] = useState(false);
+  const [agentError, setAgentError] = useState<string | null>(null);
+
   async function load() {
     const res = await fetch(`/api/projects/${projectId}`);
     if (res.status === 404) {
@@ -72,12 +84,13 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setInstructionsDraft(data.project.instructions ?? "");
     setPurposeDraft(data.project.purpose ?? "");
 
-    const [convRes, memRes, docRes, skillRes, artRes] = await Promise.all([
+    const [convRes, memRes, docRes, skillRes, artRes, agentRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/conversations`),
       fetch(`/api/memory?scope=project&projectId=${projectId}`),
       fetch(`/api/documents?projectId=${projectId}`),
       fetch(`/api/skills?projectId=${projectId}`),
       fetch(`/api/artifacts?projectId=${projectId}`),
+      fetch(`/api/agents/runs?projectId=${projectId}`),
     ]);
     setConversations((await convRes.json()).conversations);
     const memData: MemoryItem[] = (await memRes.json()).memory;
@@ -85,6 +98,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setDocuments((await docRes.json()).documents);
     setSkills((await skillRes.json()).skills);
     setArtifacts((await artRes.json()).artifacts);
+    setAgentRuns((await agentRes.json()).runs);
   }
 
   useEffect(() => {
@@ -126,6 +140,27 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     load();
   }
 
+  async function launchAgent() {
+    if (!objectiveDraft.trim()) return;
+    setLaunchingAgent(true);
+    setAgentError(null);
+    const res = await fetch("/api/agents/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ objective: objectiveDraft, projectId }),
+    });
+    setLaunchingAgent(false);
+    if (res.status === 412) {
+      const data = await res.json();
+      setAgentError(data.message ?? "No API key configured.");
+      return;
+    }
+    const data = await res.json();
+    setObjectiveDraft("");
+    setAgentFormOpen(false);
+    router.push(`/agents/runs/${data.run.id}`);
+  }
+
   if (notFound) {
     return (
       <div className="px-8 py-10">
@@ -138,14 +173,19 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
 
   return (
     <div>
-      <div className="border-b border-[var(--color-border)] px-8 py-6">
-        <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--color-text-faint)] font-technical">
-          Project
+      <div className="flex items-start justify-between gap-6 border-b border-[var(--color-border)] px-8 py-6">
+        <div>
+          <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--color-text-faint)] font-technical">
+            Project
+          </div>
+          <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-[var(--color-text)]">
+            {project.name}
+          </h1>
+          {project.tagline && <p className="mt-1 text-[13.5px] text-[var(--color-text-muted)]">{project.tagline}</p>}
         </div>
-        <h1 className="text-[22px] font-semibold tracking-[-0.01em] text-[var(--color-text)]">
-          {project.name}
-        </h1>
-        {project.tagline && <p className="mt-1 text-[13.5px] text-[var(--color-text-muted)]">{project.tagline}</p>}
+        <Button variant="ghost" onClick={() => (window.location.href = `/api/projects/${projectId}/export`)}>
+          Export
+        </Button>
       </div>
 
       <div className="mx-auto grid max-w-5xl grid-cols-1 gap-6 px-8 py-7 lg:grid-cols-[1fr_320px]">
@@ -169,6 +209,70 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                     <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
                       <span className="truncate text-[13.5px] text-[var(--color-text)]">{c.title}</span>
                       <IconChevronRight className="shrink-0 text-[var(--color-text-faint)]" />
+                    </Panel>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Agents */}
+          <section>
+            <div className="mb-2.5 flex items-center justify-between">
+              <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                Agents
+              </h2>
+              <Button variant="ghost" onClick={() => setAgentFormOpen((v) => !v)}>
+                <IconPlus /> Pursue an objective
+              </Button>
+            </div>
+            {agentFormOpen && (
+              <Panel className="mb-3 px-4 py-4">
+                <Label>Objective</Label>
+                <Textarea
+                  value={objectiveDraft}
+                  onChange={(e) => setObjectiveDraft(e.target.value)}
+                  rows={3}
+                  className="mb-3"
+                  placeholder="Investigate whether X is defensible and produce a report…"
+                />
+                <p className="mb-3 text-[12px] text-[var(--color-text-muted)]">
+                  The Agent will plan, research (using the archive and a calculator), draft, critique itself,
+                  revise, and save the result as an artifact in this Project. You can watch it work and stop
+                  it at any point.
+                </p>
+                {agentError && (
+                  <div className="mb-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-bg)] px-3 py-2 text-[12.5px] text-[var(--color-text)]">
+                    {agentError}
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setAgentFormOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button variant="accent" onClick={launchAgent} disabled={!objectiveDraft.trim() || launchingAgent}>
+                    {launchingAgent ? "Starting…" : "Start Agent"}
+                  </Button>
+                </div>
+              </Panel>
+            )}
+            {agentRuns.length === 0 && !agentFormOpen ? (
+              <EmptyState
+                title="No Agents run yet"
+                description="An Agent is more autonomous than a Skill — give it an objective and it pursues it using tools and models on your behalf."
+              />
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {agentRuns.map((a) => (
+                  <Link key={a.id} href={`/agents/runs/${a.id}`}>
+                    <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
+                      <span className="truncate text-[13.5px] text-[var(--color-text)]">{a.objective}</span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Tag tone={a.status === "running" || a.status === "stopping" ? "accent" : "default"}>
+                          {a.status}
+                        </Tag>
+                        <IconChevronRight className="text-[var(--color-text-faint)]" />
+                      </div>
                     </Panel>
                   </Link>
                 ))}
