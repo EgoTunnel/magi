@@ -127,6 +127,11 @@ CREATE TABLE IF NOT EXISTS model_roles (
   model_id TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS role_reasoning_effort (
+  role TEXT PRIMARY KEY,
+  effort TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_runs (
   id TEXT PRIMARY KEY,
   project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
@@ -178,8 +183,34 @@ CREATE TABLE IF NOT EXISTS project_connections (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS usage_events (
+  id TEXT PRIMARY KEY,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  source TEXT NOT NULL,
+  source_id TEXT,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  role TEXT,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL,
+  created_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   kind, ref_id, project_id, title, content, created_at
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  kind TEXT NOT NULL,
+  ref_id TEXT NOT NULL,
+  project_id TEXT,
+  model TEXT NOT NULL,
+  title TEXT NOT NULL,
+  snippet TEXT NOT NULL,
+  vector BLOB NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (kind, ref_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);
@@ -193,9 +224,29 @@ CREATE INDEX IF NOT EXISTS idx_style_guides_project ON style_guides(project_id);
 CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
 CREATE INDEX IF NOT EXISTS idx_images_project ON images(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_connections_source ON project_connections(source_project_id);
+CREATE INDEX IF NOT EXISTS idx_usage_events_project ON usage_events(project_id);
+CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_embeddings_project ON embeddings(project_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
 `;
 
 db.exec(SCHEMA);
+
+// Columns added after initial release — CREATE TABLE IF NOT EXISTS above
+// doesn't retrofit existing databases, so new columns are migrated here.
+// SQLite has no ADD COLUMN IF NOT EXISTS; the try/catch is the idiomatic
+// way to make this safe to run on every startup.
+function addColumnIfMissing(table: string, column: string, definition: string) {
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  } catch (err) {
+    if (!(err instanceof Error) || !/duplicate column name/i.test(err.message)) throw err;
+  }
+}
+
+addColumnIfMissing("skills", "allowed_tools", "TEXT");
+addColumnIfMissing("agent_runs", "allowed_tools", "TEXT");
+addColumnIfMissing("council_runs", "mode", "TEXT NOT NULL DEFAULT 'independent'");
 
 export function nowIso() {
   return new Date().toISOString();

@@ -91,28 +91,107 @@ src/
   tool calls made).
 - **§20–21 Memory** — global + Project-scoped, deliberate promotion only (never automatic).
 - **§22–24 Archive & search** — SQLite FTS5 full-text search, plus "Ask my archive" (search + synthesize
-  with citations). **Keyword search, not semantic/embedding search** — see gaps below.
+  with citations). **§23 semantic search**: the Archive page's "Search" mode now has a Wording/Meaning
+  toggle — Meaning embeds the query via OpenRouter (`src/lib/models/openrouter.ts` `embedText()`) and
+  ranks stored vectors by cosine similarity, computed in JS over a plain `embeddings` table (brute
+  force, not a vector index — appropriate at personal-archive scale). Every write that makes content
+  searchable already funnels through one function, `indexUpsert()` (`src/lib/searchIndex.ts`), so
+  embedding generation hooks in there once, fire-and-forget, and needed zero changes at any of its
+  ~15 call sites. New content is embedded automatically going forward; a "Build index" button in
+  Settings backfills everything older. **OpenRouter's `/models` catalog does not list embedding-capable
+  models** (confirmed by direct testing — unlike chat/image models), so the embedding-model choice in
+  Settings is a short, hand-verified list (`OPENROUTER_EMBEDDING_MODELS`), not a live dropdown.
+  `search_archive` (the tool models call) and `POST /api/archive/ask` deliberately still use keyword
+  FTS only — rewiring model-facing retrieval to semantic search was left as a deliberate follow-up, not
+  a side effect of this pass.
 - **§25–26 Cross-Project intelligence** — `search_archive` tool with a `scope: this_project | all` param
   gated by a Settings toggle (§25), and the standalone Connections feature for proactive discovery (§26).
 - **§27–31 Model independence** — provider abstraction (`ModelProvider` interface), two providers live,
-  role-based assignment, capability-aware requests. **No cost visibility (§31) at all** — see gaps.
+  role-based assignment, capability-aware requests. **§31 cost visibility**: every model call (across
+  conversations, Agents, Councils, Connections, and archive questions) is logged to a `usage_events`
+  table with token counts, surfaced in Settings ("Usage & cost") and the status bar. Cost in dollars is
+  automatic for OpenRouter (from its own live pricing catalog); Anthropic exposes no pricing API, so its
+  cost only appears once the user enters a rate in Settings — tokens are always shown regardless.
+  **§29 automatic model selection**: conversations can be set to "Auto" instead of a fixed role — an
+  actual (cheap) classification model call, `classifyModelRole()` in `src/lib/models/registry.ts`, picks
+  the best-fit role per turn rather than a keyword heuristic, then falls through the normal
+  `modelForRole` path unchanged. Scoped to conversations only: Agent pipeline stages and Council roles
+  already get task-appropriate routing by construction (see §38-39/§40-45 below), so a classifier would
+  add nothing there. Must never break a turn — any failure (bad reply, no key, network error) falls back
+  to `"default"`. **Real bug found and fixed live**: the classifier's first version used `maxTokens: 10`
+  and silently misclassified everything as `"default"`, because the assigned "fast" model
+  (`qwen/qwen3.8-flash`) has *mandatory* reasoning it can't be told to skip and spent the entire 10-token
+  budget on hidden reasoning, never reaching the actual word — the exact failure class already documented
+  below under "Lessons learned" #1, now reproduced with a fresh model. Fixed by raising `maxTokens` to
+  300 (cost is a fraction of a cent either way) and matching role ids by substring rather than exact
+  string equality, since models don't reliably reply with the bare id even when told to.
+  **Reasoning effort is now user-configurable**: `role_reasoning_effort` (a table shaped exactly like
+  `model_roles`) backs `getReasoningEffortAssignments()`/`setReasoningEffortForRole()` in `registry.ts`;
+  Settings → Model roles gets a second dropdown per role, next to the model picker. The previous
+  hardcoded `ROLE_REASONING_EFFORT` map is now only the *fallback default* (`DEFAULT_ROLE_REASONING_EFFORT`
+  in `types.ts`) for a role nobody's explicitly touched — every one of the five call sites that used to
+  read that object directly (`chat/route.ts`, `agent.ts`, `council.ts`, `connections.ts`,
+  `archive/ask/route.ts`) now calls `reasoningEffortForRole(role)` instead, so nothing had to change
+  about how the value gets *used*, only where it comes from. Only takes effect for OpenRouter-assigned
+  models — Anthropic's provider doesn't wire up an equivalent control, and the Settings copy says so.
 - **§32–34 Tools & permissions** — real tool layer (`search_archive`, `calculator`), executed by Magi
-  never the model. **Permissions are just the one cross-Project toggle** — no granular per-Skill/
-  per-Agent permission system (§34).
+  never the model. **§34 granular permissions**: one chokepoint, `resolveTools()` in
+  `src/lib/tools/registry.ts`, that every caller (conversations, Agents, Councils, Connections) now goes
+  through instead of the raw tool list. A global per-tool on/off toggle in Settings applies everywhere;
+  Skills get a per-entity allowlist (set at creation, since Skills have no edit flow yet) that can only
+  narrow past the global list, never widen it; Agent runs get the same, chosen per-launch since Agents
+  have no persistent template to attach permissions to. `executeTool()` also enforces the resolved
+  allowlist itself, not just by omission from what the model is offered, in case a model requests a tool
+  it wasn't given. **The "ask before doing X" confirmation flow from §34 was deliberately not built** —
+  both current tools are read-only with no side effects, so there is nothing yet for a confirmation
+  dialog to actually gate; building one now would be confirming a hypothetical future write-tool, i.e.
+  exactly the kind of facade this codebase's own philosophy rejects.
 - **§35–37 Skills** — persistent, global or Project-scoped, three starters offered.
 - **§38–39 Agents** — full pipeline, fire-and-forget background execution, live polling, stoppable
   between steps.
-- **§40–45 Councils** — Independent Analysis / Critique / Synthesis modes implemented as one fixed
-  pipeline; persistent Council configs with custom roles; disagreement explicitly preserved and shown.
-  **Debate and Red Team modes from §42 are not separately implemented** — only the Independent
-  Analysis→Critique→Synthesis flow exists.
+- **§40–45 Councils** — persistent Council configs with custom roles; disagreement explicitly preserved
+  and shown. **§42 now has three selectable modes**, not one fixed pipeline: Independent Analysis
+  (analysis → critique → synthesis, the original flow, extracted verbatim into
+  `runIndependentAnalysis()`), **Debate** (`runDebate()`: opening → one rebuttal round → synthesis,
+  exactly 2 roles — pairwise only, since N-way debate is real separate complexity the vision text
+  doesn't imply), and **Red Team** (`runRedTeam()`: proposal → attack → defense → synthesis, 1 proposer
+  + 1-or-more attackers). Mode is a per-run choice in `src/app/councils/CouncilsClient.tsx`, not baked
+  into a saved Council — the same role list (default or saved) can run through any mode. Role-count
+  requirements are validated in `POST /api/councils/run` with a clear 400, echoed client-side so the
+  "Deliberate" button disables before the request even goes out. All three modes share the same
+  `completeAs()` call helper in `src/lib/council.ts` (model resolution, tool resolution, reasoning
+  effort, usage recording) and the same synthesis structure (`Consensus` / `Key disagreement` /
+  `Synthesis`) — **neither Debate nor Red Team's synthesizer ever declares a winner**, per Product
+  Vision §44; Debate characterizes *why* the two sides disagree (factual vs. values-based vs.
+  missing-information) and Red Team assesses which attacks actually landed against the defense, not
+  "attacker wins" / "proposer wins." Verified live end-to-end for both new modes, including confirming
+  the defense stage's prompt actually contains the attack content (real engagement, not a re-answer).
 - **§46–48 Documents & Artifacts** — Project documents (plain text), artifacts with version chains
   (`parent_id` linking).
 - **§51–57 Image Studio** — real generation via OpenRouter multimodal models, Style Guides, Characters
   with reference images, variations. **No Brand Libraries (§55)** distinct from Style Guides/Characters.
-- **§59–63 Interoperability & portability** — Project export/import (Magi's own JSON format only —
-  **no import from other AI products' export formats**, §63).
-- **§74 The Magi Mark** — a simple three-converging-lines glyph, used as the sidebar logo and favicon.
+- **§59–63 Interoperability & portability** — Project export/import (Magi's own JSON format).
+  **§63 import from other AI systems**: `POST /api/projects/import` now also accepts a ChatGPT or
+  Claude `conversations.json` (from each vendor's own data-export feature) alongside Magi's own format,
+  detected structurally (`mapping`+`current_node` → ChatGPT, `chat_messages` → Claude — see
+  `src/lib/importers/detect.ts`), not by file extension or a format picker. Each gets its own parser
+  (`src/lib/importers/chatgpt.ts`, `claude.ts`) that converts straight into the existing `ExportBundle`
+  shape as one new "catch-all" Project, so `importProject()` itself needed no new data path — only two
+  new producers of the type it already accepted. ChatGPT's export is a tree (`mapping`) to support
+  edits/regenerations; the parser walks **backward** from `current_node` to the root rather than forward
+  from the root, since that pointer unambiguously names the active branch — forward traversal would have
+  to guess which sibling of an edited message was kept. Verified against a synthetic fixture with a real
+  edit (two branches from one parent) to confirm the stale branch is correctly discarded, not the live
+  one. Deliberately out of scope: no ZIP handling (user extracts and points at `conversations.json`
+  directly — consistent with this codebase's pattern of avoiding new dependencies elsewhere, e.g.
+  embeddings uses brute-force JS over a real vector index), no images/attachments (text only, matching
+  Magi's `Message` schema), no ChatGPT tool/plugin/browsing turns (only user/assistant text — tool nodes
+  are skipped, not garbled into a message). **A real bug was caught and fixed while building this**: see
+  "Lessons learned" below — bulk imports were about to fire one background embedding request per message.
+- **§74 The Magi Mark** — `src/components/MagiMark.tsx`: two verticals plus a diagonal chevron on a
+  24×24 grid, with deliberate gaps at both shoulders so the three strokes read as distinct before
+  resolving into an M. Uses `currentColor` (no hardcoded hex), shared by the sidebar, the mobile top
+  bar, and `src/app/icon.svg` (favicon/app icon).
 - **§67–76 Visual design** — the aesthetic system is real and consistently applied: light/dark themes,
   typography-led, no gradients/glassmorphism, restrained motion. **No formal accessibility audit (§76)**
   — focus states and `prefers-reduced-motion` are respected, but nothing beyond that has been verified.
@@ -125,32 +204,31 @@ src/
 
 Roughly in order of how much they'd matter to a real user:
 
-1. **Cost visibility (§31)** — no token/spend tracking anywhere. With OpenRouter proxying dozens of
-   paid models, a user could rack up real cost with no visibility inside the app. Worth prioritizing.
-2. **Semantic/embedding search (§23)** — Archive search is FTS5 keyword matching. "Search by meaning"
-   as the vision describes would need an embeddings pipeline (a vector column, an embedding model call
-   on write, cosine-similarity search on read). Not started.
-3. **Granular permissions (§34)** — only the cross-Project search toggle exists. No per-Skill,
-   per-Agent, or per-tool permission system; no "ask before doing X" confirmation flow for anything.
-4. **Automatic/intelligent model selection (§29)** — the user always picks. No logic recommends a model
-   based on task type.
-5. **Reasoning effort is not user-configurable** — `ROLE_REASONING_EFFORT` in `src/lib/models/types.ts`
-   is a hardcoded map (reasoner/synthesizer → high, researcher → medium, else → low). Given the
-   capability system now in place, exposing this as a per-role Settings control would be a natural,
-   fairly small next step.
-6. **Import from other AI systems (§63)** — export/import only round-trips Magi's own format. No
-   ChatGPT/Claude-export ingestion.
-7. **Brand Libraries (§55)** — distinct from Style Guides/Characters in the vision; not built.
-8. **Debate / Red Team Council modes (§42)** — only Independent Analysis→Critique→Synthesis exists.
-9. **No automated tests.** Every feature in this codebase has been verified by manually driving the
+1. **Brand Libraries (§55)** — distinct from Style Guides/Characters in the vision; not built.
+2. **No automated tests.** Every feature in this codebase has been verified by manually driving the
    browser and hitting API routes directly during development sessions. There is real risk of silent
    regressions. See "How this was actually tested" below for the closest thing to a test plan that
    exists, and consider it a starting point for real tests.
-10. **Single-user, no auth.** Deliberate for now (personal, local-first), but worth being explicit: if
-    remote/multi-device access is ever wanted, auth needs to be designed in, and the fire-and-forget
-    background-job pattern (below) doesn't survive a move to serverless hosting as-is.
-11. **Mobile UI (§75) and accessibility audit (§76)** are both "not actively broken" but not built out
-    to the standard the vision describes.
+3. **Single-user, no auth.** Deliberate for now (personal, local-first), but worth being explicit: if
+   remote/multi-device access is ever wanted, auth needs to be designed in, and the fire-and-forget
+   background-job pattern (below) doesn't survive a move to serverless hosting as-is.
+4. **Mobile UI (§75) and accessibility audit (§76)** are both "not actively broken" but not built out
+   to the standard the vision describes.
+5. **No per-tool permissions for Councils** — every mode's "first look" stages (analysis / opening /
+   proposal+attack) get `search_archive`/`calculator`, later stages don't, but this is a fixed pattern
+   across all three modes, not something configurable per role like Skills and Agent runs now have.
+   Left out deliberately since the vision names Skills and Agents specifically, but worth a look if
+   Councils grow more tool-using stages.
+6. **No edit flow for Skills** — only create/delete. A Skill's tool allowlist (like everything else
+   about it) can only be set at creation time; changing it means delete and recreate.
+7. **Imported ChatGPT/Claude conversations land in one undifferentiated Project**, not auto-sorted by
+   topic — Magi has no conversation-move-between-Projects feature yet to make a smarter split useful,
+   and real auto-categorization is separate judgment-call work, not a side effect of import parsing.
+8. **No ZIP upload for foreign imports** — the user must extract the vendor's `.zip` and select
+   `conversations.json` directly. Deliberate (no new dependency), but worth reconsidering if it turns
+   out to be a real friction point.
+9. **Debate mode is pairwise only** — exactly 2 roles, no N-way debates or round-robin pairings. Not
+   implied by the Product Vision text, and real, separate complexity if ever wanted.
 
 ---
 
@@ -250,6 +328,41 @@ contract.
    re-save the OpenRouter key) before testing — the cache doesn't retroactively backfill new fields.
 7. **`better-sqlite3` is a native module.** It built fine here via a prebuilt binary for Node 22 on
    Windows; if it ever needs a rebuild (Node version change, different OS/arch), expect a node-gyp step.
+8. **OpenRouter's `/models` catalog does not list embedding models**, unlike chat and image models —
+   confirmed by direct testing: none of ~400 catalog entries advertise an `embeddings` output modality,
+   even though `POST /v1/embeddings` itself works fine when called with a known-good model id (verified
+   live: `openai/text-embedding-3-small`, `openai/text-embedding-3-large`, `google/gemini-embedding-001`,
+   `qwen/qwen3-embedding-8b` all return real vectors; guessed ids like `cohere/embed-v4.0` and
+   `mistralai/mistral-embed` 400'd as not existing — don't assume a plausible-looking id works without
+   testing it). Don't trust marketing/docs pages implying catalog-based discovery works the same way it
+   does for image models — verify against the live `/models` response before building a feature around
+   it. `OPENROUTER_EMBEDDING_MODELS` in `openrouter.ts` is therefore a short hardcoded list, not a live
+   fetch, and needs a human to add an entry (and verify it against the real endpoint) if OpenRouter adds
+   a genuinely new embedding model worth offering.
+9. **Lesson #1's bug class recurred, on a different model, with a much smaller budget** — the new
+   `classifyModelRole()` in `registry.ts` (automatic model selection, §29) first shipped with
+   `maxTokens: 10` since the expected reply is one short word. It silently misclassified *everything* as
+   `"default"`. Direct testing showed why: the assigned "fast" model at the time (`qwen/qwen3.8-flash`)
+   has mandatory reasoning it can't be told to skip, and spent the entire 10-token budget on hidden
+   reasoning without ever reaching the answer. Fixed by raising the budget to 300 (still a fraction of a
+   cent) and matching role ids by substring instead of exact string equality. **The general lesson: never
+   assume a "tiny expected output" task can get a tiny token budget** — mandatory-reasoning models pay
+   the reasoning tax regardless of how short the final answer will be, and a starved budget produces a
+   confident-looking wrong answer (silent fallback), not an obvious error. Verify any new small/cheap
+   model call against a real reasoning-mandatory model before trusting a low `maxTokens` guess.
+10. **A per-row background side effect that's fine for interactive use can be a bulk-write disaster** —
+    caught while building foreign-import support, not after shipping it. `indexUpsert()`
+    (`src/lib/searchIndex.ts`) fires a fire-and-forget embedding request per call, which is exactly the
+    right design for one message at a time as a user actually converses. Nobody had reasoned about what
+    it does inside a loop: `importProject()` (`src/lib/portability.ts`) calls it once per message, and a
+    real ChatGPT export can be tens of thousands of messages — that would have been tens of thousands of
+    concurrent, unthrottled requests fired at OpenRouter in one HTTP request, with no queue, no backoff,
+    no user-visible progress. Fixed with a `skipEmbedding` opt-out on the bulk path, pointing at the
+    existing "Build index" backfill (already batched/rate-limited) to index afterward instead. **The
+    general lesson: before adding a background side effect to a function that's already called from a
+    loop somewhere else in the codebase, grep for its other call sites and check whether any of them are
+    bulk paths** — a fire-and-forget hook is a latent multiplier, not just a per-call cost, and it's easy
+    to add it while only thinking about the interactive call site you're looking at.
 
 ---
 

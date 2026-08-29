@@ -1,10 +1,12 @@
 import type { ToolSpec } from "@/lib/models/types";
 import { search } from "@/lib/searchIndex";
-import { getCrossProjectSearchEnabled } from "@/lib/settings";
+import { getCrossProjectSearchEnabled, getDisabledTools } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
+import { getSkill } from "@/lib/repo/skills";
 
 export interface ToolContext {
   projectId?: string | null;
+  allowedToolNames?: Set<string>;
 }
 
 // The full set of tools Magi currently offers a model mid-turn. This is a
@@ -43,8 +45,37 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ];
 
+// The one place that decides which tools a model is actually offered.
+// Every caller — conversations, Agents, Councils, Connections — goes through
+// this instead of the raw TOOL_SPECS constant, so a global on/off toggle in
+// Settings applies everywhere tools are used, not just wherever someone
+// remembered to check it. Permissions can only narrow past the global list,
+// never widen beyond it: a Skill or Agent-run allowlist that names a
+// globally-disabled tool still won't get it.
+export function resolveTools(opts: { skillId?: string | null; allowedNames?: string[] | null } = {}): ToolSpec[] {
+  const disabled = new Set(getDisabledTools());
+  let specs = TOOL_SPECS.filter((t) => !disabled.has(t.name));
+
+  if (opts.skillId) {
+    const skill = getSkill(opts.skillId);
+    if (skill?.allowed_tools) {
+      const allowed = new Set(skill.allowed_tools);
+      specs = specs.filter((t) => allowed.has(t.name));
+    }
+  }
+  if (opts.allowedNames) {
+    const allowed = new Set(opts.allowedNames);
+    specs = specs.filter((t) => allowed.has(t.name));
+  }
+  return specs;
+}
+
 export async function executeTool(name: string, rawInput: unknown, ctx: ToolContext): Promise<string> {
   try {
+    if (ctx.allowedToolNames && !ctx.allowedToolNames.has(name)) {
+      return `Error: the tool '${name}' is not permitted in this context.`;
+    }
+
     if (name === "calculator") {
       const expr = (rawInput as { expression?: string } | undefined)?.expression;
       if (!expr) return "Error: no expression given.";

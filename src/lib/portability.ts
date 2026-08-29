@@ -91,87 +91,102 @@ export function exportProject(projectId: string): ExportBundle {
 // Import always creates a fresh Project with newly minted ids — never
 // reuses ids from the export, so it's always safe to import into the same
 // Magi install the export came from, or a different one entirely.
+//
+// Wrapped in one transaction: atomic (no half-imported Project left behind
+// on failure partway through) and, at real scale — a foreign chat export can
+// be thousands of messages — dramatically faster than better-sqlite3's
+// default of one implicit transaction per INSERT.
+//
+// Every indexUpsert() below passes skipEmbedding: true. Without it, a large
+// import would fire one background embedding request per message — for a
+// foreign export that's potentially tens of thousands of concurrent,
+// unthrottled requests at OpenRouter. Use the Settings "Build index" backfill
+// afterward instead; it's already batched and rate-limited for exactly this.
 export function importProject(bundle: ExportBundle): { id: string } {
-  const project = createProject({
-    name: bundle.project.name,
-    tagline: bundle.project.tagline ?? undefined,
-    purpose: bundle.project.purpose ?? undefined,
-    instructions: bundle.project.instructions ?? undefined,
-  });
+  return db.transaction(() => {
+    const project = createProject({
+      name: bundle.project.name,
+      tagline: bundle.project.tagline ?? undefined,
+      purpose: bundle.project.purpose ?? undefined,
+      instructions: bundle.project.instructions ?? undefined,
+    });
 
-  for (const conv of bundle.conversations ?? []) {
-    const convId = newId("conv");
-    const ts = conv.createdAt || nowIso();
-    db.prepare(
-      `INSERT INTO conversations (id, project_id, title, status, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', ?, ?)`
-    ).run(convId, project.id, conv.title, ts, ts);
-    indexUpsert({ kind: "conversation", refId: convId, projectId: project.id, title: conv.title, content: "" });
-
-    for (const m of conv.messages ?? []) {
-      const msgId = newId("msg");
+    for (const conv of bundle.conversations ?? []) {
+      const convId = newId("conv");
+      const ts = conv.createdAt || nowIso();
       db.prepare(
-        `INSERT INTO messages (id, conversation_id, role, content, model, provenance, created_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?)`
-      ).run(msgId, convId, m.role, m.content, m.model, m.createdAt || ts);
+        `INSERT INTO conversations (id, project_id, title, status, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', ?, ?)`
+      ).run(convId, project.id, conv.title, ts, ts);
+      indexUpsert({ kind: "conversation", refId: convId, projectId: project.id, title: conv.title, content: "", skipEmbedding: true });
+
+      for (const m of conv.messages ?? []) {
+        const msgId = newId("msg");
+        db.prepare(
+          `INSERT INTO messages (id, conversation_id, role, content, model, provenance, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, ?)`
+        ).run(msgId, convId, m.role, m.content, m.model, m.createdAt || ts);
+        indexUpsert({
+          kind: "message",
+          refId: msgId,
+          projectId: project.id,
+          title: `${m.role} message in ${conv.title}`,
+          content: m.content,
+          skipEmbedding: true,
+        });
+      }
+    }
+
+    for (const mem of bundle.memory ?? []) {
+      const id = newId("mem");
+      db.prepare(
+        `INSERT INTO memory (id, scope, project_id, content, source, status, created_at)
+         VALUES (?, 'project', ?, ?, 'import', 'established', ?)`
+      ).run(id, project.id, mem.content, mem.createdAt || nowIso());
+      indexUpsert({ kind: "memory", refId: id, projectId: project.id, title: "project memory", content: mem.content, skipEmbedding: true });
+    }
+
+    for (const doc of bundle.documents ?? []) {
+      const id = newId("doc");
+      const ts = doc.createdAt || nowIso();
+      db.prepare(
+        `INSERT INTO documents (id, project_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(id, project.id, doc.title, doc.content, ts, ts);
+      indexUpsert({ kind: "document", refId: id, projectId: project.id, title: doc.title, content: doc.content, skipEmbedding: true });
+    }
+
+    for (const art of bundle.artifacts ?? []) {
+      let parentId: string | null = null;
+      const versions = [...(art.versions ?? [])].sort((a, b) => a.version - b.version);
+      for (const v of versions) {
+        const id = newId("art");
+        db.prepare(
+          `INSERT INTO artifacts (id, project_id, conversation_id, title, type, content, version, parent_id, created_at)
+           VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`
+        ).run(id, project.id, art.title, art.type, v.content, v.version, parentId, v.createdAt || nowIso());
+        if (v === versions[versions.length - 1]) {
+          indexUpsert({ kind: "artifact", refId: id, projectId: project.id, title: art.title, content: v.content, skipEmbedding: true });
+        }
+        parentId = id;
+      }
+    }
+
+    for (const skill of bundle.skills ?? []) {
+      const id = newId("skl");
+      db.prepare(
+        `INSERT INTO skills (id, scope, project_id, name, description, instructions, created_at)
+         VALUES (?, 'project', ?, ?, ?, ?, ?)`
+      ).run(id, project.id, skill.name, skill.description, skill.instructions, skill.createdAt || nowIso());
       indexUpsert({
-        kind: "message",
-        refId: msgId,
+        kind: "skill",
+        refId: id,
         projectId: project.id,
-        title: `${m.role} message in ${conv.title}`,
-        content: m.content,
+        title: skill.name,
+        content: `${skill.description ?? ""}\n${skill.instructions}`,
+        skipEmbedding: true,
       });
     }
-  }
 
-  for (const mem of bundle.memory ?? []) {
-    const id = newId("mem");
-    db.prepare(
-      `INSERT INTO memory (id, scope, project_id, content, source, status, created_at)
-       VALUES (?, 'project', ?, ?, 'import', 'established', ?)`
-    ).run(id, project.id, mem.content, mem.createdAt || nowIso());
-    indexUpsert({ kind: "memory", refId: id, projectId: project.id, title: "project memory", content: mem.content });
-  }
-
-  for (const doc of bundle.documents ?? []) {
-    const id = newId("doc");
-    const ts = doc.createdAt || nowIso();
-    db.prepare(
-      `INSERT INTO documents (id, project_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(id, project.id, doc.title, doc.content, ts, ts);
-    indexUpsert({ kind: "document", refId: id, projectId: project.id, title: doc.title, content: doc.content });
-  }
-
-  for (const art of bundle.artifacts ?? []) {
-    let parentId: string | null = null;
-    const versions = [...(art.versions ?? [])].sort((a, b) => a.version - b.version);
-    for (const v of versions) {
-      const id = newId("art");
-      db.prepare(
-        `INSERT INTO artifacts (id, project_id, conversation_id, title, type, content, version, parent_id, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)`
-      ).run(id, project.id, art.title, art.type, v.content, v.version, parentId, v.createdAt || nowIso());
-      if (v === versions[versions.length - 1]) {
-        indexUpsert({ kind: "artifact", refId: id, projectId: project.id, title: art.title, content: v.content });
-      }
-      parentId = id;
-    }
-  }
-
-  for (const skill of bundle.skills ?? []) {
-    const id = newId("skl");
-    db.prepare(
-      `INSERT INTO skills (id, scope, project_id, name, description, instructions, created_at)
-       VALUES (?, 'project', ?, ?, ?, ?, ?)`
-    ).run(id, project.id, skill.name, skill.description, skill.instructions, skill.createdAt || nowIso());
-    indexUpsert({
-      kind: "skill",
-      refId: id,
-      projectId: project.id,
-      title: skill.name,
-      content: `${skill.description ?? ""}\n${skill.instructions}`,
-    });
-  }
-
-  return { id: project.id };
+    return { id: project.id };
+  })();
 }

@@ -11,10 +11,15 @@ interface Skill {
   name: string;
   description: string | null;
   instructions: string;
+  allowed_tools: string[] | null;
 }
 interface Project {
   id: string;
   name: string;
+}
+interface ToolInfo {
+  name: string;
+  description: string;
 }
 
 const STARTER_SKILLS = [
@@ -47,13 +52,29 @@ export function SkillsClient() {
   const [instructions, setInstructions] = useState("");
   const [scope, setScope] = useState<"global" | "project">("global");
   const [projectId, setProjectId] = useState("");
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [allowedTools, setAllowedTools] = useState<string[] | null>(null);
 
   async function load() {
-    const [skillsRes, projRes] = await Promise.all([fetch("/api/skills"), fetch("/api/projects")]);
+    const [skillsRes, projRes, settingsRes] = await Promise.all([
+      fetch("/api/skills"),
+      fetch("/api/projects"),
+      fetch("/api/settings"),
+    ]);
     setSkills((await skillsRes.json()).skills);
     const projData = await projRes.json();
     setProjects(projData.projects);
     if (projData.projects.length) setProjectId((p) => p || projData.projects[0].id);
+    setTools((await settingsRes.json()).tools ?? []);
+  }
+
+  function toggleAllowedTool(name: string) {
+    setAllowedTools((prev) => {
+      // null means "no restriction" — start narrowing from the full set on
+      // the first checkbox interaction rather than from empty.
+      const base = prev ?? tools.map((t) => t.name);
+      return base.includes(name) ? base.filter((t) => t !== name) : [...base, name];
+    });
   }
 
   useEffect(() => {
@@ -71,11 +92,13 @@ export function SkillsClient() {
         name,
         description,
         instructions,
+        allowedTools,
       }),
     });
     setName("");
     setDescription("");
     setInstructions("");
+    setAllowedTools(null);
     setFormOpen(false);
     load();
   }
@@ -139,6 +162,26 @@ export function SkillsClient() {
             className="mb-3"
             placeholder={"1. First step\n2. Second step\n…"}
           />
+          {tools.length > 0 && (
+            <div className="mb-3">
+              <Label>Tools allowed</Label>
+              <div className="flex flex-wrap gap-3">
+                {tools.map((t) => (
+                  <label key={t.name} className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-text-muted)] font-technical">
+                    <input
+                      type="checkbox"
+                      checked={allowedTools === null || allowedTools.includes(t.name)}
+                      onChange={() => toggleAllowedTool(t.name)}
+                    />
+                    {t.name}
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1 text-[11.5px] text-[var(--color-text-muted)]">
+                Leave everything checked for no restriction beyond what&apos;s globally enabled in Settings.
+              </p>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setFormOpen(false)}>
               Cancel

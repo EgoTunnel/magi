@@ -72,11 +72,13 @@ export function deleteCouncil(id: string) {
   db.prepare(`DELETE FROM councils WHERE id = ?`).run(id);
 }
 
+export type CouncilMode = "independent" | "debate" | "redTeam";
+
 export interface CouncilTranscriptEntry {
   role: string;
   modelRole: string;
   modelId: string;
-  stage: "analysis" | "critique" | "synthesis";
+  stage: "analysis" | "critique" | "synthesis" | "opening" | "rebuttal" | "proposal" | "attack" | "defense";
   content: string;
   toolCalls?: { name: string; input: unknown; result: string }[];
 }
@@ -86,6 +88,7 @@ export interface CouncilRun {
   council_id: string | null;
   project_id: string | null;
   question: string;
+  mode: CouncilMode;
   transcript: CouncilTranscriptEntry[];
   consensus: string | null;
   disagreement: string | null;
@@ -99,6 +102,7 @@ interface CouncilRunRow {
   council_id: string | null;
   project_id: string | null;
   question: string;
+  mode: CouncilMode;
   transcript: string;
   consensus: string | null;
   disagreement: string | null;
@@ -115,13 +119,14 @@ export function createCouncilRun(input: {
   councilId?: string;
   projectId?: string;
   question: string;
+  mode?: CouncilMode;
 }): CouncilRun {
   const id = newId("run");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO council_runs (id, council_id, project_id, question, transcript, status, created_at)
-     VALUES (?, ?, ?, ?, '[]', 'running', ?)`
-  ).run(id, input.councilId ?? null, input.projectId ?? null, input.question, ts);
+    `INSERT INTO council_runs (id, council_id, project_id, question, mode, transcript, status, created_at)
+     VALUES (?, ?, ?, ?, ?, '[]', 'running', ?)`
+  ).run(id, input.councilId ?? null, input.projectId ?? null, input.question, input.mode ?? "independent", ts);
   return getCouncilRun(id)!;
 }
 

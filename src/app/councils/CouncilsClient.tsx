@@ -33,6 +33,8 @@ interface RoleInfo {
   label: string;
 }
 
+type CouncilMode = "independent" | "debate" | "redTeam";
+
 const DEFAULT_ROLES: CouncilRole[] = [
   {
     name: "Reasoner",
@@ -51,6 +53,55 @@ const DEFAULT_ROLES: CouncilRole[] = [
   },
 ];
 
+// Deliberately topic-agnostic — the question varies, these two stances don't
+// presuppose which side of it is "for" or "against."
+const DEBATE_DEFAULT_ROLES: CouncilRole[] = [
+  {
+    name: "Advocate",
+    modelRole: "reasoner",
+    systemPrompt: "You are the Advocate on a Magi Council Debate. Argue for the strongest, most defensible position on the question — make the best possible case for it.",
+  },
+  {
+    name: "Skeptic",
+    modelRole: "critic",
+    systemPrompt: "You are the Skeptic on a Magi Council Debate. Argue against that position, or for a genuinely different one. Raise the strongest doubts and counter-considerations you can.",
+  },
+];
+
+const RED_TEAM_DEFAULT_ROLES: CouncilRole[] = [
+  {
+    name: "Proposer",
+    modelRole: "reasoner",
+    systemPrompt: "You are the Proposer on a Magi Council Red Team exercise. Answer the question directly and substantively — this will be attacked, so give your real best answer, not a hedge.",
+  },
+  {
+    name: "Red Team",
+    modelRole: "critic",
+    systemPrompt: "You are the Red Team on a Magi Council. Attack the Proposer's answer aggressively — find every weakness, edge case, and flaw you can. Do not be diplomatic about it.",
+  },
+];
+
+const MODE_LABEL: Record<CouncilMode, string> = {
+  independent: "Independent Analysis",
+  debate: "Debate",
+  redTeam: "Red Team",
+};
+
+function defaultRolesForMode(mode: CouncilMode): CouncilRole[] {
+  if (mode === "debate") return DEBATE_DEFAULT_ROLES;
+  if (mode === "redTeam") return RED_TEAM_DEFAULT_ROLES;
+  return DEFAULT_ROLES;
+}
+
+// Mirrors the validation in POST /api/councils/run — this is a client-side
+// echo for a faster/clearer UI response, not a replacement for the server
+// check.
+function modeRoleError(mode: CouncilMode, roleCount: number): string | null {
+  if (mode === "debate" && roleCount !== 2) return "Debate mode needs exactly 2 roles.";
+  if (mode === "redTeam" && roleCount < 2) return "Red Team mode needs at least 2 roles.";
+  return null;
+}
+
 export function CouncilsClient() {
   const router = useRouter();
   const [councils, setCouncils] = useState<Council[]>([]);
@@ -61,6 +112,7 @@ export function CouncilsClient() {
   const [question, setQuestion] = useState("");
   const [projectId, setProjectId] = useState("");
   const [selectedCouncilId, setSelectedCouncilId] = useState<string>("__default");
+  const [mode, setMode] = useState<CouncilMode>("independent");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,9 +142,9 @@ export function CouncilsClient() {
     if (!question.trim()) return;
     setRunning(true);
     setError(null);
-    const payload: Record<string, unknown> = { question, projectId: projectId || undefined };
+    const payload: Record<string, unknown> = { question, projectId: projectId || undefined, mode };
     if (selectedCouncilId === "__default") {
-      payload.roles = DEFAULT_ROLES;
+      payload.roles = defaultRolesForMode(mode);
     } else {
       payload.councilId = selectedCouncilId;
     }
@@ -133,6 +185,12 @@ export function CouncilsClient() {
     load();
   }
 
+  const effectiveRoleCount =
+    selectedCouncilId === "__default"
+      ? defaultRolesForMode(mode).length
+      : councils.find((c) => c.id === selectedCouncilId)?.roles.length ?? 0;
+  const roleError = modeRoleError(mode, effectiveRoleCount);
+
   return (
     <div className="mx-auto max-w-2xl px-8 py-8">
       <section className="mb-10">
@@ -142,13 +200,26 @@ export function CouncilsClient() {
         <Panel className="px-5 py-5">
           <Label>Question</Label>
           <Textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3} placeholder="Put a substantial question to the Council…" className="mb-3" />
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="mb-3 flex flex-wrap gap-2">
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as CouncilMode)}
+              className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[13px] text-[var(--color-text)]"
+            >
+              {(Object.keys(MODE_LABEL) as CouncilMode[]).map((m) => (
+                <option key={m} value={m}>
+                  {MODE_LABEL[m]}
+                </option>
+              ))}
+            </select>
             <select
               value={selectedCouncilId}
               onChange={(e) => setSelectedCouncilId(e.target.value)}
               className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[13px] text-[var(--color-text)]"
             >
-              <option value="__default">Independent Analysis (Reasoner, Critic, Researcher)</option>
+              <option value="__default">
+                Default roles ({defaultRolesForMode(mode).map((r) => r.name).join(", ")})
+              </option>
               {councils.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -168,7 +239,10 @@ export function CouncilsClient() {
               ))}
             </select>
           </div>
-          <Button variant="accent" onClick={runCouncil} disabled={!question.trim() || running}>
+          {roleError && (
+            <p className="mb-3 text-[12px] text-[var(--color-text-muted)]">{roleError}</p>
+          )}
+          <Button variant="accent" onClick={runCouncil} disabled={!question.trim() || running || !!roleError}>
             {running ? "The Council is deliberating…" : "Deliberate"}
           </Button>
           {error && (

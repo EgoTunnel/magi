@@ -58,6 +58,10 @@ interface ConnectionRun {
   status: "running" | "complete" | "error";
   created_at: string;
 }
+interface ToolInfo {
+  name: string;
+  description: string;
+}
 
 export function ProjectDashboard({ projectId }: { projectId: string }) {
   const router = useRouter();
@@ -82,6 +86,15 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [objectiveDraft, setObjectiveDraft] = useState("");
   const [launchingAgent, setLaunchingAgent] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [tools, setTools] = useState<ToolInfo[]>([]);
+  const [agentAllowedTools, setAgentAllowedTools] = useState<string[] | null>(null);
+
+  function toggleAgentTool(name: string) {
+    setAgentAllowedTools((prev) => {
+      const base = prev ?? tools.map((t) => t.name);
+      return base.includes(name) ? base.filter((t) => t !== name) : [...base, name];
+    });
+  }
 
   const [otherProjects, setOtherProjects] = useState<OtherProject[]>([]);
   const [connectionRuns, setConnectionRuns] = useState<ConnectionRun[]>([]);
@@ -101,7 +114,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setInstructionsDraft(data.project.instructions ?? "");
     setPurposeDraft(data.project.purpose ?? "");
 
-    const [convRes, memRes, docRes, skillRes, artRes, agentRes, projRes, connRes] = await Promise.all([
+    const [convRes, memRes, docRes, skillRes, artRes, agentRes, projRes, connRes, settingsRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/conversations`),
       fetch(`/api/memory?scope=project&projectId=${projectId}`),
       fetch(`/api/documents?projectId=${projectId}`),
@@ -110,6 +123,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
       fetch(`/api/agents/runs?projectId=${projectId}`),
       fetch(`/api/projects`),
       fetch(`/api/connections/runs?projectId=${projectId}`),
+      fetch(`/api/settings`),
     ]);
     setConversations((await convRes.json()).conversations);
     const memData: MemoryItem[] = (await memRes.json()).memory;
@@ -121,6 +135,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     const allProjects: OtherProject[] = (await projRes.json()).projects;
     setOtherProjects(allProjects.filter((p) => p.id !== projectId));
     setConnectionRuns((await connRes.json()).runs);
+    setTools((await settingsRes.json()).tools ?? []);
   }
 
   useEffect(() => {
@@ -169,7 +184,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     const res = await fetch("/api/agents/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ objective: objectiveDraft, projectId }),
+      body: JSON.stringify({ objective: objectiveDraft, projectId, allowedTools: agentAllowedTools }),
     });
     setLaunchingAgent(false);
     if (res.status === 412) {
@@ -179,6 +194,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     }
     const data = await res.json();
     setObjectiveDraft("");
+    setAgentAllowedTools(null);
     setAgentFormOpen(false);
     router.push(`/agents/runs/${data.run.id}`);
   }
@@ -282,6 +298,23 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                   revise, and save the result as an artifact in this Project. You can watch it work and stop
                   it at any point.
                 </p>
+                {tools.length > 0 && (
+                  <div className="mb-3">
+                    <Label>Tools this run may use</Label>
+                    <div className="flex flex-wrap gap-3">
+                      {tools.map((t) => (
+                        <label key={t.name} className="flex items-center gap-1.5 text-[12.5px] text-[var(--color-text-muted)] font-technical">
+                          <input
+                            type="checkbox"
+                            checked={agentAllowedTools === null || agentAllowedTools.includes(t.name)}
+                            onChange={() => toggleAgentTool(t.name)}
+                          />
+                          {t.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {agentError && (
                   <div className="mb-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-bg)] px-3 py-2 text-[12.5px] text-[var(--color-text)]">
                     {agentError}

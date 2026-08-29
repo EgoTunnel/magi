@@ -28,6 +28,15 @@ export interface ModelCapabilities {
   reasoningMandatory: boolean;
   reasoningEfforts: ReasoningEffort[];
   maxCompletionTokens: number | null;
+  // Dollars per token, read from OpenRouter's own catalog (never guessed).
+  // Null when the model is free or pricing wasn't reported.
+  pricePerPromptToken: number | null;
+  pricePerCompletionToken: number | null;
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
 }
 
 // A tool Magi's model layer can call mid-turn. The model only ever sees
@@ -64,6 +73,11 @@ export interface CompleteOptions {
   // answer unless this is turned down; this is the real fix for that class
   // of failure, not just a bigger token budget.
   reasoningEffort?: ReasoningEffort;
+  // Out-param a provider pushes exactly one entry into after a call resolves —
+  // same shape as toolLog. Needed because stream()'s return type only ever
+  // carries yielded text chunks, not a final value, so usage has to leave via
+  // a side channel rather than a return value.
+  usage?: TokenUsage[];
 }
 
 export interface ModelProvider {
@@ -92,10 +106,16 @@ export const MODEL_ROLES = [
 
 export type ModelRoleId = (typeof MODEL_ROLES)[number]["id"];
 
+export const REASONING_EFFORTS: ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh", "max"];
+
 // Deeper roles get more room to think; everything else defaults to "low" at
 // the provider level, which is what most conversational and agentic turns
 // actually want — fast, direct answers rather than long hidden deliberation.
-export const ROLE_REASONING_EFFORT: Partial<Record<ModelRoleId, ReasoningEffort>> = {
+// This is only the *fallback* for a role with no explicit user assignment —
+// see getReasoningEffortAssignments() in registry.ts, which is what callers
+// should actually use. Only takes effect for OpenRouter-assigned models;
+// Anthropic's provider doesn't wire up an equivalent effort control.
+export const DEFAULT_ROLE_REASONING_EFFORT: Partial<Record<ModelRoleId, ReasoningEffort>> = {
   reasoner: "high",
   synthesizer: "high",
   researcher: "medium",

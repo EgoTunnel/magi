@@ -20,6 +20,9 @@ export interface AgentRun {
   status: AgentRunStatus;
   steps: AgentStep[];
   artifact_id: string | null;
+  // Null means "all globally-enabled tools" — Agents have no persistent
+  // template to attach permissions to, so this is chosen once at launch.
+  allowed_tools: string[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -31,21 +34,35 @@ interface AgentRunRow {
   status: AgentRunStatus;
   steps: string;
   artifact_id: string | null;
+  allowed_tools: string | null;
   created_at: string;
   updated_at: string;
 }
 
 function parse(row: AgentRunRow): AgentRun {
-  return { ...row, steps: JSON.parse(row.steps) as AgentStep[] };
+  let allowed_tools: string[] | null = null;
+  if (row.allowed_tools) {
+    try {
+      const parsed = JSON.parse(row.allowed_tools);
+      if (Array.isArray(parsed)) allowed_tools = parsed;
+    } catch {
+      // leave null — treat unparseable data as "no restriction"
+    }
+  }
+  return { ...row, steps: JSON.parse(row.steps) as AgentStep[], allowed_tools };
 }
 
-export function createAgentRun(input: { objective: string; projectId?: string | null }): AgentRun {
+export function createAgentRun(input: {
+  objective: string;
+  projectId?: string | null;
+  allowedTools?: string[] | null;
+}): AgentRun {
   const id = newId("agent");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO agent_runs (id, project_id, objective, status, steps, created_at, updated_at)
-     VALUES (?, ?, ?, 'running', '[]', ?, ?)`
-  ).run(id, input.projectId ?? null, input.objective, ts, ts);
+    `INSERT INTO agent_runs (id, project_id, objective, status, steps, allowed_tools, created_at, updated_at)
+     VALUES (?, ?, ?, 'running', '[]', ?, ?, ?)`
+  ).run(id, input.projectId ?? null, input.objective, input.allowedTools?.length ? JSON.stringify(input.allowedTools) : null, ts, ts);
   return getAgentRun(id)!;
 }
 

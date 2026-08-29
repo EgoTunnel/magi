@@ -92,15 +92,19 @@ export function ProjectsClient() {
 
   return (
     <div className="mx-auto max-w-3xl px-8 py-8">
-      <div className="mb-4 flex justify-end gap-2">
+      <div className="mb-1.5 flex justify-end gap-2">
         <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportFile} />
         <Button variant="default" onClick={() => fileInputRef.current?.click()} disabled={importing}>
-          {importing ? "Importing…" : "Import Project"}
+          {importing ? "Importing…" : "Import"}
         </Button>
         <Button variant="accent" onClick={() => setFormOpen((v) => !v)}>
           <IconPlus /> New Project
         </Button>
       </div>
+      <p className="mb-4 text-right text-[12px] text-[var(--color-text-muted)]">
+        Accepts a Magi Project export, or a ChatGPT/Claude <span className="font-technical">conversations.json</span>
+        {" "}— extract the .zip first if that&apos;s what you have.
+      </p>
 
       {importError && (
         <div className="mb-4 rounded-[4px] border border-[var(--color-danger)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">

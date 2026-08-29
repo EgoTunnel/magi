@@ -37,3 +37,31 @@ export function getCrossProjectSearchEnabled(): boolean {
 export function setCrossProjectSearchEnabled(enabled: boolean) {
   setSetting("cross_project_search_enabled", enabled ? "true" : "false");
 }
+
+// The one embedding model semantic search is currently built against.
+// Vectors from different models aren't comparable, so this is a single
+// global choice rather than a per-role assignment like chat models.
+export function getEmbeddingModelId(): string | null {
+  return getSetting("embedding_model_id");
+}
+
+export function setEmbeddingModelId(modelId: string) {
+  setSetting("embedding_model_id", modelId);
+}
+
+// Tools turned off everywhere, regardless of Skill/Agent-run allowlists —
+// permissions can only narrow past this, never widen beyond it.
+export function getDisabledTools(): string[] {
+  const raw = getSetting("disabled_tools");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setDisabledTools(tools: string[]) {
+  setSetting("disabled_tools", JSON.stringify(tools));
+}

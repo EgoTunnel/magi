@@ -9,12 +9,12 @@ import type {
   ReasoningEffort,
   ToolSpec,
 } from "@/lib/models/types";
+import { REASONING_EFFORTS } from "@/lib/models/types";
 
 const MODELS_CACHE_KEY = "openrouter_models_cache";
 const IMAGE_MODELS_CACHE_KEY = "openrouter_image_models_cache";
 const CAPABILITIES_CACHE_KEY = "openrouter_capabilities_cache";
 const MAX_TOOL_ITERATIONS = 10;
-const EFFORT_ORDER: ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh", "max"];
 
 function client() {
   const apiKey = getOpenRouterApiKey();
@@ -46,6 +46,12 @@ export interface ImageModelInfo {
   label: string;
   description: string;
   editsImages: boolean;
+}
+
+export interface EmbeddingModelInfo {
+  id: string;
+  label: string;
+  description: string;
 }
 
 function describe(m: OpenRouterModelEntry): string {
@@ -110,9 +116,11 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
   // *shape* of the variance is fixed here, only the *values* come from the
   // live catalog.
   const capabilities: Record<string, ModelCapabilities> = {};
-  const validEfforts = new Set<string>(EFFORT_ORDER);
+  const validEfforts = new Set<string>(REASONING_EFFORTS);
   for (const m of entries) {
     const supported = m.supported_parameters ?? [];
+    const promptPrice = m.pricing?.prompt ? parseFloat(m.pricing.prompt) : NaN;
+    const completionPrice = m.pricing?.completion ? parseFloat(m.pricing.completion) : NaN;
     capabilities[m.id] = {
       supportsTools: supported.includes("tools"),
       reasoningMandatory: !!m.reasoning?.mandatory,
@@ -120,6 +128,8 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
         validEfforts.has(e)
       ),
       maxCompletionTokens: m.top_provider?.max_completion_tokens ?? null,
+      pricePerPromptToken: Number.isNaN(promptPrice) ? null : promptPrice,
+      pricePerCompletionToken: Number.isNaN(completionPrice) ? null : completionPrice,
     };
   }
   setSetting(CAPABILITIES_CACHE_KEY, JSON.stringify(capabilities));
@@ -158,6 +168,34 @@ export function getCachedOpenRouterImageModels(): { models: ImageModelInfo[]; fe
   } catch {
     return { models: [], fetchedAt: null };
   }
+}
+
+// Unlike chat and image models, OpenRouter's /models catalog does not list
+// embedding-capable models at all (confirmed by direct testing: none of its
+// ~400 entries advertise an "embeddings" output modality), even though
+// /v1/embeddings itself works fine when called with a known-good model id.
+// So this is a short, hand-verified list — the same reasoning that makes
+// anthropic.ts hardcode its MODELS array: hardcode only where there is
+// genuinely no live catalog to read from instead.
+export const OPENROUTER_EMBEDDING_MODELS: EmbeddingModelInfo[] = [
+  { id: "openai/text-embedding-3-small", label: "OpenAI: Text Embedding 3 Small", description: "Fast, inexpensive, 1536 dimensions" },
+  { id: "openai/text-embedding-3-large", label: "OpenAI: Text Embedding 3 Large", description: "Higher quality, 3072 dimensions" },
+  { id: "google/gemini-embedding-001", label: "Google: Gemini Embedding 001", description: "Google's general-purpose embedding model" },
+  { id: "qwen/qwen3-embedding-8b", label: "Qwen: Qwen3 Embedding 8B", description: "Open-weight, strong multilingual performance" },
+];
+
+export function getCachedOpenRouterEmbeddingModels(): { models: EmbeddingModelInfo[] } {
+  return { models: OPENROUTER_EMBEDDING_MODELS };
+}
+
+// Standard OpenAI-compatible shape, unlike image generation — the typed SDK
+// client already covers this, no raw fetch needed.
+export async function embedText(model: string, text: string): Promise<number[]> {
+  const c = client();
+  const res = await c.embeddings.create({ model, input: text });
+  const embedding = res.data[0]?.embedding;
+  if (!embedding) throw new Error("Embedding request returned no vector.");
+  return embedding as number[];
 }
 
 export interface GeneratedImagePart {
@@ -322,6 +360,11 @@ export const openRouterProvider: ModelProvider = {
         max_tokens: maxTokens,
         ...(reasoning ? { reasoning } : {}),
       } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming);
+      // Every iteration is a real, separately-billed API call — including tool-use
+      // round trips — so usage is recorded here, not just on the final answer.
+      if (res.usage) {
+        opts.usage?.push({ promptTokens: res.usage.prompt_tokens, completionTokens: res.usage.completion_tokens });
+      }
       const choice = res.choices[0];
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
         const toolResults = await resolveToolCalls(opts, choice.message.tool_calls);
@@ -344,6 +387,9 @@ export const openRouterProvider: ModelProvider = {
         messages: working,
         tools,
         max_tokens: maxTokens,
+        // Required for an OpenAI-compatible streaming response to report usage
+        // at all — without this, the final chunk simply omits the field.
+        stream_options: { include_usage: true },
         ...(reasoning ? { reasoning } : {}),
       } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming);
       let emitted = "";
@@ -356,6 +402,9 @@ export const openRouterProvider: ModelProvider = {
       }
 
       const final = await stream.finalChatCompletion();
+      if (final.usage) {
+        opts.usage?.push({ promptTokens: final.usage.prompt_tokens, completionTokens: final.usage.completion_tokens });
+      }
       const choice = final.choices[0];
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
         const toolResults = await resolveToolCalls(opts, choice.message.tool_calls);

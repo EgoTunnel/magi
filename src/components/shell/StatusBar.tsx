@@ -9,6 +9,7 @@ export function StatusBar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const [projectName, setProjectName] = useState<string | null>(null);
   const [conversationTitle, setConversationTitle] = useState<string | null>(null);
   const [modelLabel, setModelLabel] = useState<string | null>(null);
+  const [todaySpend, setTodaySpend] = useState<{ costUsd: number; hasUnpricedEvents: boolean } | null>(null);
 
   const parts = pathname.split("/").filter(Boolean);
   const projectId = parts[0] === "projects" ? parts[1] : null;
@@ -60,6 +61,17 @@ export function StatusBar({ onOpenPalette }: { onOpenPalette: () => void }) {
     };
   }, [pathname]);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/usage")
+      .then((r) => r.json())
+      .then((d) => !cancelled && setTodaySpend(d.today ?? null))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
   const crumbs = [projectName, conversationTitle].filter(Boolean) as string[];
 
   return (
@@ -79,6 +91,12 @@ export function StatusBar({ onOpenPalette }: { onOpenPalette: () => void }) {
           <span className="ml-2 flex items-center gap-1.5 opacity-70">
             <span className="opacity-50">·</span>
             {modelLabel}
+          </span>
+        )}
+        {todaySpend && (todaySpend.costUsd > 0 || todaySpend.hasUnpricedEvents) && (
+          <span className="ml-2 flex items-center gap-1.5 opacity-70">
+            <span className="opacity-50">·</span>
+            {`$${todaySpend.costUsd.toFixed(todaySpend.costUsd < 1 ? 4 : 2)}${todaySpend.hasUnpricedEvents ? "+" : ""} today`}
           </span>
         )}
       </div>

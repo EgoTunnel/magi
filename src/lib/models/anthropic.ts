@@ -87,6 +87,10 @@ export const anthropicProvider: ModelProvider = {
         tools,
       });
 
+      // Every iteration is a real, separately-billed API call — including tool-use
+      // round trips — so usage is recorded here, not just on the final answer.
+      opts.usage?.push({ promptTokens: res.usage.input_tokens, completionTokens: res.usage.output_tokens });
+
       if (res.stop_reason === "tool_use") {
         const toolResults = await resolveToolCalls(opts, res.content);
         working.push({ role: "assistant", content: res.content });
@@ -119,6 +123,7 @@ export const anthropicProvider: ModelProvider = {
       }
 
       const final = await stream.finalMessage();
+      opts.usage?.push({ promptTokens: final.usage.input_tokens, completionTokens: final.usage.output_tokens });
       if (final.stop_reason === "tool_use") {
         const toolResults = await resolveToolCalls(opts, final.content);
         working.push({ role: "assistant", content: final.content });

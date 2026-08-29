@@ -5,15 +5,26 @@ import { PageHeader, Panel, Tag } from "@/components/ui";
 const STAGE_LABEL: Record<string, string> = {
   analysis: "Independent analysis",
   critique: "Critique",
+  opening: "Opening",
+  rebuttal: "Rebuttal",
+  proposal: "Proposal",
+  attack: "Attack",
+  defense: "Defense",
   synthesis: "Synthesis",
 };
+
+// Every possible stage across all three modes, in a sensible read order —
+// a given run only ever populates the stages its mode actually uses (see
+// STAGE_LABEL's keys / CouncilTranscriptEntry["stage"] in
+// src/lib/repo/councils.ts), so the empty ones below are simply skipped.
+const STAGES = ["analysis", "critique", "opening", "rebuttal", "proposal", "attack", "defense", "synthesis"] as const;
 
 export default async function CouncilRunPage({ params }: PageProps<"/councils/runs/[id]">) {
   const { id } = await params;
   const run = getCouncilRun(id);
   if (!run) notFound();
 
-  const stages: Array<"analysis" | "critique" | "synthesis"> = ["analysis", "critique", "synthesis"];
+  const stages = STAGES;
 
   return (
     <div>

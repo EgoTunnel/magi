@@ -7,6 +7,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const objective = (body.objective as string)?.trim();
   const projectId = (body.projectId as string | undefined) ?? null;
+  const allowedTools = (body.allowedTools as string[] | undefined) ?? null;
   if (!objective) return NextResponse.json({ error: "objective is required" }, { status: 400 });
 
   const resolved = getModel(modelForRole("reasoner"));
@@ -17,12 +18,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const run = createAgentRun({ objective, projectId });
+  const run = createAgentRun({ objective, projectId, allowedTools });
 
   // Fire-and-forget: Magi runs as a long-lived local server, not a serverless
   // function, so this keeps running after the response below is sent. The
   // client polls the run instead of holding the request open.
-  runAgent({ runId: run.id, objective, projectId }).catch(() => {});
+  runAgent({ runId: run.id, objective, projectId, allowedTools }).catch(() => {});
 
   return NextResponse.json({ run }, { status: 201 });
 }

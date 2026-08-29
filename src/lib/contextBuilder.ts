@@ -26,6 +26,12 @@ export interface ContextProvenance {
   documentsUsed: { id: string; title: string; truncated: boolean }[];
   skillUsed: { id: string; name: string } | null;
   toolCalls?: { name: string; input: unknown; result: string }[];
+  // Filled in by the caller after the model call completes — buildSystemPrompt
+  // runs before the call is made, so this starts absent.
+  usage?: { promptTokens: number; completionTokens: number; costUsd: number | null };
+  // Set only when the turn used "Auto" model selection — which real role the
+  // classifier picked (see classifyModelRole in src/lib/models/registry.ts).
+  autoSelectedRole?: string;
 }
 
 export function buildSystemPrompt(opts: {

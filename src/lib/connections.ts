@@ -1,9 +1,9 @@
-import { getModel, modelForRole } from "@/lib/models/registry";
-import type { ToolCallRecord } from "@/lib/models/types";
-import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
-import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
+import { getModel, modelForRole, reasoningEffortForRole } from "@/lib/models/registry";
+import type { TokenUsage, ToolCallRecord } from "@/lib/models/types";
+import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { getProject, listProjects, type Project } from "@/lib/repo/projects";
 import { listMemory } from "@/lib/repo/memory";
+import { recordUsage } from "@/lib/repo/usage";
 import {
   appendConnectionFinding,
   setConnectionStatus,
@@ -39,13 +39,16 @@ function extractSection(text: string, label: string): string | null {
   return m ? m[1].trim() : null;
 }
 
-async function analyzeTarget(source: Project, target: Project): Promise<ConnectionFinding> {
+async function analyzeTarget(source: Project, target: Project, runId: string): Promise<ConnectionFinding> {
   const modelRole = "researcher";
   const modelId = modelForRole(modelRole);
   const resolved = getModel(modelId);
   if (!resolved || !resolved.provider.isConfigured()) throw new Error("NO_API_KEY");
 
   const toolLog: ToolCallRecord[] = [];
+  const usage: TokenUsage[] = [];
+  const tools = resolveTools();
+  const allowedToolNames = new Set(tools.map((t) => t.name));
   const prompt = `Source Project (where the user is currently working):\n${projectSummary(source)}\n\nCandidate target Project:\n${projectSummary(target)}\n\nWhat in the target Project might be relevant to the source Project? Investigate the target Project's archive as needed before answering.`;
 
   const raw = await resolved.provider.complete({
@@ -53,10 +56,20 @@ async function analyzeTarget(source: Project, target: Project): Promise<Connecti
     system: CONNECTION_SYSTEM_PROMPT,
     messages: [{ role: "user", content: prompt }],
     maxTokens: 1800,
-    tools: TOOL_SPECS,
-    onToolCall: (name, input) => executeTool(name, input, { projectId: target.id }),
+    tools,
+    onToolCall: (name, input) => executeTool(name, input, { projectId: target.id, allowedToolNames }),
     toolLog,
-    reasoningEffort: ROLE_REASONING_EFFORT[modelRole],
+    usage,
+    reasoningEffort: reasoningEffortForRole(modelRole),
+  });
+  recordUsage({
+    projectId: source.id,
+    source: "connection",
+    sourceId: runId,
+    provider: resolved.provider.id as "anthropic" | "openrouter",
+    model: modelId,
+    role: modelRole,
+    usage,
   });
 
   return {
@@ -86,7 +99,7 @@ export async function runConnectionDiscovery(opts: {
 
   try {
     for (const target of targets) {
-      const finding = await analyzeTarget(source, target);
+      const finding = await analyzeTarget(source, target, runId);
       appendConnectionFinding(runId, finding);
     }
     setConnectionStatus(runId, "complete");

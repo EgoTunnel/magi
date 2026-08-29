@@ -1,9 +1,9 @@
-import { getModel, modelForRole } from "@/lib/models/registry";
-import type { ModelRoleId, ToolCallRecord } from "@/lib/models/types";
-import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
-import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
+import { getModel, modelForRole, reasoningEffortForRole } from "@/lib/models/registry";
+import type { ModelRoleId, TokenUsage, ToolCallRecord } from "@/lib/models/types";
+import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { getProject } from "@/lib/repo/projects";
 import { createArtifact } from "@/lib/repo/artifacts";
+import { recordUsage } from "@/lib/repo/usage";
 import {
   appendAgentStep,
   isStopRequested,
@@ -21,10 +21,12 @@ const AGENT_BOUNDARIES =
   "finished result itself, starting directly with its first real sentence.";
 
 async function runStep(opts: {
+  runId: string;
   modelRole: ModelRoleId;
   system: string;
   prompt: string;
   withTools?: boolean;
+  allowedTools?: string[] | null;
   projectId?: string | null;
   maxTokens?: number;
 }): Promise<{ content: string; toolCalls: ToolCallRecord[] }> {
@@ -32,15 +34,30 @@ async function runStep(opts: {
   const resolved = getModel(modelId);
   if (!resolved || !resolved.provider.isConfigured()) throw new Error("NO_API_KEY");
   const toolLog: ToolCallRecord[] = [];
+  const usage: TokenUsage[] = [];
+  const tools = opts.withTools ? resolveTools({ allowedNames: opts.allowedTools }) : undefined;
+  const allowedToolNames = tools ? new Set(tools.map((t) => t.name)) : undefined;
   const content = await resolved.provider.complete({
     model: modelId,
     system: opts.system,
     messages: [{ role: "user", content: opts.prompt }],
     maxTokens: opts.maxTokens ?? 1600,
-    tools: opts.withTools ? TOOL_SPECS : undefined,
-    onToolCall: opts.withTools ? (name, input) => executeTool(name, input, { projectId: opts.projectId }) : undefined,
+    tools,
+    onToolCall: opts.withTools
+      ? (name, input) => executeTool(name, input, { projectId: opts.projectId, allowedToolNames })
+      : undefined,
     toolLog,
-    reasoningEffort: ROLE_REASONING_EFFORT[opts.modelRole],
+    usage,
+    reasoningEffort: reasoningEffortForRole(opts.modelRole),
+  });
+  recordUsage({
+    projectId: opts.projectId ?? undefined,
+    source: "agent",
+    sourceId: opts.runId,
+    provider: resolved.provider.id as "anthropic" | "openrouter",
+    model: modelId,
+    role: opts.modelRole,
+    usage,
   });
   return { content, toolCalls: toolLog };
 }
@@ -58,8 +75,13 @@ function record(runId: string, type: AgentStepType, title: string, content: stri
   appendAgentStep(runId, { type, title, content: content.trim() ? content : EMPTY_STEP_NOTE, toolCalls });
 }
 
-export async function runAgent(opts: { runId: string; objective: string; projectId?: string | null }) {
-  const { runId, objective, projectId } = opts;
+export async function runAgent(opts: {
+  runId: string;
+  objective: string;
+  projectId?: string | null;
+  allowedTools?: string[] | null;
+}) {
+  const { runId, objective, projectId, allowedTools } = opts;
   const project = projectId ? getProject(projectId) : null;
   const projectContext = project
     ? `\n\nThis objective belongs to the Project "${project.name}"${project.purpose ? `: ${project.purpose}` : ""}.${
@@ -79,6 +101,7 @@ export async function runAgent(opts: { runId: string; objective: string; project
   try {
     // 1. Plan
     const plan = await runStep({
+      runId,
       modelRole: "reasoner",
       system: `${AGENT_BOUNDARIES} You are planning, not yet executing. Break the objective into 2-4 concrete questions that need answers.`,
       prompt: `Objective: ${objective}${projectContext}\n\nList the key questions to investigate, most important first. Be concrete.`,
@@ -89,10 +112,12 @@ export async function runAgent(opts: { runId: string; objective: string; project
 
     // 2. Research — the only step with tool access, since it's the one that needs to look things up.
     const research = await runStep({
+      runId,
       modelRole: "researcher",
       system: `${AGENT_BOUNDARIES} You are researching. Use search_archive where it could plausibly hold relevant material; use calculator for any real computation. Report findings plainly, including where you found nothing.`,
       prompt: `Objective: ${objective}${projectContext}\n\nResearch plan:\n${plan.content}\n\nInvestigate and report what you find.`,
       withTools: true,
+      allowedTools,
       projectId,
       maxTokens: 4000,
     });
@@ -101,6 +126,7 @@ export async function runAgent(opts: { runId: string; objective: string; project
 
     // 3. Draft
     const draft = await runStep({
+      runId,
       modelRole: "writer",
       system: `${AGENT_BOUNDARIES} Write a clear, substantive draft addressing the objective directly, grounded in the research below. Editorial clarity, no filler.`,
       prompt: `Objective: ${objective}${projectContext}\n\nResearch findings:\n${research.content}\n\nWrite the draft now. Begin immediately with its first sentence.`,
@@ -111,6 +137,7 @@ export async function runAgent(opts: { runId: string; objective: string; project
 
     // 4. Critique
     const critique = await runStep({
+      runId,
       modelRole: "critic",
       system: `${AGENT_BOUNDARIES} You are the critic. Be genuinely skeptical: gaps in evidence, unsupported claims, unclear structure, anything that doesn't actually serve the objective.`,
       prompt: `Objective: ${objective}\n\nDraft:\n${draft.content}\n\nCritique it.`,
@@ -121,6 +148,7 @@ export async function runAgent(opts: { runId: string; objective: string; project
 
     // 5. Revise
     const revised = await runStep({
+      runId,
       modelRole: "writer",
       system: `${AGENT_BOUNDARIES} Revise the draft in light of the critique. Produce the final version only — no meta-commentary about what changed.`,
       prompt: `Objective: ${objective}\n\nDraft:\n${draft.content}\n\nCritique:\n${critique.content}\n\nWrite the final, revised version. Begin immediately with its first sentence — do not restate the task or describe your approach first.`,

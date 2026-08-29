@@ -12,6 +12,7 @@ interface SearchResult {
   title: string;
   snippet: string;
   createdAt: string;
+  similarity?: number;
 }
 
 function highlightSnippet(snippet: string): string {
@@ -51,23 +52,36 @@ export function ArchiveClient() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [mode, setMode] = useState<"search" | "ask">("search");
+  const [searchStyle, setSearchStyle] = useState<"wording" | "meaning">("wording");
   const [asking, setAsking] = useState(false);
   const [answer, setAnswer] = useState<string | null>(null);
   const [answerSources, setAnswerSources] = useState<SearchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   useEffect(() => {
     if (mode !== "search" || !query.trim()) {
-      if (mode === "search") setResults([]);
+      if (mode === "search") {
+        setResults([]);
+        setSearchError(null);
+      }
       return;
     }
     const handle = setTimeout(async () => {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const endpoint = searchStyle === "meaning" ? "/api/search/semantic" : "/api/search";
+      const res = await fetch(`${endpoint}?q=${encodeURIComponent(query)}`);
+      if (res.status === 412) {
+        const data = await res.json();
+        setSearchError(data.message);
+        setResults([]);
+        return;
+      }
+      setSearchError(null);
       const data = await res.json();
       setResults(data.results ?? []);
     }, 150);
     return () => clearTimeout(handle);
-  }, [query, mode]);
+  }, [query, mode, searchStyle]);
 
   async function ask() {
     if (!query.trim()) return;
@@ -158,7 +172,34 @@ export function ArchiveClient() {
 
       {mode === "search" && (
         <>
-          {query.trim() && results.length === 0 && <EmptyState title="No matches" description="Try different wording." />}
+          <div className="mb-4 flex items-center gap-1.5 text-[12px]">
+            <span className="text-[var(--color-text-faint)]">Match</span>
+            <button
+              onClick={() => setSearchStyle("wording")}
+              className={`rounded-[3px] px-2 py-1 transition-colors ${searchStyle === "wording" ? "bg-[var(--color-surface-2)] text-[var(--color-text)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"}`}
+            >
+              Wording
+            </button>
+            <button
+              onClick={() => setSearchStyle("meaning")}
+              className={`rounded-[3px] px-2 py-1 transition-colors ${searchStyle === "meaning" ? "bg-[var(--color-surface-2)] text-[var(--color-text)]" : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"}`}
+            >
+              Meaning
+            </button>
+          </div>
+
+          {searchError && (
+            <div className="mb-4 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
+              {searchError}{" "}
+              <Link href="/settings" className="text-[var(--color-accent)] underline">
+                Open Settings
+              </Link>
+            </div>
+          )}
+
+          {!searchError && query.trim() && results.length === 0 && (
+            <EmptyState title="No matches" description={searchStyle === "meaning" ? "Nothing close enough in meaning yet." : "Try different wording."} />
+          )}
           <div className="flex flex-col gap-1.5">
             {results.map((r, i) => (
               <Link key={i} href={hrefFor(r)}>
@@ -166,6 +207,11 @@ export function ArchiveClient() {
                   <div className="mb-1 flex items-center gap-2">
                     <Tag tone="accent">{KIND_LABEL[r.kind] ?? r.kind}</Tag>
                     <span className="truncate text-[13.5px] text-[var(--color-text)]">{r.title}</span>
+                    {r.similarity !== undefined && (
+                      <span className="ml-auto shrink-0 text-[11px] text-[var(--color-text-faint)] font-technical">
+                        {Math.round(r.similarity * 100)}% match
+                      </span>
+                    )}
                   </div>
                   <div
                     className="truncate text-[12.5px] text-[var(--color-text-muted)]"

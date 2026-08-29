@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     name: body.name,
     description: body.description,
     instructions: body.instructions,
+    allowedTools: body.allowedTools ?? null,
   });
   return NextResponse.json({ skill }, { status: 201 });
 }

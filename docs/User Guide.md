@@ -69,9 +69,18 @@ Everything else accumulates inside a Project over time:
 | Skills available here | Global Skills plus any Project-specific ones |
 | Image Lab | A link into that Project's images, Style Guides, and Characters |
 
-**Export** (top of the Project page) downloads everything above as one JSON file. **Import Project**
-(on the Projects list page) reads that file back as a brand-new Project — useful for backing work up,
-moving it to another Magi install, or just keeping an archive outside the app.
+**Export** (top of the Project page) downloads everything above as one JSON file. **Import** (on the
+Projects list page) reads that file back as a brand-new Project — useful for backing work up, moving it
+to another Magi install, or just keeping an archive outside the app.
+
+The same **Import** button also accepts a `conversations.json` from a ChatGPT or Claude data export
+(Settings → Export/Privacy on either service). If you were handed a `.zip`, extract it first and select
+`conversations.json` from inside. Magi detects which format it's looking at automatically — there's
+nothing to pick. Everything lands as one new Project (e.g. "Imported from ChatGPT — Aug 29, 2026")
+holding every conversation from the file; it isn't sorted into multiple Projects by topic. Only the
+conversation text comes across — no images/attachments, and for ChatGPT specifically, only your actual
+back-and-forth (tool/plugin/browsing steps aren't imported). If a conversation had an edited or
+regenerated message, Magi keeps the version you ended up seeing, not the discarded draft.
 
 ---
 
@@ -79,14 +88,19 @@ moving it to another Magi install, or just keeping an archive outside the app.
 
 Open one from inside a Project. Two dropdowns sit above the message box:
 
-- **Skill** — optionally invoke a reusable method for this turn (see below).
+- **Skill** — optionally invoke a reusable method for this turn (see below). If the Skill has its own
+  tool allowlist, it applies for as long as that Skill is active.
 - **Model role** — which role should answer: Default, Reasoner, Writer, Critic, Researcher,
-  Synthesizer, or Fast. Roles map to models in Settings, not the other way around.
+  Synthesizer, Fast, or **Auto**. Roles map to models in Settings, not the other way around. Auto asks
+  a small, cheap model to classify the task first (a real model call, not a keyword guess) and picks
+  the best-fit role for you — it's opt-in, not the default, since it adds one extra round-trip and a
+  small extra cost to every turn that uses it (both are visible in Settings → Usage & cost, logged
+  under role "classifier").
 
 Type and send. Responses stream in. The model can search your archive or do arithmetic mid-answer —
 click **Context** in the top right to see exactly what a given reply drew on: which Project
-instructions applied, how much memory and which documents were in play, and which tools it actually
-called, with the search terms it used.
+instructions applied, how much memory and which documents were in play, which tools it actually
+called, and — on an Auto turn — which role got picked.
 
 Hover an assistant message for three actions:
 
@@ -109,7 +123,10 @@ directly.
 
 Two modes, toggled at the top of the **Archive** page:
 
-- **Search** — full-text search by wording across everything Magi holds.
+- **Search** — search across everything Magi holds. A **Wording / Meaning** toggle switches between
+  full-text keyword search and semantic search: Meaning finds content related to your query even when
+  it doesn't share any of the same words (it requires an OpenRouter key and an embedding model chosen
+  in Settings — see below). Semantic results show a match percentage instead of a highlighted excerpt.
 - **Ask** — ask a question in plain language; Magi searches the archive and synthesizes an answer,
   citing which sources it used. If nothing relevant exists, it says so rather than guessing.
 
@@ -123,19 +140,35 @@ scoped either globally or to one Project. Three starters are offered when you ha
 Writing, and Historical Research. Invoke a Skill from any conversation in its scope via the Skill
 dropdown.
 
+When creating a Skill, you can also uncheck which tools it's allowed to use — leave everything checked
+for no restriction beyond whatever's globally enabled in Settings. This can only narrow what a Skill
+may do, never widen it past the global setting. There's no edit flow yet, so changing a Skill's
+permissions later means deleting and recreating it.
+
 ---
 
 ## Magi Council
 
-From the **Councils** page, put a substantial question to several models at once. The default
-"Independent Analysis" preset assembles a Reasoner, a Critic, and a Researcher; each analyzes
-independently, then reads and critiques the others' analyses, then a Synthesizer reconciles everything
-into a final answer — explicitly **preserving disagreement** rather than smoothing it over. The result
-page shows a Consensus rating (Strong/Moderate/Weak/None), the specific disagreement if there is one,
-and the full transcript by stage.
+From the **Councils** page, put a substantial question to several models at once, in one of three
+modes:
+
+- **Independent Analysis** (default: Reasoner, Critic, Researcher) — each role analyzes independently,
+  then reads and critiques the others' analyses, then a Synthesizer reconciles everything into a final
+  answer.
+- **Debate** (default: Advocate, Skeptic — exactly 2 roles) — both sides state their position, then each
+  responds directly to the other's argument, then a Synthesizer characterizes the disagreement.
+- **Red Team** (default: Proposer, Red Team — 2 or more roles) — the Proposer answers the question, the
+  Red Team role(s) attack it aggressively, the Proposer defends, then a Synthesizer assesses which
+  attacks actually held up.
+
+In every mode, the Synthesizer explicitly **preserves disagreement** rather than smoothing it over —
+Debate's synthesis never declares a winner, and Red Team's never simply says "the attack won" or "the
+proposal survived." The result page shows a Consensus rating (Strong/Moderate/Weak/None), the specific
+disagreement if there is one, and the full transcript by stage.
 
 You can also save a named Council configuration (custom roles, custom system prompts, each assigned a
-model role) to reuse later, instead of the default preset.
+model role) to reuse later, instead of a default preset — any saved Council can be run through any of
+the three modes, as long as its role count fits (exactly 2 for Debate, 2+ for Red Team).
 
 ---
 
@@ -147,7 +180,9 @@ the result as a Project artifact — all without further input from you. Open th
 step by step, live. **Stop** halts it after its current step finishes (not mid-generation).
 
 An Agent can only search the archive and calculate; it cannot send messages, modify files, or take any
-action outside the task.
+action outside the task. Which of those two tools a given run may actually use is chosen when you
+launch it — Agents have no persistent template to save permissions on, so it's a per-run choice rather
+than a per-Agent one.
 
 ---
 
@@ -193,10 +228,27 @@ The Projects never merge. Only the connection between them becomes visible, and 
   for a *role* ("the reasoner," "the critic"), never a specific model. Reassign a role here — to any
   model from any configured provider — and every caller upgrades at once. If an OpenRouter model
   doesn't support tool use, its entry is labeled "no tool use" in the dropdown so you know before you
-  assign it somewhere that needs tools.
-- **Tools & permissions** — currently one real toggle: whether `search_archive` may look beyond the
-  current Project. Off restricts it to the current Project only, for every conversation, Council, and
-  Agent.
+  assign it somewhere that needs tools. Each role also has its own reasoning-effort dropdown
+  (None/Low/Medium/High/Xhigh/Max) — how hard that role's model should think before answering. Only
+  applies to OpenRouter models and is automatically adjusted down to whatever the assigned model
+  actually supports; Anthropic's API has no equivalent control.
+- **Tools & permissions** — a per-tool on/off switch for everything Magi can call
+  (`search_archive`, `calculator`). Turning one off applies everywhere it's used: conversations, Agents,
+  Councils, and Connections. Below that, the cross-Project search toggle: whether `search_archive` may
+  look beyond the current Project. Skills and individual Agent runs can narrow these further for
+  themselves, but never turn something back on that's off here.
+- **Semantic search** — requires an OpenRouter key (Anthropic has no embeddings API). Pick an embedding
+  model, then click **Build index** once to cover everything already in your archive — new and edited
+  content is embedded automatically from then on. Switching the embedding model later doesn't delete
+  anything already indexed; it just goes unused until you either switch back or rebuild the index for
+  the new model.
+- **Usage & cost** — every model call anywhere in Magi (conversations, Agents, Councils, Connections,
+  archive questions) is logged with its token counts. Cost in dollars is computed automatically for
+  OpenRouter models, straight from their own live pricing catalog. Anthropic doesn't publish pricing
+  through its API, so its calls show tokens only until you enter a rate here yourself (dollars per
+  million input/output tokens, per model) — nothing is ever guessed. A running total for today also
+  shows in the status bar at the bottom of the window, and a per-turn breakdown appears in a
+  conversation's Context panel.
 
 ---
 

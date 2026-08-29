@@ -10,6 +10,7 @@ import {
   IconSettings,
   IconSkills,
 } from "@/components/icons";
+import { MagiMark } from "@/components/MagiMark";
 import { ThemeToggle } from "@/components/shell/ThemeToggle";
 
 const NAV = [
@@ -27,11 +28,9 @@ export function Sidebar() {
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg-raised)]">
-      <div className="flex items-center gap-2 px-4 py-4">
-        <div className="flex h-6 w-6 items-center justify-center rounded-[2px] border border-[var(--color-border-strong)] text-[10px] font-semibold tracking-widest text-[var(--color-accent)] font-technical">
-          M
-        </div>
-        <span className="text-[13px] font-semibold tracking-[0.14em] uppercase text-[var(--color-text)]">
+      <div className="flex items-center gap-2.5 px-4 py-4">
+        <MagiMark width={19} height={19} className="text-[var(--color-accent)]" />
+        <span className="text-[13px] font-semibold tracking-[0.18em] uppercase text-[var(--color-text)]">
           Magi
         </span>
       </div>

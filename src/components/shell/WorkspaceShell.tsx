@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { CommandPalette } from "@/components/shell/CommandPalette";
 import { StatusBar } from "@/components/shell/StatusBar";
+import { MagiMark } from "@/components/MagiMark";
 
 function MenuIcon() {
   return (
@@ -59,7 +60,8 @@ export function WorkspaceShell({ sidebar, children }: { sidebar: ReactNode; chil
           >
             <MenuIcon />
           </button>
-          <span className="text-[13px] font-semibold tracking-[0.14em] uppercase text-[var(--color-text)]">
+          <MagiMark width={17} height={17} className="text-[var(--color-accent)]" />
+          <span className="text-[13px] font-semibold tracking-[0.18em] uppercase text-[var(--color-text)]">
             Magi
           </span>
         </div>

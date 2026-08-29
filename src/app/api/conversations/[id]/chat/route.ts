@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { addMessage, getConversation, listMessages } from "@/lib/repo/conversations";
 import { buildSystemPrompt } from "@/lib/contextBuilder";
-import { getModel, modelForRole } from "@/lib/models/registry";
-import type { ModelMessage, ModelRoleId, ToolCallRecord } from "@/lib/models/types";
-import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
-import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
+import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
+import type { ModelMessage, ModelRoleId, TokenUsage, ToolCallRecord } from "@/lib/models/types";
+import { resolveTools, executeTool } from "@/lib/tools/registry";
+import { recordUsage } from "@/lib/repo/usage";
+import { estimateCost } from "@/lib/models/pricing";
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -14,8 +15,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const body = await req.json();
   const content = (body.content as string)?.trim();
   const skillId = (body.skillId as string | undefined) ?? null;
-  const modelRole = (body.modelRole as ModelRoleId | undefined) ?? "default";
+  const requestedRole = (body.modelRole as ModelRoleId | "auto" | undefined) ?? "default";
   if (!content) return NextResponse.json({ error: "content is required" }, { status: 400 });
+
+  let modelRole: ModelRoleId = requestedRole === "auto" ? "default" : requestedRole;
+  let autoSelectedRole: string | undefined;
+  let classifierUsage: TokenUsage[] = [];
+  let classifierModelId = "";
+  let classifierProviderId: "anthropic" | "openrouter" = "anthropic";
+  if (requestedRole === "auto") {
+    const classified = await classifyModelRole(content);
+    modelRole = classified.role;
+    autoSelectedRole = classified.role;
+    classifierUsage = classified.usage;
+    classifierModelId = classified.modelId;
+    classifierProviderId = classified.providerId;
+  }
 
   const modelId = modelForRole(modelRole);
   const resolved = getModel(modelId);
@@ -37,7 +52,53 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const encoder = new TextEncoder();
   let full = "";
   const toolLog: ToolCallRecord[] = [];
+  const usage: TokenUsage[] = [];
   const projectId = conversation.project_id;
+  const providerId = resolved.provider.id as "anthropic" | "openrouter";
+
+  if (classifierUsage.length) {
+    recordUsage({
+      projectId,
+      source: "conversation",
+      sourceId: id,
+      provider: classifierProviderId,
+      model: classifierModelId,
+      role: "classifier",
+      usage: classifierUsage,
+    });
+  }
+
+  function finalProvenance() {
+    const totalPrompt = usage.reduce((sum, u) => sum + u.promptTokens, 0);
+    const totalCompletion = usage.reduce((sum, u) => sum + u.completionTokens, 0);
+    recordUsage({
+      projectId,
+      source: "conversation",
+      sourceId: id,
+      provider: providerId,
+      model: modelId,
+      role: modelRole,
+      usage,
+    });
+    return {
+      ...provenance,
+      toolCalls: toolLog,
+      autoSelectedRole,
+      usage: usage.length
+        ? {
+            promptTokens: totalPrompt,
+            completionTokens: totalCompletion,
+            costUsd: estimateCost(providerId, modelId, {
+              promptTokens: totalPrompt,
+              completionTokens: totalCompletion,
+            }),
+          }
+        : undefined,
+    };
+  }
+
+  const tools = resolveTools({ skillId });
+  const allowedToolNames = new Set(tools.map((t) => t.name));
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -46,10 +107,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
           model: modelId,
           system,
           messages: history,
-          tools: TOOL_SPECS,
-          onToolCall: (name, input) => executeTool(name, input, { projectId }),
+          tools,
+          onToolCall: (name, input) => executeTool(name, input, { projectId, allowedToolNames }),
           toolLog,
-          reasoningEffort: ROLE_REASONING_EFFORT[modelRole],
+          usage,
+          reasoningEffort: reasoningEffortForRole(modelRole),
         });
         for await (const chunk of generator) {
           full += chunk;
@@ -60,7 +122,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
           role: "assistant",
           content: full || "(no response)",
           model: modelId,
-          provenance: { ...provenance, toolCalls: toolLog },
+          provenance: finalProvenance(),
         });
         controller.close();
       } catch (err) {
@@ -72,7 +134,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
             role: "assistant",
             content: full,
             model: modelId,
-            provenance: { ...provenance, toolCalls: toolLog },
+            provenance: finalProvenance(),
           });
         }
         controller.close();

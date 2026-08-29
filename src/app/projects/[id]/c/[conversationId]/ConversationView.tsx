@@ -214,6 +214,20 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                   </div>
                 )}
                 {provenance.skillUsed && <div>Skill: {provenance.skillUsed.name}</div>}
+                {provenance.autoSelectedRole && (
+                  <div>
+                    Auto-selected: {roles.find((r) => r.id === provenance.autoSelectedRole)?.label ?? provenance.autoSelectedRole}
+                  </div>
+                )}
+                {provenance.usage && (
+                  <div>
+                    <div className="text-[var(--color-text-faint)]">Usage (this turn)</div>
+                    <div className="font-technical text-[11.5px]">
+                      {(provenance.usage.promptTokens + provenance.usage.completionTokens).toLocaleString()} tokens
+                      {provenance.usage.costUsd !== null ? ` · $${provenance.usage.costUsd.toFixed(4)}` : ""}
+                    </div>
+                  </div>
+                )}
                 {provenance.toolCalls && provenance.toolCalls.length > 0 && (
                   <div>
                     <div className="mb-1 text-[var(--color-text-faint)]">Tools used</div>
@@ -262,6 +276,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                   {r.label}
                 </option>
               ))}
+              <option value="auto">Auto — let Magi choose</option>
             </select>
           </div>
           <div className="flex items-end gap-2">
