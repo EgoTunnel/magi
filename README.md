@@ -7,7 +7,8 @@
 Magi is a persistent, personal AI environment — the durable layer that sits above whichever model
 you happen to be using. Projects, memory, and archive live here; models are replaceable instruments
 passing through. See [`docs/Product Vision.txt`](docs/Product%20Vision.txt) for the full vision this
-build is working toward.
+build is working toward, [`docs/User Guide.md`](docs/User%20Guide.md) for how to actually use it, and
+[`docs/Handoff.md`](docs/Handoff.md) if you're picking up development on this codebase.
 
 This repository is a working subset of that vision: Projects with persistent instructions, streaming
 conversations with tool use, deliberate memory (global and per-Project), full-text archive search, an
