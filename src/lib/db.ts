@@ -138,6 +138,36 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS style_guides (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS characters (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  reference_image_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS images (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  prompt TEXT NOT NULL,
+  model TEXT NOT NULL,
+  style_guide_id TEXT REFERENCES style_guides(id) ON DELETE SET NULL,
+  character_ids TEXT NOT NULL DEFAULT '[]',
+  source_image_id TEXT REFERENCES images(id) ON DELETE SET NULL,
+  file_path TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'image/png',
+  created_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   kind, ref_id, project_id, title, content, created_at
 );
@@ -149,6 +179,9 @@ CREATE INDEX IF NOT EXISTS idx_documents_project ON documents(project_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project_id);
 CREATE INDEX IF NOT EXISTS idx_skills_project ON skills(project_id);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_style_guides_project ON style_guides(project_id);
+CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
+CREATE INDEX IF NOT EXISTS idx_images_project ON images(project_id);
 `;
 
 db.exec(SCHEMA);

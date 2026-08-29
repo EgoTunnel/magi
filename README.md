@@ -12,10 +12,11 @@ build is working toward.
 This repository is an early, working subset of that vision: Projects with persistent instructions,
 streaming conversations with tool use, deliberate memory (global and per-Project), full-text archive
 search, an "Ask my archive" mode, reusable Skills, the Magi Council for multi-role deliberation,
-Agents that pursue a multi-step objective and can be watched and stopped mid-run, and Project
-export/import. The model layer has two providers — Anthropic directly, and OpenRouter (which in turn
-proxies most of the industry) — wired through an abstraction built to add more without touching the
-rest of the app.
+Agents that pursue a multi-step objective and can be watched and stopped mid-run, an Image Lab with
+Style Guides and Characters for visual continuity across generations, and Project export/import. The
+model layer has two providers — Anthropic directly, and OpenRouter (which in turn proxies most of the
+industry, image-generation models included) — wired through an abstraction built to add more without
+touching the rest of the app.
 
 ## Running it
 
@@ -49,9 +50,14 @@ local server.
 - **Agents** (`src/lib/agent.ts`) — given an objective, an Agent plans, researches (with tools),
   drafts, critiques itself, revises, and saves the result as a Project artifact. Runs as a
   fire-and-forget background job on Magi's own server, polled by the client, stoppable mid-run.
+- **Image Lab** (`src/app/image-lab/`, `src/lib/repo/images.ts`) — generation and editing through
+  OpenRouter's multimodal chat-completions models (Gemini "Nano Banana," GPT-5 Image, and whichever
+  others advertise image output — discovered live, not hardcoded). Style Guides and Characters are
+  Project-scoped and can be threaded into a generation as reference images, so a character or visual
+  language stays consistent across a body of work rather than resetting every prompt. Files live on
+  disk under `data/images/`; only metadata sits in SQLite.
 
 ## What's not built yet
 
-The full Image Studio and cross-Project connection discovery are part of the vision but not this
-build — the architecture anticipates them without pretending they exist. See the Image Lab page in
-the app for where that stands.
+Cross-Project connection discovery ("what in my other Projects relates to this one") is part of the
+vision but not this build — the architecture anticipates it without pretending it exists.

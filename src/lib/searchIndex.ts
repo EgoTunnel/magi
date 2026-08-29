@@ -7,7 +7,9 @@ export type SearchKind =
   | "memory"
   | "document"
   | "artifact"
-  | "skill";
+  | "skill"
+  | "style_guide"
+  | "character";
 
 export function indexUpsert(opts: {
   kind: SearchKind;

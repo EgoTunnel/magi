@@ -27,6 +27,8 @@ const KIND_LABEL: Record<string, string> = {
   document: "Document",
   artifact: "Artifact",
   skill: "Skill",
+  style_guide: "Style Guide",
+  character: "Character",
 };
 
 function hrefFor(r: SearchResult): string {
@@ -37,6 +39,9 @@ function hrefFor(r: SearchResult): string {
       return `/projects/${r.projectId}/c/${r.refId}`;
     case "message":
       return `/projects/${r.projectId}`;
+    case "style_guide":
+    case "character":
+      return r.projectId ? `/image-lab?project=${r.projectId}` : "/image-lab";
     default:
       return r.projectId ? `/projects/${r.projectId}` : "/archive";
   }

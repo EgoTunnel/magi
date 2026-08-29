@@ -397,6 +397,18 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
             </Panel>
           </section>
 
+          {/* Image Lab */}
+          <section>
+            <div className="flex items-center justify-between">
+              <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                Image Lab
+              </h2>
+              <Link href={`/image-lab?project=${projectId}`}>
+                <Button variant="ghost">Open</Button>
+              </Link>
+            </div>
+          </section>
+
           {/* Memory */}
           <section>
             <div className="mb-2.5 flex items-center justify-between">

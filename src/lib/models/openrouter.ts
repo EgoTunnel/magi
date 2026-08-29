@@ -4,6 +4,7 @@ import { getOpenRouterApiKey, getSetting, setSetting } from "@/lib/settings";
 import type { CompleteOptions, ModelInfo, ModelProvider, ToolSpec } from "@/lib/models/types";
 
 const MODELS_CACHE_KEY = "openrouter_models_cache";
+const IMAGE_MODELS_CACHE_KEY = "openrouter_image_models_cache";
 const MAX_TOOL_ITERATIONS = 10;
 
 function client() {
@@ -25,6 +26,14 @@ interface OpenRouterModelEntry {
   name?: string;
   context_length?: number;
   pricing?: { prompt?: string; completion?: string };
+  architecture?: { input_modalities?: string[]; output_modalities?: string[] };
+}
+
+export interface ImageModelInfo {
+  id: string;
+  label: string;
+  description: string;
+  editsImages: boolean;
 }
 
 function describe(m: OpenRouterModelEntry): string {
@@ -55,7 +64,9 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
   const res = await fetch("https://openrouter.ai/api/v1/models");
   if (!res.ok) throw new Error(`OpenRouter model list request failed (${res.status})`);
   const data = (await res.json()) as { data: OpenRouterModelEntry[] };
-  const models: ModelInfo[] = (data.data ?? [])
+  const entries = data.data ?? [];
+
+  const models: ModelInfo[] = entries
     .map((m) => ({
       id: m.id,
       provider: "openrouter" as const,
@@ -65,6 +76,20 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
   setSetting(MODELS_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models }));
+
+  // Image Studio only needs models whose output includes "image" — a small
+  // subset, fetched from the same call rather than a second guess-based list.
+  const imageModels: ImageModelInfo[] = entries
+    .filter((m) => m.architecture?.output_modalities?.includes("image"))
+    .map((m) => ({
+      id: m.id,
+      label: m.name || m.id,
+      description: describe(m),
+      editsImages: !!m.architecture?.input_modalities?.includes("image"),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  setSetting(IMAGE_MODELS_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models: imageModels }));
+
   return models;
 }
 
@@ -77,6 +102,77 @@ export function getCachedOpenRouterModels(): { models: ModelInfo[]; fetchedAt: s
   } catch {
     return { models: [], fetchedAt: null };
   }
+}
+
+export function getCachedOpenRouterImageModels(): { models: ImageModelInfo[]; fetchedAt: string | null } {
+  const raw = getSetting(IMAGE_MODELS_CACHE_KEY);
+  if (!raw) return { models: [], fetchedAt: null };
+  try {
+    const parsed = JSON.parse(raw) as { fetchedAt: string; models: ImageModelInfo[] };
+    return { models: parsed.models, fetchedAt: parsed.fetchedAt };
+  } catch {
+    return { models: [], fetchedAt: null };
+  }
+}
+
+export interface GeneratedImagePart {
+  dataUrl: string;
+}
+
+// A direct fetch call rather than routing through the `openai` SDK's typed
+// chat.completions.create — the request needs `modalities` and the response's
+// `message.images[].image_url.url` field, neither of which are in the SDK's
+// (OpenAI-only) types. The shape here is taken verbatim from OpenRouter's own
+// published OpenAPI spec, not guessed.
+export async function generateOpenRouterImage(opts: {
+  model: string;
+  prompt: string;
+  referenceImageDataUrls?: string[];
+}): Promise<GeneratedImagePart[]> {
+  const apiKey = getOpenRouterApiKey();
+  if (!apiKey) throw new Error("NO_API_KEY");
+
+  const content: Array<
+    { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
+  > = [{ type: "text", text: opts.prompt }];
+  for (const url of opts.referenceImageDataUrls ?? []) {
+    content.push({ type: "image_url", image_url: { url } });
+  }
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://magi.local",
+      "X-Title": "Magi",
+    },
+    body: JSON.stringify({
+      model: opts.model,
+      modalities: ["image", "text"],
+      messages: [{ role: "user", content }],
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Image generation failed (${res.status}): ${text.slice(0, 400) || res.statusText}`);
+  }
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { images?: Array<{ image_url?: { url?: string } }>; content?: string } }>;
+  };
+  const images = data.choices?.[0]?.message?.images ?? [];
+  const urls = images.map((img) => img.image_url?.url).filter((u): u is string => !!u);
+  if (urls.length === 0) {
+    const textFallback = data.choices?.[0]?.message?.content;
+    throw new Error(
+      textFallback
+        ? `The model responded with text instead of an image: "${textFallback.slice(0, 200)}"`
+        : "The model returned no image."
+    );
+  }
+  return urls.map((dataUrl) => ({ dataUrl }));
 }
 
 function toOpenAITools(tools?: ToolSpec[]): ChatCompletionTool[] | undefined {
