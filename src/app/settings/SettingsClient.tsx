@@ -298,13 +298,12 @@ export function SettingsClient() {
       <section>
         <h2 className="mb-1 text-[14px] font-semibold text-[var(--color-text)]">About this build</h2>
         <p className="text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-          This is an early, working subset of the full Magi vision: Projects, persistent Project
-          instructions, streaming conversations with tool use, deliberate memory, full-text archive search,
-          reusable Skills, the Magi Council, Agents that pursue an objective across multiple steps, an
-          Image Lab with Style Guides and Characters for visual continuity, and Project export/import.
-          Model support covers Anthropic directly and every model OpenRouter proxies; the provider layer is
-          built to add more without touching the rest of the app. Cross-Project connection discovery is
-          architected for but not yet built.
+          This is a working subset of the full Magi vision: Projects, persistent Project instructions,
+          streaming conversations with tool use, deliberate memory, full-text archive search, reusable
+          Skills, the Magi Council, Agents that pursue an objective across multiple steps, an Image Lab
+          with Style Guides and Characters for visual continuity, cross-Project connection discovery, and
+          Project export/import. Model support covers Anthropic directly and every model OpenRouter
+          proxies; the provider layer is built to add more without touching the rest of the app.
         </p>
       </section>
     </div>

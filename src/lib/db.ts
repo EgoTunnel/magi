@@ -168,6 +168,16 @@ CREATE TABLE IF NOT EXISTS images (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS project_connections (
+  id TEXT PRIMARY KEY,
+  source_project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target_project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'running',
+  findings TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   kind, ref_id, project_id, title, content, created_at
 );
@@ -182,6 +192,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_style_guides_project ON style_guides(project_id);
 CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
 CREATE INDEX IF NOT EXISTS idx_images_project ON images(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_connections_source ON project_connections(source_project_id);
 `;
 
 db.exec(SCHEMA);

@@ -48,6 +48,16 @@ interface AgentRun {
   status: "running" | "stopping" | "stopped" | "complete" | "error";
   created_at: string;
 }
+interface OtherProject {
+  id: string;
+  name: string;
+}
+interface ConnectionRun {
+  id: string;
+  target_project_id: string | null;
+  status: "running" | "complete" | "error";
+  created_at: string;
+}
 
 export function ProjectDashboard({ projectId }: { projectId: string }) {
   const router = useRouter();
@@ -73,6 +83,13 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [launchingAgent, setLaunchingAgent] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
 
+  const [otherProjects, setOtherProjects] = useState<OtherProject[]>([]);
+  const [connectionRuns, setConnectionRuns] = useState<ConnectionRun[]>([]);
+  const [connectionFormOpen, setConnectionFormOpen] = useState(false);
+  const [connectionTargetId, setConnectionTargetId] = useState("");
+  const [launchingConnection, setLaunchingConnection] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
   async function load() {
     const res = await fetch(`/api/projects/${projectId}`);
     if (res.status === 404) {
@@ -84,13 +101,15 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setInstructionsDraft(data.project.instructions ?? "");
     setPurposeDraft(data.project.purpose ?? "");
 
-    const [convRes, memRes, docRes, skillRes, artRes, agentRes] = await Promise.all([
+    const [convRes, memRes, docRes, skillRes, artRes, agentRes, projRes, connRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/conversations`),
       fetch(`/api/memory?scope=project&projectId=${projectId}`),
       fetch(`/api/documents?projectId=${projectId}`),
       fetch(`/api/skills?projectId=${projectId}`),
       fetch(`/api/artifacts?projectId=${projectId}`),
       fetch(`/api/agents/runs?projectId=${projectId}`),
+      fetch(`/api/projects`),
+      fetch(`/api/connections/runs?projectId=${projectId}`),
     ]);
     setConversations((await convRes.json()).conversations);
     const memData: MemoryItem[] = (await memRes.json()).memory;
@@ -99,6 +118,9 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setSkills((await skillRes.json()).skills);
     setArtifacts((await artRes.json()).artifacts);
     setAgentRuns((await agentRes.json()).runs);
+    const allProjects: OtherProject[] = (await projRes.json()).projects;
+    setOtherProjects(allProjects.filter((p) => p.id !== projectId));
+    setConnectionRuns((await connRes.json()).runs);
   }
 
   useEffect(() => {
@@ -159,6 +181,25 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setObjectiveDraft("");
     setAgentFormOpen(false);
     router.push(`/agents/runs/${data.run.id}`);
+  }
+
+  async function launchConnection() {
+    setLaunchingConnection(true);
+    setConnectionError(null);
+    const res = await fetch("/api/connections/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sourceProjectId: projectId, targetProjectId: connectionTargetId || undefined }),
+    });
+    setLaunchingConnection(false);
+    if (res.status === 412) {
+      const data = await res.json();
+      setConnectionError(data.message ?? "No API key configured.");
+      return;
+    }
+    const data = await res.json();
+    setConnectionFormOpen(false);
+    router.push(`/connections/runs/${data.run.id}`);
   }
 
   if (notFound) {
@@ -271,6 +312,76 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                         <Tag tone={a.status === "running" || a.status === "stopping" ? "accent" : "default"}>
                           {a.status}
                         </Tag>
+                        <IconChevronRight className="text-[var(--color-text-faint)]" />
+                      </div>
+                    </Panel>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* Connections */}
+          <section>
+            <div className="mb-2.5 flex items-center justify-between">
+              <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                Connections
+              </h2>
+              <Button variant="ghost" onClick={() => setConnectionFormOpen((v) => !v)}>
+                <IconPlus /> Find connections
+              </Button>
+            </div>
+            {connectionFormOpen && (
+              <Panel className="mb-3 px-4 py-4">
+                <Label>Compare against</Label>
+                <select
+                  value={connectionTargetId}
+                  onChange={(e) => setConnectionTargetId(e.target.value)}
+                  className="focus-ring mb-3 w-full rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[13px] text-[var(--color-text)]"
+                >
+                  <option value="">All other Projects</option>
+                  {otherProjects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mb-3 text-[12px] text-[var(--color-text-muted)]">
+                  Magi will investigate the target Project&apos;s archive and report what genuinely connects
+                  to this one — or say plainly if nothing does. The Projects stay separate either way.
+                </p>
+                {connectionError && (
+                  <div className="mb-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-bg)] px-3 py-2 text-[12.5px] text-[var(--color-text)]">
+                    {connectionError}
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setConnectionFormOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button variant="accent" onClick={launchConnection} disabled={otherProjects.length === 0 || launchingConnection}>
+                    {launchingConnection ? "Starting…" : "Investigate"}
+                  </Button>
+                </div>
+              </Panel>
+            )}
+            {connectionRuns.length === 0 && !connectionFormOpen ? (
+              <EmptyState
+                title="No connections explored yet"
+                description="Ask what in another Project might be relevant to this one — research, not psychic memory."
+              />
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {connectionRuns.map((c) => (
+                  <Link key={c.id} href={`/connections/runs/${c.id}`}>
+                    <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
+                      <span className="truncate text-[13.5px] text-[var(--color-text)]">
+                        {c.target_project_id
+                          ? otherProjects.find((p) => p.id === c.target_project_id)?.name ?? "a Project"
+                          : "All other Projects"}
+                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Tag tone={c.status === "running" ? "accent" : "default"}>{c.status}</Tag>
                         <IconChevronRight className="text-[var(--color-text-faint)]" />
                       </div>
                     </Panel>

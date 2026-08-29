@@ -9,14 +9,14 @@ you happen to be using. Projects, memory, and archive live here; models are repl
 passing through. See [`docs/Product Vision.txt`](docs/Product%20Vision.txt) for the full vision this
 build is working toward.
 
-This repository is an early, working subset of that vision: Projects with persistent instructions,
-streaming conversations with tool use, deliberate memory (global and per-Project), full-text archive
-search, an "Ask my archive" mode, reusable Skills, the Magi Council for multi-role deliberation,
-Agents that pursue a multi-step objective and can be watched and stopped mid-run, an Image Lab with
-Style Guides and Characters for visual continuity across generations, and Project export/import. The
-model layer has two providers — Anthropic directly, and OpenRouter (which in turn proxies most of the
-industry, image-generation models included) — wired through an abstraction built to add more without
-touching the rest of the app.
+This repository is a working subset of that vision: Projects with persistent instructions, streaming
+conversations with tool use, deliberate memory (global and per-Project), full-text archive search, an
+"Ask my archive" mode, reusable Skills, the Magi Council for multi-role deliberation, Agents that
+pursue a multi-step objective and can be watched and stopped mid-run, an Image Lab with Style Guides
+and Characters for visual continuity across generations, cross-Project connection discovery, and
+Project export/import. The model layer has two providers — Anthropic directly, and OpenRouter (which
+in turn proxies most of the industry, image-generation models included) — wired through an
+abstraction built to add more without touching the rest of the app.
 
 ## Running it
 
@@ -56,8 +56,8 @@ local server.
   Project-scoped and can be threaded into a generation as reference images, so a character or visual
   language stays consistent across a body of work rather than resetting every prompt. Files live on
   disk under `data/images/`; only metadata sits in SQLite.
-
-## What's not built yet
-
-Cross-Project connection discovery ("what in my other Projects relates to this one") is part of the
-vision but not this build — the architecture anticipates it without pretending it exists.
+- **Connections** (`src/lib/connections.ts`) — from a Project, investigate one specific other Project
+  or all of them for what's genuinely relevant. Uses `search_archive` scoped to the target Project so
+  the model checks rather than guesses, and is explicitly instructed to report "nothing substantive"
+  rather than manufacture a connection. A finding can be promoted into the source Project's memory,
+  with its origin recorded. The Projects never merge — only the connection becomes visible.
