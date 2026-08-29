@@ -1,11 +1,20 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import { getOpenRouterApiKey, getSetting, setSetting } from "@/lib/settings";
-import type { CompleteOptions, ModelInfo, ModelProvider, ToolSpec } from "@/lib/models/types";
+import type {
+  CompleteOptions,
+  ModelCapabilities,
+  ModelInfo,
+  ModelProvider,
+  ReasoningEffort,
+  ToolSpec,
+} from "@/lib/models/types";
 
 const MODELS_CACHE_KEY = "openrouter_models_cache";
 const IMAGE_MODELS_CACHE_KEY = "openrouter_image_models_cache";
+const CAPABILITIES_CACHE_KEY = "openrouter_capabilities_cache";
 const MAX_TOOL_ITERATIONS = 10;
+const EFFORT_ORDER: ReasoningEffort[] = ["none", "low", "medium", "high", "xhigh", "max"];
 
 function client() {
   const apiKey = getOpenRouterApiKey();
@@ -27,6 +36,9 @@ interface OpenRouterModelEntry {
   context_length?: number;
   pricing?: { prompt?: string; completion?: string };
   architecture?: { input_modalities?: string[]; output_modalities?: string[] };
+  supported_parameters?: string[];
+  reasoning?: { mandatory?: boolean; supported_efforts?: string[] };
+  top_provider?: { max_completion_tokens?: number };
 }
 
 export interface ImageModelInfo {
@@ -73,6 +85,7 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
       label: m.name || m.id,
       description: describe(m),
       speed: guessSpeed(m.id),
+      supportsTools: (m.supported_parameters ?? []).includes("tools"),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
   setSetting(MODELS_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models }));
@@ -90,6 +103,27 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
     .sort((a, b) => a.label.localeCompare(b.label));
   setSetting(IMAGE_MODELS_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models: imageModels }));
 
+  // The behavior that actually varies model-to-model — tool support, whether
+  // reasoning can be turned down, the real output ceiling — read from
+  // OpenRouter's own metadata rather than assumed. This is what lets Magi
+  // stay correct across models it has never seen without a code change: the
+  // *shape* of the variance is fixed here, only the *values* come from the
+  // live catalog.
+  const capabilities: Record<string, ModelCapabilities> = {};
+  const validEfforts = new Set<string>(EFFORT_ORDER);
+  for (const m of entries) {
+    const supported = m.supported_parameters ?? [];
+    capabilities[m.id] = {
+      supportsTools: supported.includes("tools"),
+      reasoningMandatory: !!m.reasoning?.mandatory,
+      reasoningEfforts: (m.reasoning?.supported_efforts ?? []).filter((e): e is ReasoningEffort =>
+        validEfforts.has(e)
+      ),
+      maxCompletionTokens: m.top_provider?.max_completion_tokens ?? null,
+    };
+  }
+  setSetting(CAPABILITIES_CACHE_KEY, JSON.stringify(capabilities));
+
   return models;
 }
 
@@ -101,6 +135,17 @@ export function getCachedOpenRouterModels(): { models: ModelInfo[]; fetchedAt: s
     return { models: parsed.models, fetchedAt: parsed.fetchedAt };
   } catch {
     return { models: [], fetchedAt: null };
+  }
+}
+
+export function getOpenRouterCapabilities(modelId: string): ModelCapabilities | null {
+  const raw = getSetting(CAPABILITIES_CACHE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, ModelCapabilities>;
+    return parsed[modelId] ?? null;
+  } catch {
+    return null;
   }
 }
 
@@ -190,6 +235,37 @@ function toWorkingMessages(opts: CompleteOptions): ChatCompletionMessageParam[] 
   return messages;
 }
 
+// Shapes a request to what the specific model actually supports, per its
+// live-fetched capabilities. Unknown models (capabilities not yet cached —
+// e.g. right after a fresh install before the first refresh) fail open:
+// tools stay on and no reasoning override is sent, matching prior behavior
+// rather than guessing wrong in the untested direction.
+function requestExtras(opts: CompleteOptions): {
+  tools: ChatCompletionTool[] | undefined;
+  reasoning: { effort: ReasoningEffort } | undefined;
+  maxTokens: number;
+} {
+  const capabilities = getOpenRouterCapabilities(opts.model);
+  const wantsTools = !!opts.tools?.length;
+  const tools = wantsTools && capabilities?.supportsTools === false ? undefined : toOpenAITools(opts.tools);
+
+  let reasoning: { effort: ReasoningEffort } | undefined;
+  if (capabilities?.reasoningEfforts.length) {
+    const desired = opts.reasoningEffort ?? "low";
+    const effort = capabilities.reasoningEfforts.includes(desired)
+      ? desired
+      : capabilities.reasoningEfforts.find((e) => e === "low") ?? capabilities.reasoningEfforts[0];
+    reasoning = { effort };
+  }
+
+  const requestedMax = opts.maxTokens ?? 4096;
+  const maxTokens = capabilities?.maxCompletionTokens
+    ? Math.min(requestedMax, capabilities.maxCompletionTokens)
+    : requestedMax;
+
+  return { tools, reasoning, maxTokens };
+}
+
 // Some reasoning models proxied through OpenRouter (GLM, DeepSeek R1, QwQ, and
 // others) can return an empty `content` alongside a separate `reasoning` /
 // `reasoning_content` field when they spend their whole turn "thinking" —
@@ -235,7 +311,7 @@ export const openRouterProvider: ModelProvider = {
   },
   async complete(opts: CompleteOptions) {
     const c = client();
-    const tools = toOpenAITools(opts.tools);
+    const { tools, reasoning, maxTokens } = requestExtras(opts);
     const working = toWorkingMessages(opts);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -243,8 +319,9 @@ export const openRouterProvider: ModelProvider = {
         model: opts.model,
         messages: working,
         tools,
-        max_tokens: opts.maxTokens ?? 2048,
-      });
+        max_tokens: maxTokens,
+        ...(reasoning ? { reasoning } : {}),
+      } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming);
       const choice = res.choices[0];
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
         const toolResults = await resolveToolCalls(opts, choice.message.tool_calls);
@@ -258,7 +335,7 @@ export const openRouterProvider: ModelProvider = {
   },
   async *stream(opts: CompleteOptions) {
     const c = client();
-    const tools = toOpenAITools(opts.tools);
+    const { tools, reasoning, maxTokens } = requestExtras(opts);
     const working = toWorkingMessages(opts);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -266,8 +343,9 @@ export const openRouterProvider: ModelProvider = {
         model: opts.model,
         messages: working,
         tools,
-        max_tokens: opts.maxTokens ?? 4096,
-      });
+        max_tokens: maxTokens,
+        ...(reasoning ? { reasoning } : {}),
+      } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming);
       let emitted = "";
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta?.content;

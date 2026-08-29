@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { search } from "@/lib/searchIndex";
 import { getModel, modelForRole } from "@/lib/models/registry";
+import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -33,7 +34,8 @@ export async function POST(req: NextRequest) {
     system:
       "You are answering questions about the user's own archive of past Magi conversations, Projects, memory, and documents. Use only the numbered material given to you. Cite sources inline like [1], [2]. If the material doesn't actually answer the question, say so plainly rather than guessing.",
     messages: [{ role: "user", content: `Question: ${question}\n\nArchive material:\n\n${material}` }],
-    maxTokens: 900,
+    maxTokens: 1400,
+    reasoningEffort: ROLE_REASONING_EFFORT.researcher,
   });
 
   return NextResponse.json({ answer, sources: results });

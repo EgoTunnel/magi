@@ -9,6 +9,7 @@ interface ModelInfo {
   label: string;
   description: string;
   speed: string;
+  supportsTools?: boolean;
 }
 interface RoleInfo {
   id: string;
@@ -255,6 +256,7 @@ export function SettingsClient() {
                     {modelsByProvider.openrouter.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.label}
+                        {m.supportsTools === false ? " — no tool use" : ""}
                       </option>
                     ))}
                   </optgroup>

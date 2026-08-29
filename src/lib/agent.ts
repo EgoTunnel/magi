@@ -1,5 +1,6 @@
 import { getModel, modelForRole } from "@/lib/models/registry";
 import type { ModelRoleId, ToolCallRecord } from "@/lib/models/types";
+import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
 import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
 import { getProject } from "@/lib/repo/projects";
 import { createArtifact } from "@/lib/repo/artifacts";
@@ -39,6 +40,7 @@ async function runStep(opts: {
     tools: opts.withTools ? TOOL_SPECS : undefined,
     onToolCall: opts.withTools ? (name, input) => executeTool(name, input, { projectId: opts.projectId }) : undefined,
     toolLog,
+    reasoningEffort: ROLE_REASONING_EFFORT[opts.modelRole],
   });
   return { content, toolCalls: toolLog };
 }

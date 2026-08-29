@@ -1,5 +1,6 @@
 import { getModel, modelForRole } from "@/lib/models/registry";
 import type { ToolCallRecord } from "@/lib/models/types";
+import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
 import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
 import { getProject, listProjects, type Project } from "@/lib/repo/projects";
 import { listMemory } from "@/lib/repo/memory";
@@ -55,6 +56,7 @@ async function analyzeTarget(source: Project, target: Project): Promise<Connecti
     tools: TOOL_SPECS,
     onToolCall: (name, input) => executeTool(name, input, { projectId: target.id }),
     toolLog,
+    reasoningEffort: ROLE_REASONING_EFFORT[modelRole],
   });
 
   return {

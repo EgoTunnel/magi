@@ -1,5 +1,6 @@
 import { getModel, modelForRole } from "@/lib/models/registry";
 import type { ModelRoleId, ToolCallRecord } from "@/lib/models/types";
+import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
 import type { CouncilRole, CouncilTranscriptEntry } from "@/lib/repo/councils";
 import { updateCouncilRun } from "@/lib/repo/councils";
 import { getProject } from "@/lib/repo/projects";
@@ -10,7 +11,8 @@ async function completeAs(
   prompt: string,
   opts: { withTools?: boolean; projectId?: string | null } = {}
 ): Promise<{ content: string; modelId: string; toolCalls: ToolCallRecord[] }> {
-  const modelId = modelForRole((role.modelRole as ModelRoleId) ?? "default");
+  const roleId = (role.modelRole as ModelRoleId) ?? "default";
+  const modelId = modelForRole(roleId);
   const resolved = getModel(modelId);
   if (!resolved || !resolved.provider.isConfigured()) {
     throw new Error("NO_API_KEY");
@@ -24,6 +26,7 @@ async function completeAs(
     tools: opts.withTools ? TOOL_SPECS : undefined,
     onToolCall: opts.withTools ? (name, input) => executeTool(name, input, { projectId: opts.projectId }) : undefined,
     toolLog,
+    reasoningEffort: ROLE_REASONING_EFFORT[roleId],
   });
   return { content, modelId, toolCalls: toolLog };
 }

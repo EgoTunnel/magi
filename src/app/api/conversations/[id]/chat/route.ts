@@ -3,6 +3,7 @@ import { addMessage, getConversation, listMessages } from "@/lib/repo/conversati
 import { buildSystemPrompt } from "@/lib/contextBuilder";
 import { getModel, modelForRole } from "@/lib/models/registry";
 import type { ModelMessage, ModelRoleId, ToolCallRecord } from "@/lib/models/types";
+import { ROLE_REASONING_EFFORT } from "@/lib/models/types";
 import { TOOL_SPECS, executeTool } from "@/lib/tools/registry";
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
           tools: TOOL_SPECS,
           onToolCall: (name, input) => executeTool(name, input, { projectId }),
           toolLog,
+          reasoningEffort: ROLE_REASONING_EFFORT[modelRole],
         });
         for await (const chunk of generator) {
           full += chunk;

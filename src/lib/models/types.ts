@@ -9,6 +9,25 @@ export interface ModelInfo {
   label: string;
   description: string;
   speed: "fast" | "balanced" | "deep";
+  // Whether this model can be sent tool definitions at all. Anthropic models
+  // are assumed true; OpenRouter models are set from the live catalog.
+  // Undefined means unknown (capabilities not fetched yet) — treated as true
+  // so nothing regresses before the first catalog refresh.
+  supportsTools?: boolean;
+}
+
+export type ReasoningEffort = "none" | "low" | "medium" | "high" | "max" | "xhigh";
+
+// What a specific model actually supports, fetched from the provider's own
+// catalog rather than assumed. This is the mechanism that lets Magi stay
+// correct across arbitrary OpenRouter models without a code change per model:
+// the *shape* of what varies (tool support, reasoning behavior, output
+// ceiling) is fixed, even though *which* models fall where isn't.
+export interface ModelCapabilities {
+  supportsTools: boolean;
+  reasoningMandatory: boolean;
+  reasoningEfforts: ReasoningEffort[];
+  maxCompletionTokens: number | null;
 }
 
 // A tool Magi's model layer can call mid-turn. The model only ever sees
@@ -38,6 +57,13 @@ export interface CompleteOptions {
   tools?: ToolSpec[];
   onToolCall?: (name: string, input: unknown) => Promise<string>;
   toolLog?: ToolCallRecord[];
+  // How hard a model should think before answering, where the model supports
+  // saying so. Unset defaults to "low" for providers where reasoning is
+  // otherwise mandatory-and-unbounded — see openrouter.ts. Some current
+  // models spend their *entire* turn "thinking" and never emit a visible
+  // answer unless this is turned down; this is the real fix for that class
+  // of failure, not just a bigger token budget.
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ModelProvider {
@@ -65,3 +91,12 @@ export const MODEL_ROLES = [
 ] as const;
 
 export type ModelRoleId = (typeof MODEL_ROLES)[number]["id"];
+
+// Deeper roles get more room to think; everything else defaults to "low" at
+// the provider level, which is what most conversational and agentic turns
+// actually want — fast, direct answers rather than long hidden deliberation.
+export const ROLE_REASONING_EFFORT: Partial<Record<ModelRoleId, ReasoningEffort>> = {
+  reasoner: "high",
+  synthesizer: "high",
+  researcher: "medium",
+};
