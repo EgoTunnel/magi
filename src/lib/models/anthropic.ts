@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getAnthropicApiKey } from "@/lib/settings";
-import type { CompleteOptions, ModelInfo, ModelMessage, ModelProvider, ToolSpec } from "@/lib/models/types";
+import type { CompleteOptions, ModelInfo, ModelMessage, ModelProvider, StreamEvent, ToolSpec } from "@/lib/models/types";
 
 const MODELS: ModelInfo[] = [
   {
@@ -138,14 +138,17 @@ export const anthropicProvider: ModelProvider = {
       });
       for await (const event of stream) {
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-          yield event.delta.text;
+          yield { type: "text", text: event.delta.text } satisfies StreamEvent;
         }
       }
 
       const final = await stream.finalMessage();
       opts.usage?.push({ promptTokens: final.usage.input_tokens, completionTokens: final.usage.output_tokens });
       if (final.stop_reason === "tool_use") {
+        const toolUseBlocks = final.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+        for (const block of toolUseBlocks) yield { type: "tool_start", name: block.name } satisfies StreamEvent;
         const toolResults = await resolveToolCalls(opts, final.content);
+        for (const block of toolUseBlocks) yield { type: "tool_end", name: block.name } satisfies StreamEvent;
         working.push({ role: "assistant", content: final.content });
         working.push({ role: "user", content: toolResults });
         continue;

@@ -43,6 +43,7 @@ interface Artifact {
   title: string;
   type: string;
   version: number;
+  mime_type: string | null;
 }
 interface AgentRun {
   id: string;
@@ -522,12 +523,24 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                 Artifacts
               </h2>
               <div className="flex flex-col gap-1.5">
-                {artifacts.map((a) => (
-                  <Panel key={a.id} className="flex items-center justify-between px-3.5 py-2.5">
-                    <span className="truncate text-[13.5px] text-[var(--color-text)]">{a.title}</span>
-                    <Tag>v{a.version}</Tag>
-                  </Panel>
-                ))}
+                {artifacts.map((a) =>
+                  a.mime_type ? (
+                    <a key={a.id} href={`/api/artifacts/${a.id}/file`} download>
+                      <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
+                        <span className="flex min-w-0 items-center gap-2">
+                          <IconDocument className="shrink-0 text-[var(--color-text-faint)]" />
+                          <span className="truncate text-[13.5px] text-[var(--color-text)]">{a.title}</span>
+                        </span>
+                        <Tag>v{a.version}</Tag>
+                      </Panel>
+                    </a>
+                  ) : (
+                    <Panel key={a.id} className="flex items-center justify-between px-3.5 py-2.5">
+                      <span className="truncate text-[13.5px] text-[var(--color-text)]">{a.title}</span>
+                      <Tag>v{a.version}</Tag>
+                    </Panel>
+                  )
+                )}
               </div>
             </section>
           )}

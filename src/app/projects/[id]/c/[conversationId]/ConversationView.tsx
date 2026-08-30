@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Button, Tag } from "@/components/ui";
-import { IconAttach, IconChevronRight, IconSend, IconTrash } from "@/components/icons";
+import { Button, Input, Tag } from "@/components/ui";
+import { IconAttach, IconChevronRight, IconDocument, IconSend, IconTrash } from "@/components/icons";
 import type { ContextProvenance } from "@/lib/contextBuilder";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
 
@@ -28,6 +28,13 @@ interface PendingAttachment {
   filename: string;
   kind: "image" | "text";
 }
+interface ArtifactFile {
+  id: string;
+  title: string;
+  version: number;
+  mime_type: string | null;
+  message_id: string | null;
+}
 
 export function ConversationView({ projectId, conversationId }: { projectId: string; conversationId: string }) {
   const [projectName, setProjectName] = useState("");
@@ -36,29 +43,35 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  const [toolStatus, setToolStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillId, setSkillId] = useState<string>("");
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [modelRole, setModelRole] = useState("default");
   const [contextOpen, setContextOpen] = useState(false);
+  const [savingArtifactFor, setSavingArtifactFor] = useState<string | null>(null);
+  const [artifactTitleDraft, setArtifactTitleDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [artifactFiles, setArtifactFiles] = useState<ArtifactFile[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const attachFileInputRef = useRef<HTMLInputElement>(null);
 
   async function load() {
-    const [convRes, skillsRes, modelsRes] = await Promise.all([
+    const [convRes, skillsRes, modelsRes, artifactsRes] = await Promise.all([
       fetch(`/api/conversations/${conversationId}`),
       fetch(`/api/skills?projectId=${projectId}`),
       fetch(`/api/models`),
+      fetch(`/api/artifacts?conversationId=${conversationId}`),
     ]);
     const convData = await convRes.json();
     setTitle(convData.conversation?.title ?? "");
     setMessages(convData.messages ?? []);
     setSkills((await skillsRes.json()).skills ?? []);
     setRoles((await modelsRes.json()).roles ?? []);
+    setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
 
     const projRes = await fetch(`/api/projects/${projectId}`);
     const projData = await projRes.json();
@@ -116,6 +129,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       { id: `local-${Date.now()}`, role: "user", content, model: null, provenance: null, created_at: new Date().toISOString() },
     ]);
     setStreamingText("");
+    setToolStatus(null);
 
     try {
       const res = await fetch(`/api/conversations/${conversationId}/chat`, {
@@ -139,13 +153,35 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let full = "";
+      let buffer = "";
+      const handleLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: { type: string; text?: string; name?: string };
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (event.type === "text" && event.text) {
+          full += event.text;
+          setStreamingText(full);
+        } else if (event.type === "tool_start" && event.name) {
+          setToolStatus(event.name);
+        } else if (event.type === "tool_end") {
+          setToolStatus(null);
+        }
+      };
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        full += decoder.decode(value, { stream: true });
-        setStreamingText(full);
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) handleLine(line);
       }
+      if (buffer) handleLine(buffer);
       setStreamingText("");
+      setToolStatus(null);
       await load();
     } catch {
       setError("Connection interrupted.");
@@ -162,14 +198,26 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     });
   }
 
-  async function saveArtifact(content: string) {
-    const artifactTitle = window.prompt("Title for this artifact:", title || "Untitled artifact");
+  function startSaveArtifact(messageId: string) {
+    setSavingArtifactFor(messageId);
+    setArtifactTitleDraft(title || "Untitled artifact");
+  }
+
+  function cancelSaveArtifact() {
+    setSavingArtifactFor(null);
+    setArtifactTitleDraft("");
+  }
+
+  async function confirmSaveArtifact(content: string) {
+    const artifactTitle = artifactTitleDraft.trim();
     if (!artifactTitle) return;
     await fetch("/api/artifacts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId, conversationId, title: artifactTitle, content }),
     });
+    setSavingArtifactFor(null);
+    setArtifactTitleDraft("");
   }
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
@@ -196,7 +244,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       <div className="flex flex-1 overflow-hidden">
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto flex max-w-2xl flex-col gap-7">
-            {messages.length === 0 && !streamingText && (
+            {messages.length === 0 && !streamingText && !toolStatus && (
               <p className="text-[13px] text-[var(--color-text-faint)]">
                 This conversation is empty. Say something to begin.
               </p>
@@ -205,14 +253,21 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
               <MessageBlock
                 key={m.id}
                 message={m}
+                files={artifactFiles.filter((a) => a.message_id === m.id && a.mime_type)}
                 onRemember={rememberMessage}
-                onSaveArtifact={saveArtifact}
+                onStartSaveArtifact={startSaveArtifact}
+                savingArtifact={savingArtifactFor === m.id}
+                artifactTitleDraft={artifactTitleDraft}
+                onArtifactTitleChange={setArtifactTitleDraft}
+                onConfirmSaveArtifact={confirmSaveArtifact}
+                onCancelSaveArtifact={cancelSaveArtifact}
               />
             ))}
-            {streamingText && (
+            {(streamingText || toolStatus) && (
               <MessageBlock
                 message={{ id: "streaming", role: "assistant", content: streamingText, model: null, provenance: null, created_at: "" }}
                 streaming
+                toolStatus={toolStatus}
               />
             )}
             {error && (
@@ -381,13 +436,27 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
 function MessageBlock({
   message,
   streaming,
+  toolStatus,
+  files,
   onRemember,
-  onSaveArtifact,
+  onStartSaveArtifact,
+  savingArtifact,
+  artifactTitleDraft,
+  onArtifactTitleChange,
+  onConfirmSaveArtifact,
+  onCancelSaveArtifact,
 }: {
   message: Message;
   streaming?: boolean;
+  toolStatus?: string | null;
+  files?: ArtifactFile[];
   onRemember?: (content: string, scope: "global" | "project") => void;
-  onSaveArtifact?: (content: string) => void;
+  onStartSaveArtifact?: (messageId: string) => void;
+  savingArtifact?: boolean;
+  artifactTitleDraft?: string;
+  onArtifactTitleChange?: (title: string) => void;
+  onConfirmSaveArtifact?: (content: string) => void;
+  onCancelSaveArtifact?: () => void;
 }) {
   const isUser = message.role === "user";
   return (
@@ -397,13 +466,31 @@ function MessageBlock({
           {isUser ? "You" : "Magi"}
         </span>
         {message.model && <Tag>{message.model}</Tag>}
-        {streaming && <span className="text-[10.5px] text-[var(--color-accent)]">writing…</span>}
+        {streaming && toolStatus && (
+          <span className="text-[10.5px] text-[var(--color-accent)] font-technical">using {toolStatus}…</span>
+        )}
+        {streaming && !toolStatus && <span className="text-[10.5px] text-[var(--color-accent)]">writing…</span>}
       </div>
       <div className={isUser ? "text-[15px] leading-relaxed text-[var(--color-text)]" : "prose-magi"}>
         {message.content.split("\n").map((line, i) => (
           <p key={i}>{line || " "}</p>
         ))}
       </div>
+      {files && files.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {files.map((f) => (
+            <a
+              key={f.id}
+              href={`/api/artifacts/${f.id}/file`}
+              download
+              className="flex items-center gap-1.5 rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+            >
+              <IconDocument className="shrink-0" />
+              {f.title} <span className="text-[var(--color-text-faint)]">v{f.version}</span>
+            </a>
+          ))}
+        </div>
+      )}
       {!isUser && !streaming && onRemember && (
         <div className="mt-2 flex gap-3 opacity-0 transition-opacity group-hover:opacity-100">
           <button
@@ -419,11 +506,32 @@ function MessageBlock({
             Remember globally
           </button>
           <button
-            onClick={() => onSaveArtifact?.(message.content)}
+            onClick={() => onStartSaveArtifact?.(message.id)}
             className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
           >
             Save as artifact
           </button>
+        </div>
+      )}
+      {savingArtifact && (
+        <div className="mt-2 flex items-center gap-2">
+          <Input
+            autoFocus
+            value={artifactTitleDraft ?? ""}
+            onChange={(e) => onArtifactTitleChange?.(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onConfirmSaveArtifact?.(message.content);
+              if (e.key === "Escape") onCancelSaveArtifact?.();
+            }}
+            placeholder="Title for this artifact"
+            className="max-w-[260px]"
+          />
+          <Button variant="accent" onClick={() => onConfirmSaveArtifact?.(message.content)} disabled={!artifactTitleDraft?.trim()}>
+            Save
+          </Button>
+          <Button variant="ghost" onClick={onCancelSaveArtifact}>
+            Cancel
+          </Button>
         </div>
       )}
     </div>

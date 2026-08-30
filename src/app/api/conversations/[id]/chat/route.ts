@@ -2,9 +2,10 @@ import fs from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
 import { addMessage, getConversation, listMessages } from "@/lib/repo/conversations";
 import { getAttachment, attachToMessage, type Attachment } from "@/lib/repo/attachments";
+import { attachArtifactsToMessage } from "@/lib/repo/artifacts";
 import { buildSystemPrompt } from "@/lib/contextBuilder";
 import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
-import type { ContentPart, ModelMessage, ModelRoleId, TokenUsage, ToolCallRecord } from "@/lib/models/types";
+import type { ContentPart, ModelMessage, ModelRoleId, StreamEvent, TokenUsage, ToolCallRecord } from "@/lib/models/types";
 import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
 import { estimateCost } from "@/lib/models/pricing";
@@ -105,6 +106,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const encoder = new TextEncoder();
   let full = "";
   const toolLog: ToolCallRecord[] = [];
+  const createdArtifactIds: string[] = [];
   const usage: TokenUsage[] = [];
   const projectId = conversation.project_id;
   const providerId = resolved.provider.id as "anthropic" | "openrouter";
@@ -161,34 +163,43 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
           system,
           messages: history,
           tools,
-          onToolCall: (name, input) => executeTool(name, input, { projectId, allowedToolNames }),
+          onToolCall: (name, input) =>
+            executeTool(name, input, {
+              projectId,
+              conversationId: id,
+              allowedToolNames,
+              onArtifactCreated: (artifactId) => createdArtifactIds.push(artifactId),
+            }),
           toolLog,
           usage,
           reasoningEffort: reasoningEffortForRole(modelRole),
         });
-        for await (const chunk of generator) {
-          full += chunk;
-          controller.enqueue(encoder.encode(chunk));
+        for await (const event of generator) {
+          if (event.type === "text") full += event.text;
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         }
-        addMessage({
+        const assistantMessage = addMessage({
           conversationId: id,
           role: "assistant",
           content: full || "(no response)",
           model: modelId,
           provenance: finalProvenance(),
         });
+        if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
         controller.close();
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
-        controller.enqueue(encoder.encode(`\n\n[Magi encountered an error: ${message}]`));
+        const errorEvent: StreamEvent = { type: "text", text: `\n\n[Magi encountered an error: ${message}]` };
+        controller.enqueue(encoder.encode(`${JSON.stringify(errorEvent)}\n`));
         if (full) {
-          addMessage({
+          const assistantMessage = addMessage({
             conversationId: id,
             role: "assistant",
             content: full,
             model: modelId,
             provenance: finalProvenance(),
           });
+          if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
         }
         controller.close();
       }

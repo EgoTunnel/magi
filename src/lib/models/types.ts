@@ -97,13 +97,25 @@ export interface CompleteOptions {
   usage?: TokenUsage[];
 }
 
+// What stream() yields mid-turn — text to show, or notice that a tool call is
+// in flight. Only chat/route.ts consumes this (the only caller of .stream();
+// everything else uses .complete()), so this is the only place the shape
+// matters. A tool call is reported as one start/end pair per batch (a model
+// can request more than one tool at once) rather than granular per-call
+// progress — simpler, and still answers "is something happening, and
+// roughly what."
+export type StreamEvent =
+  | { type: "text"; text: string }
+  | { type: "tool_start"; name: string }
+  | { type: "tool_end"; name: string };
+
 export interface ModelProvider {
   id: string;
   label: string;
   models: ModelInfo[];
   isConfigured(): boolean;
   complete(opts: CompleteOptions): Promise<string>;
-  stream(opts: CompleteOptions): AsyncGenerator<string, void, unknown>;
+  stream(opts: CompleteOptions): AsyncGenerator<StreamEvent, void, unknown>;
 }
 
 // A "role" is what the rest of Magi should reference — never a raw model id.

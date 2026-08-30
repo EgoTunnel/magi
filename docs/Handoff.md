@@ -72,6 +72,7 @@ src/
                                 characters, attachments. Thin wrappers over better-sqlite3 + search index upkeep.
     files/
       extractText.ts             PDF/DOCX/plain-text extraction, shared by Documents and attachments
+      markdownToDocx.ts           Markdown -> mdast -> real docx constructs, for the create_docx tool
     tools/
       registry.ts               TOOL_SPECS + executeTool() — the actual tool layer
       calculator.ts             Hand-written arithmetic parser (deliberately not eval())
@@ -96,7 +97,17 @@ src/
 - **§17 Command palette** — ⌘K, searches across all entity types.
 - **§18–19 Context transparency & provenance** — the Context panel on a conversation; provenance is
   stored on each assistant message (JSON: instructions used, memory counts, documents used, Skill used,
-  tool calls made).
+  tool calls made). **Live tool-status while streaming**: `ModelProvider.stream()` (only consumer:
+  `chat/route.ts` — every other caller uses `.complete()`) now yields a small discriminated union,
+  `StreamEvent` (`types.ts`) — `{type:"text"}` for actual content, `{type:"tool_start"/"tool_end", name}`
+  bracketing each tool-call batch — instead of a plain string. `chat/route.ts` encodes each event as one
+  NDJSON line; `ConversationView.tsx` buffers partial lines across reads, parses each complete one, and
+  shows "using web_search…" (etc., raw tool name, same posture as the existing "Tools used" provenance
+  list) the moment a tool starts rather than showing nothing until the first real text token — verified
+  live this was a real, confirmed gap before the fix: `resolveToolCalls()` in both provider adapters runs
+  inside a plain `await` with nothing yielded during it, and the old "writing…" label only ever appeared
+  once `streamingText` was non-empty. Confirmed live after the fix: the status line appears and clears at
+  the right moments for a `run_python` call, and a plain no-tool turn is unaffected.
 - **§20–21 Memory** — global + Project-scoped, deliberate promotion only (never automatic).
 - **§22–24 Archive & search** — SQLite FTS5 full-text search, plus "Ask my archive" (search + synthesize
   with citations). **§23 semantic search**: the Archive page's "Search" mode now has a Wording/Meaning
@@ -220,8 +231,42 @@ src/
   bundler gotcha hit and fixed: `pdf-parse` (which wraps `pdfjs-dist`) needs
   `serverExternalPackages: ["pdf-parse", "@napi-rs/canvas"]` in `next.config.ts` plus an `import
   "pdf-parse/worker"` before `pdf-parse` itself, or Next's dev/build bundler can't resolve the PDF.js
-  worker script and every extraction fails with "Setting up fake worker failed." Artifacts still have
-  version chains (`parent_id` linking).
+  worker script and every extraction fails with "Setting up fake worker failed." **New: `create_docx`
+  tool** generates real, well-formatted Word documents rather than pasting Markdown in as plain text.
+  `src/lib/files/markdownToDocx.ts` parses Markdown with `unified`/`remark-parse`/`remark-gfm` into an
+  mdast tree and walks it by hand into genuine `docx` constructs — real heading styles, real list
+  numbering (bullet and ordered, including nesting), real tables with a shaded header row, hyperlinks,
+  blockquotes, shaded code blocks — deliberately not delegated to a generic HTML-to-docx converter, since
+  that would mean losing control over exactly how each construct renders. A considered default style
+  (heading colors/sizing, not Word's bare default) is applied via `Document({ styles: ... })`, overriding
+  the built-in `Heading1`..`Heading6` style ids. This is also **what finally gave Artifacts a download
+  path** — until now there was no artifact viewer or download UI anywhere in Magi (the Project dashboard's
+  Artifacts section was a static, non-clickable title + version row). Rather than build a new entity,
+  `artifacts` gained the same `mime_type`/`file_path` extension `documents` already got, `POST
+  /api/artifacts/[id]/file` mirrors the existing `images/[id]/file` binary-serving route (plus
+  `Content-Disposition: attachment` like the project-export route already does), and artifacts with a
+  `mime_type` are real download links in the dashboard now; plain-text artifacts are unchanged — a full
+  artifact viewer is still out of scope. `content` keeps storing the Markdown *source*, not text pulled
+  back out of the generated .docx, so generated documents stay FTS-searchable exactly like before.
+  Versioning reuses `createNewVersion()` unchanged — passing `artifact_id` to the tool revises a docx
+  lineage instead of creating a new one. Verified live: a real multi-section document (headings, bold/
+  italic, bullet and numbered lists, a table, a link) round-tripped through Word formatting correctly,
+  not as escaped Markdown text; a revision correctly incremented the version and linked `parent_id`.
+  **Generated files now also show up inline in the conversation that made them**, not just the Project
+  dashboard: `artifacts` gained a `message_id` column (same nullable-extension pattern again), and
+  `attachArtifactsToMessage()` in `artifacts.ts` links a tool-created artifact to the assistant message it
+  belongs to — mirroring `attachToMessage()` for conversation attachments, and for the same underlying
+  reason: `create_docx` runs mid-stream, before the assistant message it belongs to has been persisted, so
+  the artifact is created first (`message_id` null) and linked afterward once `addMessage()` returns a
+  real id. The link is `ToolContext.onArtifactCreated` (`registry.ts`), a callback `chat/route.ts` supplies
+  to collect ids during the turn's tool loop, then applies via `attachArtifactsToMessage()` right after
+  `addMessage()` — in both the normal-completion and partial-content-on-error paths. `GET
+  /api/artifacts?conversationId=…` (`listArtifactsByConversation()`, deliberately *not*
+  lineage-collapsed like `listArtifacts()` — every turn that produced a file, including revisions, is a
+  distinct point in that conversation's own history) feeds `ConversationView.tsx`, which renders a real
+  download chip directly under whichever message created each file. Verified live: the artifact's
+  `message_id` matched the actual persisted assistant message id, the chip rendered under the right
+  message, and the link served the correct file with the right `Content-Type`/`Content-Disposition`.
 - **§51–57 Image Studio** — real generation via OpenRouter multimodal models, Style Guides, Characters
   with reference images, variations. **No Brand Libraries (§55)** distinct from Style Guides/Characters.
 - **§59–63 Interoperability & portability** — Project export/import (Magi's own JSON format).

@@ -4,11 +4,18 @@ import { getCrossProjectSearchEnabled, getDisabledTools } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
 import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
 import { runPython, runJavaScript } from "@/lib/tools/codeExec";
+import { saveDocxArtifact } from "@/lib/repo/artifacts";
 import { getSkill } from "@/lib/repo/skills";
 
 export interface ToolContext {
   projectId?: string | null;
+  conversationId?: string | null;
   allowedToolNames?: Set<string>;
+  // create_docx runs mid-stream, before the assistant message it belongs to
+  // is persisted — this is how the caller finds out an artifact was created
+  // so it can link the two together once a real message id exists. See
+  // chat/route.ts.
+  onArtifactCreated?: (artifactId: string) => void;
 }
 
 // The full set of tools Magi currently offers a model mid-turn — read-only
@@ -92,6 +99,20 @@ export const TOOL_SPECS: ToolSpec[] = [
         code: { type: "string", description: "JavaScript source to execute" },
       },
       required: ["code"],
+    },
+  },
+  {
+    name: "create_docx",
+    description:
+      "Generate a real, properly formatted Word document (.docx) and save it as a downloadable artifact in this Project. Write the content as genuine Markdown — # / ## / ### headings, **bold**, *italic*, - or 1. lists (including nested), GFM tables (| a | b |), [links](url), > blockquotes, and ```fenced code blocks``` — it is converted into actual Word formatting (real heading styles, real list numbering, real tables), not pasted in as literal text. To revise a document already in this Project rather than create a new one, pass its artifact_id — that saves a new version instead of a separate file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Document title, also used as the filename" },
+        markdown: { type: "string", description: "The document's content, written as Markdown" },
+        artifact_id: { type: "string", description: "Optional — the id of an existing docx artifact to save a new version of, instead of creating a new one" },
+      },
+      required: ["title", "markdown"],
     },
   },
 ];
@@ -178,6 +199,21 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       const code = (rawInput as { code?: string } | undefined)?.code;
       if (!code) return "Error: no code given.";
       return await runJavaScript(code);
+    }
+
+    if (name === "create_docx") {
+      const input = rawInput as { title?: string; markdown?: string; artifact_id?: string } | undefined;
+      if (!input?.title || !input?.markdown) return "Error: title and markdown are both required.";
+      if (!ctx.projectId) return "Error: create_docx needs a Project to save into, and none is available here.";
+      const artifact = await saveDocxArtifact({
+        projectId: ctx.projectId,
+        conversationId: ctx.conversationId ?? undefined,
+        title: input.title,
+        markdown: input.markdown,
+        parentId: input.artifact_id,
+      });
+      ctx.onArtifactCreated?.(artifact.id);
+      return `Saved "${artifact.title}" as a Word document (version ${artifact.version}, artifact id ${artifact.id}).`;
     }
 
     return `Error: unknown tool '${name}'.`;

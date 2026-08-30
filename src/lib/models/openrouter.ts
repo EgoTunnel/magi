@@ -8,6 +8,7 @@ import type {
   ModelMessage,
   ModelProvider,
   ReasoningEffort,
+  StreamEvent,
   ToolSpec,
 } from "@/lib/models/types";
 import { REASONING_EFFORTS } from "@/lib/models/types";
@@ -431,7 +432,7 @@ export const openRouterProvider: ModelProvider = {
         const delta = chunk.choices[0]?.delta?.content;
         if (delta) {
           emitted += delta;
-          yield delta;
+          yield { type: "text", text: delta } satisfies StreamEvent;
         }
       }
 
@@ -441,14 +442,17 @@ export const openRouterProvider: ModelProvider = {
       }
       const choice = final.choices[0];
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
+        const calls = choice.message.tool_calls.filter((c) => c.type === "function");
+        for (const call of calls) yield { type: "tool_start", name: call.function.name } satisfies StreamEvent;
         const toolResults = await resolveToolCalls(opts, choice.message.tool_calls);
+        for (const call of calls) yield { type: "tool_end", name: call.function.name } satisfies StreamEvent;
         working.push(choice.message);
         working.push(...toolResults);
         continue;
       }
       if (!emitted.trim()) {
         const fallback = extractText(choice.message);
-        if (fallback) yield fallback;
+        if (fallback) yield { type: "text", text: fallback } satisfies StreamEvent;
       }
       return;
     }

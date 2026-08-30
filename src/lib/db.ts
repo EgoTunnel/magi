@@ -263,6 +263,9 @@ addColumnIfMissing("agent_runs", "allowed_tools", "TEXT");
 addColumnIfMissing("council_runs", "mode", "TEXT NOT NULL DEFAULT 'independent'");
 addColumnIfMissing("documents", "mime_type", "TEXT");
 addColumnIfMissing("documents", "file_path", "TEXT");
+addColumnIfMissing("artifacts", "mime_type", "TEXT");
+addColumnIfMissing("artifacts", "file_path", "TEXT");
+addColumnIfMissing("artifacts", "message_id", "TEXT");
 
 export function nowIso() {
   return new Date().toISOString();

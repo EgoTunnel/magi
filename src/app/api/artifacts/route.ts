@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createArtifact, listArtifacts } from "@/lib/repo/artifacts";
+import { createArtifact, listArtifacts, listArtifactsByConversation } from "@/lib/repo/artifacts";
 
 export async function GET(req: NextRequest) {
+  const conversationId = req.nextUrl.searchParams.get("conversationId");
+  if (conversationId) return NextResponse.json({ artifacts: listArtifactsByConversation(conversationId) });
+
   const projectId = req.nextUrl.searchParams.get("projectId");
-  if (!projectId) return NextResponse.json({ error: "projectId is required" }, { status: 400 });
+  if (!projectId) return NextResponse.json({ error: "projectId or conversationId is required" }, { status: 400 });
   return NextResponse.json({ artifacts: listArtifacts(projectId) });
 }
 
