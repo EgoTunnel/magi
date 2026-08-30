@@ -2,6 +2,7 @@ import type { ToolSpec } from "@/lib/models/types";
 import { search } from "@/lib/searchIndex";
 import { getCrossProjectSearchEnabled, getDisabledTools } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
+import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
 import { getSkill } from "@/lib/repo/skills";
 
 export interface ToolContext {
@@ -9,10 +10,10 @@ export interface ToolContext {
   allowedToolNames?: Set<string>;
 }
 
-// The full set of tools Magi currently offers a model mid-turn. This is a
-// short, deliberately safe list — read-only archive search and arithmetic —
-// matching Product Vision §32-33: the model requests a tool, Magi's tool
-// layer is the only thing that actually executes it.
+// The full set of tools Magi currently offers a model mid-turn — read-only
+// archive search, arithmetic, and web search/fetch — matching Product Vision
+// §32-33: the model requests a tool, Magi's tool layer is the only thing
+// that actually executes it.
 export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "search_archive",
@@ -41,6 +42,31 @@ export const TOOL_SPECS: ToolSpec[] = [
         expression: { type: "string", description: 'e.g. "(3.2 + 7) * sqrt(2)"' },
       },
       required: ["expression"],
+    },
+  },
+  {
+    name: "web_search",
+    description:
+      "Search the public web for current information — news, facts, documentation, anything outside Magi's own archive. Returns a short list of results with titles, URLs, and snippets. Follow up with web_fetch to read a promising result in full.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search terms" },
+        max_results: { type: "number", description: "How many results to return (default 5, max 10)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "web_fetch",
+    description:
+      "Fetch the full text content of a specific web page by URL. Use this after web_search to go deeper on a result, or when the user gives you a URL directly.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The page URL to fetch" },
+      },
+      required: ["url"],
     },
   },
 ];
@@ -103,6 +129,18 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
           return `[${i + 1}] (${r.kind}${elsewhere}) ${r.title}\n${r.snippet.replace(/⟦|⟧/g, "")}`;
         })
         .join("\n\n");
+    }
+
+    if (name === "web_search") {
+      const input = rawInput as { query?: string; max_results?: number } | undefined;
+      if (!input?.query) return "Error: no query given.";
+      return await searchWeb(input.query, input.max_results);
+    }
+
+    if (name === "web_fetch") {
+      const url = (rawInput as { url?: string } | undefined)?.url;
+      if (!url) return "Error: no url given.";
+      return await fetchWebPage(url);
     }
 
     return `Error: unknown tool '${name}'.`;

@@ -65,10 +65,13 @@ src/
       registry.ts               Provider list, role→model assignment, default-picking logic
     repo/                      One file per entity: projects, conversations, memory, documents,
                                 artifacts, skills, councils, agents, connections, images, styleGuides,
-                                characters. Thin wrappers over better-sqlite3 + search index upkeep.
+                                characters, attachments. Thin wrappers over better-sqlite3 + search index upkeep.
+    files/
+      extractText.ts             PDF/DOCX/plain-text extraction, shared by Documents and attachments
     tools/
       registry.ts               TOOL_SPECS + executeTool() — the actual tool layer
       calculator.ts             Hand-written arithmetic parser (deliberately not eval())
+      webSearch.ts               Tavily-backed web_search/web_fetch (search + page extraction)
     agent.ts                    Agent pipeline (plan→research→draft→critique→revise→artifact)
     council.ts                  Council pipeline (analysis→critique→synthesis)
     connections.ts              Connection discovery pipeline
@@ -134,8 +137,14 @@ src/
   `archive/ask/route.ts`) now calls `reasoningEffortForRole(role)` instead, so nothing had to change
   about how the value gets *used*, only where it comes from. Only takes effect for OpenRouter-assigned
   models — Anthropic's provider doesn't wire up an equivalent control, and the Settings copy says so.
-- **§32–34 Tools & permissions** — real tool layer (`search_archive`, `calculator`), executed by Magi
-  never the model. **§34 granular permissions**: one chokepoint, `resolveTools()` in
+- **§32–34 Tools & permissions** — real tool layer (`search_archive`, `calculator`, `web_search`,
+  `web_fetch`), executed by Magi never the model. **§33 web access**: `web_search`/`web_fetch`
+  (`src/lib/tools/webSearch.ts`) call Tavily's `/search` and `/extract` APIs directly, gated by a Tavily
+  key in Settings → Providers. When no Tavily key is configured, OpenRouter-routed requests transparently
+  fall back to OpenRouter's own built-in web plugin (`plugins: [{ id: "web" }]`, added in `requestExtras()`
+  in `openrouter.ts`, which also strips the two tools from what's offered so the model doesn't call a
+  tool that would just error) — Anthropic-direct calls have no such fallback and the tools simply return
+  a "not configured" error until a Tavily key is set. **§34 granular permissions**: one chokepoint, `resolveTools()` in
   `src/lib/tools/registry.ts`, that every caller (conversations, Agents, Councils, Connections) now goes
   through instead of the raw tool list. A global per-tool on/off toggle in Settings applies everywhere;
   Skills get a per-entity allowlist (set at creation, since Skills have no edit flow yet) that can only
@@ -166,8 +175,28 @@ src/
   missing-information) and Red Team assesses which attacks actually landed against the defense, not
   "attacker wins" / "proposer wins." Verified live end-to-end for both new modes, including confirming
   the defense stage's prompt actually contains the attack content (real engagement, not a re-answer).
-- **§46–48 Documents & Artifacts** — Project documents (plain text), artifacts with version chains
-  (`parent_id` linking).
+- **§46–48 Documents & Artifacts** — Project documents now accept real file upload (PDF/DOCX/TXT/MD/
+  CSV/JSON), not just pasted text: `POST /api/documents/upload` extracts text server-side via
+  `src/lib/files/extractText.ts` (`pdf-parse`'s `PDFParse` class, `mammoth.extractRawText` for DOCX) and
+  stores the original file under `data/documents/`, mirroring the binary-on-disk pattern already used
+  for generated images (`src/lib/repo/images.ts`). Images are rejected here with a message pointing at
+  conversation attachments instead — Project Documents inject into `contextBuilder.ts`'s single
+  text-only system prompt, so an image would be inert at that layer. **New: conversation attachments**
+  — a message can carry files too (`attachments` table, `POST /api/conversations/[id]/attachments`),
+  wired into `chat/route.ts`: text-kind files (same extractor) get their extracted text baked into that
+  message's stored content; image-kind attachments get real multimodal content only for the live turn
+  they're attached to (`ModelMessage.content` is now `string | ContentPart[]`, mapped to each provider's
+  native image-block shape in `anthropic.ts`/`openrouter.ts`), gated by a new `ModelInfo.supportsVision`
+  flag (hardcoded true for Anthropic's four models, read from OpenRouter's
+  `architecture.input_modalities` for everything else) — a model without vision gets an honest
+  `[Image attached: …]` text placeholder instead of a broken request. Verified live: real PDF/DOCX text
+  extraction, a vision-capable OpenRouter model correctly describing a test image's color and text, and
+  a non-vision model correctly reporting it can't see the image rather than hallucinating. One real
+  bundler gotcha hit and fixed: `pdf-parse` (which wraps `pdfjs-dist`) needs
+  `serverExternalPackages: ["pdf-parse", "@napi-rs/canvas"]` in `next.config.ts` plus an `import
+  "pdf-parse/worker"` before `pdf-parse` itself, or Next's dev/build bundler can't resolve the PDF.js
+  worker script and every extraction fails with "Setting up fake worker failed." Artifacts still have
+  version chains (`parent_id` linking).
 - **§51–57 Image Studio** — real generation via OpenRouter multimodal models, Style Guides, Characters
   with reference images, variations. **No Brand Libraries (§55)** distinct from Style Guides/Characters.
 - **§59–63 Interoperability & portability** — Project export/import (Magi's own JSON format).

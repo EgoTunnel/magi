@@ -1,6 +1,18 @@
+// A single piece of message content — text, or an inline image (used only for
+// the live turn a conversation attachment was just added to; see
+// src/app/api/conversations/[id]/chat/route.ts). Everything else in the app
+// still deals in plain strings — this only appears where a message is
+// actually multimodal.
+export interface ContentPart {
+  type: "text" | "image";
+  text?: string;
+  mimeType?: string;
+  dataBase64?: string;
+}
+
 export interface ModelMessage {
   role: "user" | "assistant";
-  content: string;
+  content: string | ContentPart[];
 }
 
 export interface ModelInfo {
@@ -14,6 +26,11 @@ export interface ModelInfo {
   // Undefined means unknown (capabilities not fetched yet) — treated as true
   // so nothing regresses before the first catalog refresh.
   supportsTools?: boolean;
+  // Whether this model accepts image content in a message (real vision, not
+  // just text). Same "undefined means assume true" convention as
+  // supportsTools — Anthropic models are hardcoded true; OpenRouter models
+  // are read from the live catalog's architecture.input_modalities.
+  supportsVision?: boolean;
 }
 
 export type ReasoningEffort = "none" | "low" | "medium" | "high" | "max" | "xhigh";

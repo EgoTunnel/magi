@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getAnthropicApiKey } from "@/lib/settings";
-import type { CompleteOptions, ModelInfo, ModelProvider, ToolSpec } from "@/lib/models/types";
+import type { CompleteOptions, ModelInfo, ModelMessage, ModelProvider, ToolSpec } from "@/lib/models/types";
 
 const MODELS: ModelInfo[] = [
   {
@@ -9,6 +9,7 @@ const MODELS: ModelInfo[] = [
     label: "Claude Opus 4.8",
     description: "Deepest reasoning, highest cost",
     speed: "deep",
+    supportsVision: true,
   },
   {
     id: "claude-sonnet-5",
@@ -16,6 +17,7 @@ const MODELS: ModelInfo[] = [
     label: "Claude Sonnet 5",
     description: "Balanced capability and speed",
     speed: "balanced",
+    supportsVision: true,
   },
   {
     id: "claude-haiku-4-5-20251001",
@@ -23,6 +25,7 @@ const MODELS: ModelInfo[] = [
     label: "Claude Haiku 4.5",
     description: "Fast and inexpensive",
     speed: "fast",
+    supportsVision: true,
   },
   {
     id: "claude-fable-5",
@@ -30,6 +33,7 @@ const MODELS: ModelInfo[] = [
     label: "Claude Fable 5",
     description: "Creative and narrative work",
     speed: "balanced",
+    supportsVision: true,
   },
 ];
 
@@ -50,6 +54,22 @@ function toAnthropicTools(tools?: ToolSpec[]): Anthropic.Tool[] | undefined {
     description: t.description,
     input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
   }));
+}
+
+function toAnthropicContent(content: ModelMessage["content"]): string | Anthropic.ContentBlockParam[] {
+  if (typeof content === "string") return content;
+  return content.map((part): Anthropic.ContentBlockParam =>
+    part.type === "image"
+      ? {
+          type: "image",
+          source: { type: "base64", media_type: part.mimeType as Anthropic.Base64ImageSource["media_type"], data: part.dataBase64! },
+        }
+      : { type: "text", text: part.text ?? "" }
+  );
+}
+
+function toWorkingMessages(messages: ModelMessage[]): Anthropic.MessageParam[] {
+  return messages.map((m) => ({ role: m.role, content: toAnthropicContent(m.content) }));
 }
 
 async function resolveToolCalls(
@@ -76,7 +96,7 @@ export const anthropicProvider: ModelProvider = {
   async complete(opts: CompleteOptions) {
     const c = client();
     const tools = toAnthropicTools(opts.tools);
-    const working: Anthropic.MessageParam[] = opts.messages.map((m) => ({ role: m.role, content: m.content }));
+    const working: Anthropic.MessageParam[] = toWorkingMessages(opts.messages);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const res = await c.messages.create({
@@ -106,7 +126,7 @@ export const anthropicProvider: ModelProvider = {
   async *stream(opts: CompleteOptions) {
     const c = client();
     const tools = toAnthropicTools(opts.tools);
-    const working: Anthropic.MessageParam[] = opts.messages.map((m) => ({ role: m.role, content: m.content }));
+    const working: Anthropic.MessageParam[] = toWorkingMessages(opts.messages);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const stream = c.messages.stream({

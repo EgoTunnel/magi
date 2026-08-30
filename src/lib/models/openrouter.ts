@@ -1,10 +1,11 @@
 import OpenAI from "openai";
-import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import { getOpenRouterApiKey, getSetting, setSetting } from "@/lib/settings";
+import type { ChatCompletionContentPart, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
+import { getOpenRouterApiKey, getTavilyApiKey, getSetting, setSetting } from "@/lib/settings";
 import type {
   CompleteOptions,
   ModelCapabilities,
   ModelInfo,
+  ModelMessage,
   ModelProvider,
   ReasoningEffort,
   ToolSpec,
@@ -92,6 +93,7 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
       description: describe(m),
       speed: guessSpeed(m.id),
       supportsTools: (m.supported_parameters ?? []).includes("tools"),
+      supportsVision: (m.architecture?.input_modalities ?? []).includes("image"),
     }))
     .sort((a, b) => a.label.localeCompare(b.label));
   setSetting(MODELS_CACHE_KEY, JSON.stringify({ fetchedAt: new Date().toISOString(), models }));
@@ -266,10 +268,25 @@ function toOpenAITools(tools?: ToolSpec[]): ChatCompletionTool[] | undefined {
   }));
 }
 
+function toOpenAIContent(content: ModelMessage["content"]): string | ChatCompletionContentPart[] {
+  if (typeof content === "string") return content;
+  return content.map((part): ChatCompletionContentPart =>
+    part.type === "image"
+      ? { type: "image_url", image_url: { url: `data:${part.mimeType};base64,${part.dataBase64}` } }
+      : { type: "text", text: part.text ?? "" }
+  );
+}
+
 function toWorkingMessages(opts: CompleteOptions): ChatCompletionMessageParam[] {
   const messages: ChatCompletionMessageParam[] = [];
   if (opts.system) messages.push({ role: "system", content: opts.system });
-  for (const m of opts.messages) messages.push({ role: m.role, content: m.content });
+  for (const m of opts.messages) {
+    messages.push(
+      m.role === "user"
+        ? { role: "user", content: toOpenAIContent(m.content) }
+        : { role: "assistant", content: typeof m.content === "string" ? m.content : (m.content.find((p) => p.type === "text")?.text ?? "") }
+    );
+  }
   return messages;
 }
 
@@ -282,10 +299,25 @@ function requestExtras(opts: CompleteOptions): {
   tools: ChatCompletionTool[] | undefined;
   reasoning: { effort: ReasoningEffort } | undefined;
   maxTokens: number;
+  plugins: { id: string }[] | undefined;
 } {
   const capabilities = getOpenRouterCapabilities(opts.model);
   const wantsTools = !!opts.tools?.length;
-  const tools = wantsTools && capabilities?.supportsTools === false ? undefined : toOpenAITools(opts.tools);
+
+  // Magi's own web_search/web_fetch tools need a Tavily key (see
+  // lib/tools/webSearch.ts) to actually execute. When one isn't configured,
+  // offering the tools would just mean the model calls them and gets an
+  // error back — so instead, swap them for OpenRouter's own built-in web
+  // plugin, the one point where a tool's availability depends on the
+  // destination provider, since only OpenRouter has a built-in substitute.
+  const offeredWebSearch = opts.tools?.some((t) => t.name === "web_search");
+  const useWebPlugin = offeredWebSearch && !getTavilyApiKey();
+  const effectiveTools = useWebPlugin
+    ? opts.tools?.filter((t) => t.name !== "web_search" && t.name !== "web_fetch")
+    : opts.tools;
+  const plugins = useWebPlugin ? [{ id: "web" }] : undefined;
+
+  const tools = wantsTools && capabilities?.supportsTools === false ? undefined : toOpenAITools(effectiveTools);
 
   let reasoning: { effort: ReasoningEffort } | undefined;
   if (capabilities?.reasoningEfforts.length) {
@@ -301,7 +333,7 @@ function requestExtras(opts: CompleteOptions): {
     ? Math.min(requestedMax, capabilities.maxCompletionTokens)
     : requestedMax;
 
-  return { tools, reasoning, maxTokens };
+  return { tools, reasoning, maxTokens, plugins };
 }
 
 // Some reasoning models proxied through OpenRouter (GLM, DeepSeek R1, QwQ, and
@@ -349,7 +381,7 @@ export const openRouterProvider: ModelProvider = {
   },
   async complete(opts: CompleteOptions) {
     const c = client();
-    const { tools, reasoning, maxTokens } = requestExtras(opts);
+    const { tools, reasoning, maxTokens, plugins } = requestExtras(opts);
     const working = toWorkingMessages(opts);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -359,6 +391,7 @@ export const openRouterProvider: ModelProvider = {
         tools,
         max_tokens: maxTokens,
         ...(reasoning ? { reasoning } : {}),
+        ...(plugins ? { plugins } : {}),
       } as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming);
       // Every iteration is a real, separately-billed API call — including tool-use
       // round trips — so usage is recorded here, not just on the final answer.
@@ -378,7 +411,7 @@ export const openRouterProvider: ModelProvider = {
   },
   async *stream(opts: CompleteOptions) {
     const c = client();
-    const { tools, reasoning, maxTokens } = requestExtras(opts);
+    const { tools, reasoning, maxTokens, plugins } = requestExtras(opts);
     const working = toWorkingMessages(opts);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -391,6 +424,7 @@ export const openRouterProvider: ModelProvider = {
         // at all — without this, the final chunk simply omits the field.
         stream_options: { include_usage: true },
         ...(reasoning ? { reasoning } : {}),
+        ...(plugins ? { plugins } : {}),
       } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming);
       let emitted = "";
       for await (const chunk of stream) {

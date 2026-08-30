@@ -26,6 +26,14 @@ export function getOpenRouterApiKey(): string | null {
   return getSetting("openrouter_api_key") || process.env.OPENROUTER_API_KEY || null;
 }
 
+// Backs the web_search/web_fetch tools (src/lib/tools/webSearch.ts). When this
+// isn't set, OpenRouter-routed models fall back to OpenRouter's own built-in
+// web plugin instead — see requestExtras() in models/openrouter.ts — but
+// Anthropic-direct calls have no such fallback and the tools simply error.
+export function getTavilyApiKey(): string | null {
+  return getSetting("tavily_api_key") || process.env.TAVILY_API_KEY || null;
+}
+
 // Whether Magi's search_archive tool is allowed to look beyond the current
 // Project. Defaults on (the vision treats this as ordinary research, not a
 // silently blurred boundary) but the user can turn it off in Settings.

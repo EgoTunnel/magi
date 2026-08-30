@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
 import { IconChevronRight, IconDocument, IconPlus, IconTrash } from "@/components/icons";
+import { arrayBufferToBase64 } from "@/lib/clientFiles";
 
 interface Project {
   id: string;
@@ -28,6 +29,7 @@ interface Doc {
   id: string;
   title: string;
   content: string;
+  mime_type: string | null;
   updated_at: string;
 }
 interface Skill {
@@ -80,6 +82,9 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [docFormOpen, setDocFormOpen] = useState(false);
   const [docTitle, setDocTitle] = useState("");
   const [docContent, setDocContent] = useState("");
+  const [uploadingDoc, setUploadingDoc] = useState(false);
+  const [docUploadError, setDocUploadError] = useState<string | null>(null);
+  const docFileInputRef = useRef<HTMLInputElement>(null);
 
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([]);
   const [agentFormOpen, setAgentFormOpen] = useState(false);
@@ -175,6 +180,30 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   async function removeDocument(id: string) {
     await fetch(`/api/documents/${id}`, { method: "DELETE" });
     load();
+  }
+
+  async function handleUploadDocFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingDoc(true);
+    setDocUploadError(null);
+    try {
+      const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+      const res = await fetch("/api/documents/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, dataBase64 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDocUploadError(data.error ?? "Could not upload that file.");
+        return;
+      }
+      load();
+    } finally {
+      setUploadingDoc(false);
+    }
   }
 
   async function launchAgent() {
@@ -430,10 +459,27 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
               <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
                 Documents
               </h2>
-              <Button variant="ghost" onClick={() => setDocFormOpen((v) => !v)}>
-                <IconPlus /> Add
-              </Button>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={docFileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.txt,.md,.csv,.json"
+                  className="hidden"
+                  onChange={handleUploadDocFile}
+                />
+                <Button variant="ghost" onClick={() => docFileInputRef.current?.click()} disabled={uploadingDoc}>
+                  <IconPlus /> {uploadingDoc ? "Uploading…" : "Upload"}
+                </Button>
+                <Button variant="ghost" onClick={() => setDocFormOpen((v) => !v)}>
+                  <IconPlus /> Add
+                </Button>
+              </div>
             </div>
+            {docUploadError && (
+              <div className="mb-3 rounded-[4px] border border-[var(--color-danger)] px-3 py-2 text-[12.5px] text-[var(--color-danger)]">
+                {docUploadError}
+              </div>
+            )}
             {docFormOpen && (
               <Panel className="mb-3 px-4 py-4">
                 <Label>Title</Label>

@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, Tag } from "@/components/ui";
-import { IconChevronRight, IconSend } from "@/components/icons";
+import { IconAttach, IconChevronRight, IconSend, IconTrash } from "@/components/icons";
 import type { ContextProvenance } from "@/lib/contextBuilder";
+import { arrayBufferToBase64 } from "@/lib/clientFiles";
 
 interface Message {
   id: string;
@@ -22,6 +23,11 @@ interface RoleInfo {
   id: string;
   label: string;
 }
+interface PendingAttachment {
+  id: string;
+  filename: string;
+  kind: "image" | "text";
+}
 
 export function ConversationView({ projectId, conversationId }: { projectId: string; conversationId: string }) {
   const [projectName, setProjectName] = useState("");
@@ -36,7 +42,11 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [modelRole, setModelRole] = useState("default");
   const [contextOpen, setContextOpen] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const attachFileInputRef = useRef<HTMLInputElement>(null);
 
   async function load() {
     const [convRes, skillsRes, modelsRes] = await Promise.all([
@@ -64,10 +74,41 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, streamingText]);
 
+  async function handleAttachFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploadingAttachment(true);
+    setAttachmentError(null);
+    try {
+      const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+      const res = await fetch(`/api/conversations/${conversationId}/attachments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, mimeType: file.type, dataBase64 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAttachmentError(data.error ?? "Could not attach that file.");
+        return;
+      }
+      setPendingAttachments((a) => [...a, data.attachment]);
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
+
+  async function removePendingAttachment(id: string) {
+    setPendingAttachments((a) => a.filter((att) => att.id !== id));
+    await fetch(`/api/attachments/${id}`, { method: "DELETE" });
+  }
+
   async function send() {
     const content = draft.trim();
-    if (!content || sending) return;
+    if ((!content && pendingAttachments.length === 0) || sending) return;
+    const attachmentIds = pendingAttachments.map((a) => a.id);
     setDraft("");
+    setPendingAttachments([]);
     setSending(true);
     setError(null);
     setMessages((m) => [
@@ -80,7 +121,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       const res = await fetch(`/api/conversations/${conversationId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, skillId: skillId || undefined, modelRole }),
+        body: JSON.stringify({ content, skillId: skillId || undefined, modelRole, attachmentIds }),
       });
 
       if (res.status === 412) {
@@ -279,7 +320,41 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
               <option value="auto">Auto — let Magi choose</option>
             </select>
           </div>
+          {attachmentError && (
+            <div className="rounded-[4px] border border-[var(--color-danger)] px-3 py-1.5 text-[12px] text-[var(--color-danger)]">
+              {attachmentError}
+            </div>
+          )}
+          {pendingAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {pendingAttachments.map((a) => (
+                <span
+                  key={a.id}
+                  className="flex items-center gap-1.5 rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)]"
+                >
+                  {a.filename}
+                  <button
+                    onClick={() => removePendingAttachment(a.id)}
+                    className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                    aria-label={`Remove ${a.filename}`}
+                  >
+                    <IconTrash />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           <div className="flex items-end gap-2">
+            <input
+              ref={attachFileInputRef}
+              type="file"
+              accept=".pdf,.docx,.txt,.md,.csv,.json,image/png,image/jpeg,image/webp,image/gif"
+              className="hidden"
+              onChange={handleAttachFile}
+            />
+            <Button variant="ghost" onClick={() => attachFileInputRef.current?.click()} disabled={uploadingAttachment}>
+              <IconAttach />
+            </Button>
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -293,7 +368,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
               rows={2}
               className="focus-ring w-full resize-none rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-3 py-2 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-faint)]"
             />
-            <Button variant="accent" onClick={send} disabled={sending || !draft.trim()}>
+            <Button variant="accent" onClick={send} disabled={sending || (!draft.trim() && pendingAttachments.length === 0)}>
               <IconSend />
             </Button>
           </div>

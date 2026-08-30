@@ -10,6 +10,7 @@ interface ModelInfo {
   description: string;
   speed: string;
   supportsTools?: boolean;
+  supportsVision?: boolean;
 }
 interface RoleInfo {
   id: string;
@@ -73,6 +74,11 @@ export function SettingsClient() {
   const [refreshing, setRefreshing] = useState(false);
   const [openRouterError, setOpenRouterError] = useState<string | null>(null);
 
+  const [tavilyKeySet, setTavilyKeySet] = useState(false);
+  const [tavilyKeyPreview, setTavilyKeyPreview] = useState<string | null>(null);
+  const [tavilyInput, setTavilyInput] = useState("");
+  const [savingTavily, setSavingTavily] = useState(false);
+
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
@@ -112,6 +118,8 @@ export function SettingsClient() {
     setOpenRouterKeyPreview(settings.openRouterKeyPreview);
     setOpenRouterModelCount(settings.openRouterModelCount);
     setOpenRouterFetchedAt(settings.openRouterModelsFetchedAt);
+    setTavilyKeySet(settings.tavilyKeySet);
+    setTavilyKeyPreview(settings.tavilyKeyPreview);
     setCrossProjectSearch(settings.crossProjectSearchEnabled);
     setEmbeddingModelIdState(settings.embeddingModelId);
     setToolsList(settings.tools ?? []);
@@ -174,6 +182,27 @@ export function SettingsClient() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ openRouterApiKey: "" }),
+    });
+    loadAll();
+  }
+
+  async function saveTavilyKey() {
+    setSavingTavily(true);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tavilyApiKey: tavilyInput }),
+    });
+    setTavilyInput("");
+    setSavingTavily(false);
+    loadAll();
+  }
+
+  async function removeTavilyKey() {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tavilyApiKey: "" }),
     });
     loadAll();
   }
@@ -359,6 +388,39 @@ export function SettingsClient() {
             stays current as they add and retire models.
           </p>
         </Panel>
+
+        <Panel className="mt-3 px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-[13.5px] font-medium text-[var(--color-text)]">Tavily (web search)</div>
+          </div>
+          {tavilyKeySet && (
+            <div className="mb-3 flex items-center justify-between text-[13px]">
+              <span className="text-[var(--color-text-muted)] font-technical">
+                Current key: {tavilyKeyPreview ?? "configured via environment"}
+              </span>
+              <Button variant="danger" onClick={removeTavilyKey}>
+                Remove
+              </Button>
+            </div>
+          )}
+          <Label>API key</Label>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder="tvly-…"
+              value={tavilyInput}
+              onChange={(e) => setTavilyInput(e.target.value)}
+            />
+            <Button variant="accent" onClick={saveTavilyKey} disabled={!tavilyInput || savingTavily}>
+              {savingTavily ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+            Backs the web_search and web_fetch tools below. Without a key, OpenRouter-routed models
+            automatically fall back to OpenRouter&apos;s own built-in web search instead — Anthropic
+            models have no such fallback and need this key to search the web at all.
+          </p>
+        </Panel>
       </section>
 
       <section>
@@ -413,6 +475,7 @@ export function SettingsClient() {
                         <option key={m.id} value={m.id}>
                           {m.label}
                           {m.supportsTools === false ? " — no tool use" : ""}
+                          {m.supportsVision === false ? " — no vision" : ""}
                         </option>
                       ))}
                     </optgroup>

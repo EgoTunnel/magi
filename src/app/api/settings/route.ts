@@ -21,12 +21,15 @@ function preview(key: string | null): string | null {
 export async function GET() {
   const anthropicKey = getSetting("anthropic_api_key");
   const openRouterKey = getSetting("openrouter_api_key");
+  const tavilyKey = getSetting("tavily_api_key");
   const { models, fetchedAt } = getCachedOpenRouterModels();
   return NextResponse.json({
     anthropicKeySet: !!anthropicKey || !!process.env.ANTHROPIC_API_KEY,
     anthropicKeyPreview: preview(anthropicKey),
     openRouterKeySet: !!openRouterKey || !!process.env.OPENROUTER_API_KEY,
     openRouterKeyPreview: preview(openRouterKey),
+    tavilyKeySet: !!tavilyKey || !!process.env.TAVILY_API_KEY,
+    tavilyKeyPreview: preview(tavilyKey),
     openRouterModelCount: models.length,
     openRouterModelsFetchedAt: fetchedAt,
     configured: isAnyProviderConfigured(),
@@ -60,6 +63,14 @@ export async function POST(req: NextRequest) {
       }
     } else {
       deleteSetting("openrouter_api_key");
+    }
+  }
+
+  if (typeof body.tavilyApiKey === "string") {
+    if (body.tavilyApiKey.trim()) {
+      setSetting("tavily_api_key", body.tavilyApiKey.trim());
+    } else {
+      deleteSetting("tavily_api_key");
     }
   }
 

@@ -174,6 +174,14 @@ export function IconDocument(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function IconAttach(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <path d="M17 8.5 9.5 16a2.6 2.6 0 0 1-3.7-3.7L14 4.2a1.8 1.8 0 0 1 2.6 2.6L9 14.4a1 1 0 0 1-1.4-1.4l6.7-6.7" />
+    </Base>
+  );
+}
+
 export function IconHome(props: SVGProps<SVGSVGElement>) {
   return (
     <Base {...props}>

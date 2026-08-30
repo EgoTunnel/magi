@@ -173,6 +173,18 @@ CREATE TABLE IF NOT EXISTS images (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id TEXT REFERENCES messages(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  mime_type TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  extracted_text TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS project_connections (
   id TEXT PRIMARY KEY,
   source_project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -223,6 +235,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_style_guides_project ON style_guides(project_id);
 CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
 CREATE INDEX IF NOT EXISTS idx_images_project ON images(project_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_conversation ON attachments(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS idx_project_connections_source ON project_connections(source_project_id);
 CREATE INDEX IF NOT EXISTS idx_usage_events_project ON usage_events(project_id);
 CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
@@ -247,6 +261,8 @@ function addColumnIfMissing(table: string, column: string, definition: string) {
 addColumnIfMissing("skills", "allowed_tools", "TEXT");
 addColumnIfMissing("agent_runs", "allowed_tools", "TEXT");
 addColumnIfMissing("council_runs", "mode", "TEXT NOT NULL DEFAULT 'independent'");
+addColumnIfMissing("documents", "mime_type", "TEXT");
+addColumnIfMissing("documents", "file_path", "TEXT");
 
 export function nowIso() {
   return new Date().toISOString();
