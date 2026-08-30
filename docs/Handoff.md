@@ -42,6 +42,10 @@ real model providers, during development. That's a real gap for whoever continue
 
 ```
 docs/                        Product Vision.txt, User Guide.md, this file
+workers/
+  codeExecWorker.mjs           Plain JS (not TypeScript) — run_python/run_javascript's actual
+                                sandboxed execution, loaded by node:worker_threads via a filesystem
+                                path, never through Next's bundler. See src/lib/tools/codeExec.ts.
 src/
   app/
     api/                      All mutation/streaming endpoints, one folder per resource
@@ -72,6 +76,7 @@ src/
       registry.ts               TOOL_SPECS + executeTool() — the actual tool layer
       calculator.ts             Hand-written arithmetic parser (deliberately not eval())
       webSearch.ts               Tavily-backed web_search/web_fetch (search + page extraction)
+      codeExec.ts                 run_python/run_javascript orchestration — spawns workers/codeExecWorker.mjs
     agent.ts                    Agent pipeline (plan→research→draft→critique→revise→artifact)
     council.ts                  Council pipeline (analysis→critique→synthesis)
     connections.ts              Connection discovery pipeline
@@ -138,23 +143,43 @@ src/
   about how the value gets *used*, only where it comes from. Only takes effect for OpenRouter-assigned
   models — Anthropic's provider doesn't wire up an equivalent control, and the Settings copy says so.
 - **§32–34 Tools & permissions** — real tool layer (`search_archive`, `calculator`, `web_search`,
-  `web_fetch`), executed by Magi never the model. **§33 web access**: `web_search`/`web_fetch`
-  (`src/lib/tools/webSearch.ts`) call Tavily's `/search` and `/extract` APIs directly, gated by a Tavily
-  key in Settings → Providers. When no Tavily key is configured, OpenRouter-routed requests transparently
-  fall back to OpenRouter's own built-in web plugin (`plugins: [{ id: "web" }]`, added in `requestExtras()`
-  in `openrouter.ts`, which also strips the two tools from what's offered so the model doesn't call a
-  tool that would just error) — Anthropic-direct calls have no such fallback and the tools simply return
-  a "not configured" error until a Tavily key is set. **§34 granular permissions**: one chokepoint, `resolveTools()` in
+  `web_fetch`, `run_python`, `run_javascript`), executed by Magi never the model. **§33 web access**:
+  `web_search`/`web_fetch` (`src/lib/tools/webSearch.ts`) call Tavily's `/search` and `/extract` APIs
+  directly, gated by a Tavily key in Settings → Providers. When no Tavily key is configured,
+  OpenRouter-routed requests transparently fall back to OpenRouter's own built-in web plugin
+  (`plugins: [{ id: "web" }]`, added in `requestExtras()` in `openrouter.ts`, which also strips the two
+  tools from what's offered so the model doesn't call a tool that would just error) — Anthropic-direct
+  calls have no such fallback and the tools simply return a "not configured" error until a Tavily key is
+  set. **§33 code execution**: `run_python`/`run_javascript` (`src/lib/tools/codeExec.ts`, spawning
+  `workers/codeExecWorker.mjs`) run in genuinely sandboxed WASM engines — Pyodide (CPython-in-WASM) for
+  Python, QuickJS-WASM for JavaScript — each in a fresh `node:worker_threads` Worker with a 15s hard
+  timeout (`worker.terminate()`, confirmed live to kill a synchronous infinite loop) and a
+  `resourceLimits` memory ceiling. Neither engine is given any host binding (no `require`, no `fetch`,
+  no real filesystem — confirmed live inside the QuickJS context that `typeof process/require/fetch` are
+  all `"undefined"`), so isolation holds by construction rather than by policy. One exception, narrow and
+  deliberate: Python `import` statements trigger `loadPackagesFromImports()`, which fetches Pyodide's own
+  pre-built wheels (numpy, pandas, …) over the network *from Magi's server process*, before execution —
+  the executed code itself never gets network access. **Real bundler gotcha hit and fixed**:
+  `loadPyodide()`'s default asset-path auto-detection breaks under this dev server (resolves to
+  `node_modules/src/js/pyodide.asm.mjs` instead of `node_modules/pyodide/...`) — fixed by passing
+  `indexURL` explicitly, computed via `path.dirname(fileURLToPath(await
+  import.meta.resolve("pyodide")))` from inside the worker file. The worker file itself is deliberately
+  plain `.mjs` outside `src/`, loaded by a filesystem path rather than through Next's bundler, for the
+  same reason `pdf-parse` needed `serverExternalPackages` — see the Documents & Artifacts entry below.
+  **§34 granular permissions**: one chokepoint, `resolveTools()` in
   `src/lib/tools/registry.ts`, that every caller (conversations, Agents, Councils, Connections) now goes
   through instead of the raw tool list. A global per-tool on/off toggle in Settings applies everywhere;
   Skills get a per-entity allowlist (set at creation, since Skills have no edit flow yet) that can only
   narrow past the global list, never widen it; Agent runs get the same, chosen per-launch since Agents
   have no persistent template to attach permissions to. `executeTool()` also enforces the resolved
   allowlist itself, not just by omission from what the model is offered, in case a model requests a tool
-  it wasn't given. **The "ask before doing X" confirmation flow from §34 was deliberately not built** —
-  both current tools are read-only with no side effects, so there is nothing yet for a confirmation
-  dialog to actually gate; building one now would be confirming a hypothetical future write-tool, i.e.
-  exactly the kind of facade this codebase's own philosophy rejects.
+  it wasn't given. **The "ask before doing X" confirmation flow from §34 (and the Vision's own `Run Code
+  → Ask` example) was deliberately not built for code execution either** — a real pre-execution approval
+  gate means pausing an in-flight streaming tool-call loop across HTTP request boundaries (persisted
+  mid-turn state, a resume endpoint, an approval UI), which nothing in the codebase does today for any
+  tool. Given the sandbox already has no filesystem, no network, no OS process access, a hard timeout,
+  and a memory ceiling, the blast radius is small by construction; a synchronous approval gate would cost
+  a large amount of new architecture for what it adds on top of that. On/off in Settings only, for now.
 - **§35–37 Skills** — persistent, global or Project-scoped, three starters offered.
 - **§38–39 Agents** — full pipeline, fire-and-forget background execution, live polling, stoppable
   between steps.

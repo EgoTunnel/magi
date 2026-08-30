@@ -3,6 +3,7 @@ import { search } from "@/lib/searchIndex";
 import { getCrossProjectSearchEnabled, getDisabledTools } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
 import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
+import { runPython, runJavaScript } from "@/lib/tools/codeExec";
 import { getSkill } from "@/lib/repo/skills";
 
 export interface ToolContext {
@@ -11,9 +12,9 @@ export interface ToolContext {
 }
 
 // The full set of tools Magi currently offers a model mid-turn — read-only
-// archive search, arithmetic, and web search/fetch — matching Product Vision
-// §32-33: the model requests a tool, Magi's tool layer is the only thing
-// that actually executes it.
+// archive search, arithmetic, web search/fetch, and sandboxed code execution
+// — matching Product Vision §32-33: the model requests a tool, Magi's tool
+// layer is the only thing that actually executes it.
 export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "search_archive",
@@ -67,6 +68,30 @@ export const TOOL_SPECS: ToolSpec[] = [
         url: { type: "string", description: "The page URL to fetch" },
       },
       required: ["url"],
+    },
+  },
+  {
+    name: "run_python",
+    description:
+      "Run a Python snippet in a sandboxed interpreter (Pyodide) and return its printed output. Use this for calculations, data analysis, or anything worth verifying by actually running rather than reasoning through by hand. The sandbox has no filesystem and no network access — common packages (numpy, pandas, etc.) are auto-loaded from imports the first time they're used, but the code itself can't reach the network or read/write real files. There's no return value channel: use print() for anything you want back. Runs for at most 15 seconds.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "Python source to execute" },
+      },
+      required: ["code"],
+    },
+  },
+  {
+    name: "run_javascript",
+    description:
+      "Run a JavaScript snippet in a sandboxed interpreter (QuickJS) and return its console output. Use this for calculations or logic worth verifying by actually running rather than reasoning through by hand. The sandbox has no filesystem, no network access, and no Node/browser globals beyond console.log/console.error — there's no return value channel, so use console.log() for anything you want back. Runs for at most 15 seconds.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "JavaScript source to execute" },
+      },
+      required: ["code"],
     },
   },
 ];
@@ -141,6 +166,18 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       const url = (rawInput as { url?: string } | undefined)?.url;
       if (!url) return "Error: no url given.";
       return await fetchWebPage(url);
+    }
+
+    if (name === "run_python") {
+      const code = (rawInput as { code?: string } | undefined)?.code;
+      if (!code) return "Error: no code given.";
+      return await runPython(code);
+    }
+
+    if (name === "run_javascript") {
+      const code = (rawInput as { code?: string } | undefined)?.code;
+      if (!code) return "Error: no code given.";
+      return await runJavaScript(code);
     }
 
     return `Error: unknown tool '${name}'.`;
