@@ -14,6 +14,14 @@ interface Project {
   status: string;
   updated_at: string;
 }
+interface ClaudeAccountImportSummary {
+  projectsCreated: number;
+  conversationsImported: number;
+  conversationsSkippedEmpty: number;
+  documentsImported: number;
+  artifactsImported: number;
+  memoryItemsImported: number;
+}
 
 export function ProjectsClient() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -30,6 +38,14 @@ export function ProjectsClient() {
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [claudeImportOpen, setClaudeImportOpen] = useState(false);
+  const [claudeConversationsFile, setClaudeConversationsFile] = useState<File | null>(null);
+  const [claudeProjectsFile, setClaudeProjectsFile] = useState<File | null>(null);
+  const [claudeMemoriesFile, setClaudeMemoriesFile] = useState<File | null>(null);
+  const [claudeImporting, setClaudeImporting] = useState(false);
+  const [claudeImportError, setClaudeImportError] = useState<string | null>(null);
+  const [claudeImportSummary, setClaudeImportSummary] = useState<ClaudeAccountImportSummary | null>(null);
 
   async function load() {
     setLoading(true);
@@ -90,12 +106,43 @@ export function ProjectsClient() {
     }
   }
 
+  async function submitClaudeImport() {
+    if (!claudeConversationsFile) return;
+    setClaudeImporting(true);
+    setClaudeImportError(null);
+    setClaudeImportSummary(null);
+    const formData = new FormData();
+    formData.append("conversations", claudeConversationsFile);
+    if (claudeProjectsFile) formData.append("projects", claudeProjectsFile);
+    if (claudeMemoriesFile) formData.append("memories", claudeMemoriesFile);
+    try {
+      const res = await fetch("/api/projects/import/claude-account", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) {
+        setClaudeImportError(data.error ?? "Import failed.");
+        return;
+      }
+      setClaudeImportSummary(data.summary);
+      setClaudeConversationsFile(null);
+      setClaudeProjectsFile(null);
+      setClaudeMemoriesFile(null);
+      await load();
+    } catch {
+      setClaudeImportError("Connection interrupted.");
+    } finally {
+      setClaudeImporting(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-3xl px-8 py-8">
       <div className="mb-1.5 flex justify-end gap-2">
         <input ref={fileInputRef} type="file" accept="application/json" className="hidden" onChange={handleImportFile} />
         <Button variant="default" onClick={() => fileInputRef.current?.click()} disabled={importing}>
           {importing ? "Importing…" : "Import"}
+        </Button>
+        <Button variant="default" onClick={() => setClaudeImportOpen((v) => !v)}>
+          Import Claude account export
         </Button>
         <Button variant="accent" onClick={() => setFormOpen((v) => !v)}>
           <IconPlus /> New Project
@@ -110,6 +157,66 @@ export function ProjectsClient() {
         <div className="mb-4 rounded-[4px] border border-[var(--color-danger)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
           {importError}
         </div>
+      )}
+
+      {claudeImportOpen && (
+        <Panel className="mb-6 px-5 py-5">
+          <div className="mb-4 text-[13px] text-[var(--color-text-muted)]">
+            From claude.ai: Settings → Account → Export data. That produces several category .zip files — pick
+            the ones you have below. Only the conversations export is required; Projects and memories are each
+            optional but add their own Project(s), knowledge documents, and memory.
+          </div>
+          <div className="mb-4 grid gap-3">
+            <div>
+              <Label>Conversations export (conversations-000.zip) — required</Label>
+              <input
+                type="file"
+                accept=".zip"
+                onChange={(e) => setClaudeConversationsFile(e.target.files?.[0] ?? null)}
+                className="text-[13px] text-[var(--color-text-muted)]"
+              />
+            </div>
+            <div>
+              <Label>Projects export (projects-000.zip) — optional</Label>
+              <input
+                type="file"
+                accept=".zip"
+                onChange={(e) => setClaudeProjectsFile(e.target.files?.[0] ?? null)}
+                className="text-[13px] text-[var(--color-text-muted)]"
+              />
+            </div>
+            <div>
+              <Label>Memories export (memories-000.zip) — optional</Label>
+              <input
+                type="file"
+                accept=".zip"
+                onChange={(e) => setClaudeMemoriesFile(e.target.files?.[0] ?? null)}
+                className="text-[13px] text-[var(--color-text-muted)]"
+              />
+            </div>
+          </div>
+          {claudeImportError && (
+            <div className="mb-3 rounded-[4px] border border-[var(--color-danger)] px-3 py-2 text-[12.5px] text-[var(--color-danger)]">
+              {claudeImportError}
+            </div>
+          )}
+          {claudeImportSummary && (
+            <div className="mb-3 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 text-[12.5px] text-[var(--color-text-muted)]">
+              Imported {claudeImportSummary.projectsCreated} Project(s), {claudeImportSummary.conversationsImported}{" "}
+              conversation(s) ({claudeImportSummary.conversationsSkippedEmpty} skipped as empty),{" "}
+              {claudeImportSummary.documentsImported} document(s), {claudeImportSummary.artifactsImported}{" "}
+              artifact(s), and {claudeImportSummary.memoryItemsImported} memory item(s).
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setClaudeImportOpen(false)}>
+              Close
+            </Button>
+            <Button variant="accent" onClick={submitClaudeImport} disabled={!claudeConversationsFile || claudeImporting}>
+              {claudeImporting ? "Importing…" : "Import"}
+            </Button>
+          </div>
+        </Panel>
       )}
 
       {formOpen && (

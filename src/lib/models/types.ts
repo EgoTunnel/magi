@@ -95,6 +95,10 @@ export interface CompleteOptions {
   // carries yielded text chunks, not a final value, so usage has to leave via
   // a side channel rather than a return value.
   usage?: TokenUsage[];
+  // Lets a caller cancel an in-flight stream() call — wired from the chat
+  // route's NextRequest.signal so a client-side Stop actually cancels the
+  // upstream provider call rather than just hiding the response.
+  signal?: AbortSignal;
 }
 
 // What stream() yields mid-turn — text to show, or notice that a tool call is

@@ -157,6 +157,14 @@ export function IconChevronRight(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function IconChevronDown(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <path d="m5 9 7 7 7-7" />
+    </Base>
+  );
+}
+
 export function IconLayers(props: SVGProps<SVGSVGElement>) {
   return (
     <Base {...props}>
@@ -187,6 +195,42 @@ export function IconHome(props: SVGProps<SVGSVGElement>) {
     <Base {...props}>
       <path d="M4 11.5 12 4l8 7.5" />
       <path d="M6 10v9.5h12V10" />
+    </Base>
+  );
+}
+
+export function IconStop(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <rect x="5.5" y="5.5" width="13" height="13" rx="1.5" />
+    </Base>
+  );
+}
+
+export function IconRefresh(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <path d="M19 12a7 7 0 1 1-2.1-5" />
+      <path d="M19 5.5V10h-4.5" />
+    </Base>
+  );
+}
+
+export function IconHistory(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12.5" r="7.5" />
+      <path d="M12 8.5v4.3l3 2" />
+      <path d="M9 3.5 5.5 6M15 3.5 18.5 6" />
+    </Base>
+  );
+}
+
+export function IconDownload(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <path d="M12 4v10.5M8 11l4 4 4-4" />
+      <path d="M5 17.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1.5" />
     </Base>
   );
 }

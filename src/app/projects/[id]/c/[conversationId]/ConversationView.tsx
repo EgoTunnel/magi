@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, Input, Tag } from "@/components/ui";
-import { IconAttach, IconChevronRight, IconDocument, IconSend, IconTrash } from "@/components/icons";
+import { IconAttach, IconChevronDown, IconChevronRight, IconDocument, IconDownload, IconRefresh, IconSend, IconStop, IconTrash } from "@/components/icons";
 import type { ContextProvenance } from "@/lib/contextBuilder";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
+import { ArtifactViewerButton } from "@/components/ArtifactHistory";
+import { MagiSpinner } from "@/components/MagiSpinner";
 
 interface Message {
   id: string;
@@ -56,8 +58,16 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [artifactFiles, setArtifactFiles] = useState<ArtifactFile[]>([]);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastMessageRef = useRef<HTMLDivElement>(null);
   const attachFileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  // Landing scroll (jump straight to the latest messages) fires once per
+  // conversation visit; every load() after that (post-turn refresh) must NOT
+  // re-trigger it, or it'd yank the view back down right as a long response
+  // that was deliberately left pinned near the top finishes streaming.
+  const initialScrollDoneRef = useRef(false);
 
   async function load() {
     const [convRes, skillsRes, modelsRes, artifactsRes] = await Promise.all([
@@ -79,13 +89,48 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   }
 
   useEffect(() => {
+    initialScrollDoneRef.current = false;
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
+  // Landing on a conversation: jump straight to its latest messages, once.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    if (!initialScrollDoneRef.current && messages.length > 0 && scrollRef.current) {
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight });
+      initialScrollDoneRef.current = true;
+    }
+  }, [messages]);
+
+  // A new turn starting: scroll so the message that was just sent lands at
+  // the top of the viewport, the same way Claude.ai/ChatGPT do — the reply
+  // then fills in below it as it streams, rather than the view chasing the
+  // growing tail of text down the page on every token (the old behavior,
+  // and the thing that made long replies annoying to read from the start).
+  useEffect(() => {
+    if (sending) {
+      lastMessageRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [sending]);
+
+  // "Jump to latest" only shows once there's actually somewhere to jump to —
+  // recomputed both on manual scroll and as streamed content grows the page
+  // out from under a scroll position that used to be at the bottom.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const update = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowJumpToLatest(distanceFromBottom > 160);
+    };
+    update();
+    el.addEventListener("scroll", update);
+    return () => el.removeEventListener("scroll", update);
   }, [messages, streamingText]);
+
+  function scrollToLatest() {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }
 
   async function handleAttachFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -116,6 +161,43 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     await fetch(`/api/attachments/${id}`, { method: "DELETE" });
   }
 
+  // Reads one chat/regenerate NDJSON stream, updating the live "typing"
+  // preview as chunks arrive. Persistence already happened server-side by
+  // the time this returns (or throws) — the caller reloads from the API
+  // afterward rather than trusting anything accumulated here.
+  async function streamChatResponse(res: Response) {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let full = "";
+    let buffer = "";
+    const handleLine = (line: string) => {
+      if (!line.trim()) return;
+      let event: { type: string; text?: string; name?: string };
+      try {
+        event = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (event.type === "text" && event.text) {
+        full += event.text;
+        setStreamingText(full);
+      } else if (event.type === "tool_start" && event.name) {
+        setToolStatus(event.name);
+      } else if (event.type === "tool_end") {
+        setToolStatus(null);
+      }
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) handleLine(line);
+    }
+    if (buffer) handleLine(buffer);
+  }
+
   async function send() {
     const content = draft.trim();
     if ((!content && pendingAttachments.length === 0) || sending) return;
@@ -130,63 +212,85 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     ]);
     setStreamingText("");
     setToolStatus(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       const res = await fetch(`/api/conversations/${conversationId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content, skillId: skillId || undefined, modelRole, attachmentIds }),
+        signal: controller.signal,
       });
 
       if (res.status === 412) {
         const data = await res.json();
         setError(data.message ?? "No API key configured.");
-        setSending(false);
         return;
       }
       if (!res.ok || !res.body) {
         setError("Something went wrong reaching the model.");
-        setSending(false);
         return;
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let full = "";
-      let buffer = "";
-      const handleLine = (line: string) => {
-        if (!line.trim()) return;
-        let event: { type: string; text?: string; name?: string };
-        try {
-          event = JSON.parse(line);
-        } catch {
-          return;
-        }
-        if (event.type === "text" && event.text) {
-          full += event.text;
-          setStreamingText(full);
-        } else if (event.type === "tool_start" && event.name) {
-          setToolStatus(event.name);
-        } else if (event.type === "tool_end") {
-          setToolStatus(null);
-        }
-      };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) handleLine(line);
+      await streamChatResponse(res);
+    } catch (err) {
+      // The user pressed Stop — the partial reply Magi already streamed was
+      // persisted server-side (see chatTurn.ts), so this isn't an error.
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setError("Connection interrupted.");
       }
-      if (buffer) handleLine(buffer);
+    } finally {
       setStreamingText("");
       setToolStatus(null);
-      await load();
-    } catch {
-      setError("Connection interrupted.");
-    } finally {
       setSending(false);
+      abortRef.current = null;
+      await load();
+    }
+  }
+
+  function stop() {
+    abortRef.current?.abort();
+  }
+
+  async function regenerate() {
+    if (sending) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    setMessages((m) => m.slice(0, -1));
+    setSending(true);
+    setError(null);
+    setStreamingText("");
+    setToolStatus(null);
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/chat/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skillId: skillId || undefined, modelRole }),
+        signal: controller.signal,
+      });
+      if (res.status === 412) {
+        const data = await res.json();
+        setError(data.message ?? "No API key configured.");
+        return;
+      }
+      if (!res.ok || !res.body) {
+        setError("Something went wrong reaching the model.");
+        return;
+      }
+      await streamChatResponse(res);
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setError("Connection interrupted.");
+      }
+    } finally {
+      setStreamingText("");
+      setToolStatus(null);
+      setSending(false);
+      abortRef.current = null;
+      await load();
     }
   }
 
@@ -214,10 +318,11 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     await fetch("/api/artifacts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId, conversationId, title: artifactTitle, content }),
+      body: JSON.stringify({ projectId, conversationId, messageId: savingArtifactFor, title: artifactTitle, content }),
     });
     setSavingArtifactFor(null);
     setArtifactTitleDraft("");
+    await load();
   }
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
@@ -242,45 +347,61 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-6">
-          <div className="mx-auto flex max-w-2xl flex-col gap-7">
-            {messages.length === 0 && !streamingText && !toolStatus && (
-              <p className="text-[13px] text-[var(--color-text-faint)]">
-                This conversation is empty. Say something to begin.
-              </p>
-            )}
-            {messages.map((m) => (
-              <MessageBlock
-                key={m.id}
-                message={m}
-                files={artifactFiles.filter((a) => a.message_id === m.id && a.mime_type)}
-                onRemember={rememberMessage}
-                onStartSaveArtifact={startSaveArtifact}
-                savingArtifact={savingArtifactFor === m.id}
-                artifactTitleDraft={artifactTitleDraft}
-                onArtifactTitleChange={setArtifactTitleDraft}
-                onConfirmSaveArtifact={confirmSaveArtifact}
-                onCancelSaveArtifact={cancelSaveArtifact}
-              />
-            ))}
-            {(streamingText || toolStatus) && (
-              <MessageBlock
-                message={{ id: "streaming", role: "assistant", content: streamingText, model: null, provenance: null, created_at: "" }}
-                streaming
-                toolStatus={toolStatus}
-              />
-            )}
-            {error && (
-              <div className="rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
-                {error}{" "}
-                {error.includes("Settings") || error.includes("API key") ? (
-                  <Link href="/settings" className="text-[var(--color-accent)] underline">
-                    Open Settings
-                  </Link>
-                ) : null}
-              </div>
-            )}
+        <div className="relative flex-1 overflow-hidden">
+          <div ref={scrollRef} className="h-full overflow-y-auto px-6 py-6">
+            <div className="mx-auto flex max-w-2xl flex-col gap-7">
+              {messages.length === 0 && !sending && (
+                <p className="text-[13px] text-[var(--color-text-faint)]">
+                  This conversation is empty. Say something to begin.
+                </p>
+              )}
+              {messages.map((m, i) => (
+                <div key={m.id} ref={i === messages.length - 1 ? lastMessageRef : undefined}>
+                  <MessageBlock
+                    message={m}
+                    files={artifactFiles.filter((a) => a.message_id === m.id)}
+                    onRemember={rememberMessage}
+                    onStartSaveArtifact={startSaveArtifact}
+                    savingArtifact={savingArtifactFor === m.id}
+                    artifactTitleDraft={artifactTitleDraft}
+                    onArtifactTitleChange={setArtifactTitleDraft}
+                    onConfirmSaveArtifact={confirmSaveArtifact}
+                    onCancelSaveArtifact={cancelSaveArtifact}
+                    onArtifactRestored={load}
+                    isLast={i === messages.length - 1}
+                    onRegenerate={regenerate}
+                    sending={sending}
+                  />
+                </div>
+              ))}
+              {sending && (
+                <MessageBlock
+                  message={{ id: "streaming", role: "assistant", content: streamingText, model: null, provenance: null, created_at: "" }}
+                  streaming
+                  toolStatus={toolStatus}
+                />
+              )}
+              {error && (
+                <div className="rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
+                  {error}{" "}
+                  {error.includes("Settings") || error.includes("API key") ? (
+                    <Link href="/settings" className="text-[var(--color-accent)] underline">
+                      Open Settings
+                    </Link>
+                  ) : null}
+                </div>
+              )}
+            </div>
           </div>
+
+          {showJumpToLatest && (
+            <button
+              onClick={scrollToLatest}
+              className="focus-ring absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] px-3.5 py-1.5 text-[12px] text-[var(--color-text)] shadow-md transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+            >
+              Jump to latest <IconChevronDown />
+            </button>
+          )}
         </div>
 
         {contextOpen && (
@@ -423,9 +544,15 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
               rows={2}
               className="focus-ring w-full resize-none rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-3 py-2 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-faint)]"
             />
-            <Button variant="accent" onClick={send} disabled={sending || (!draft.trim() && pendingAttachments.length === 0)}>
-              <IconSend />
-            </Button>
+            {sending ? (
+              <Button variant="danger" onClick={stop} aria-label="Stop generating" title="Stop generating">
+                <IconStop />
+              </Button>
+            ) : (
+              <Button variant="accent" onClick={send} disabled={!draft.trim() && pendingAttachments.length === 0}>
+                <IconSend />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -445,6 +572,10 @@ function MessageBlock({
   onArtifactTitleChange,
   onConfirmSaveArtifact,
   onCancelSaveArtifact,
+  onArtifactRestored,
+  isLast,
+  onRegenerate,
+  sending,
 }: {
   message: Message;
   streaming?: boolean;
@@ -457,6 +588,10 @@ function MessageBlock({
   onArtifactTitleChange?: (title: string) => void;
   onConfirmSaveArtifact?: (content: string) => void;
   onCancelSaveArtifact?: () => void;
+  onArtifactRestored?: () => void;
+  isLast?: boolean;
+  onRegenerate?: () => void;
+  sending?: boolean;
 }) {
   const isUser = message.role === "user";
   return (
@@ -466,10 +601,12 @@ function MessageBlock({
           {isUser ? "You" : "Magi"}
         </span>
         {message.model && <Tag>{message.model}</Tag>}
-        {streaming && toolStatus && (
-          <span className="text-[10.5px] text-[var(--color-accent)] font-technical">using {toolStatus}…</span>
+        {streaming && (
+          <span className="flex items-center gap-1.5 text-[10.5px] text-[var(--color-accent)] font-technical">
+            <MagiSpinner />
+            {toolStatus ? `using ${toolStatus}…` : message.content ? "writing…" : "thinking…"}
+          </span>
         )}
-        {streaming && !toolStatus && <span className="text-[10.5px] text-[var(--color-accent)]">writing…</span>}
       </div>
       <div className={isUser ? "text-[15px] leading-relaxed text-[var(--color-text)]" : "prose-magi"}>
         {message.content.split("\n").map((line, i) => (
@@ -479,15 +616,30 @@ function MessageBlock({
       {files && files.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {files.map((f) => (
-            <a
+            <span
               key={f.id}
-              href={`/api/artifacts/${f.id}/file`}
-              download
               className="flex items-center gap-1.5 rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
             >
-              <IconDocument className="shrink-0" />
-              {f.title} <span className="text-[var(--color-text-faint)]">v{f.version}</span>
-            </a>
+              <ArtifactViewerButton
+                artifactId={f.id}
+                onRestored={onArtifactRestored}
+                className="flex items-center gap-1.5"
+              >
+                <IconDocument className="shrink-0" />
+                {f.title} <span className="text-[var(--color-text-faint)]">v{f.version}</span>
+              </ArtifactViewerButton>
+              {f.mime_type && (
+                <a
+                  href={`/api/artifacts/${f.id}/file`}
+                  download
+                  aria-label="Download"
+                  title="Download"
+                  className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-accent)]"
+                >
+                  <IconDownload />
+                </a>
+              )}
+            </span>
           ))}
         </div>
       )}
@@ -511,6 +663,15 @@ function MessageBlock({
           >
             Save as artifact
           </button>
+          {isLast && onRegenerate && (
+            <button
+              onClick={onRegenerate}
+              disabled={sending}
+              className="flex items-center gap-1 text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors disabled:opacity-40"
+            >
+              <IconRefresh /> Regenerate
+            </button>
+          )}
         </div>
       )}
       {savingArtifact && (

@@ -3,6 +3,8 @@ import path from "node:path";
 import { db, newId, nowIso } from "@/lib/db";
 import { indexUpsert } from "@/lib/searchIndex";
 import { markdownToDocxBuffer } from "@/lib/files/markdownToDocx";
+import { markdownToXlsxBuffer } from "@/lib/files/markdownToXlsx";
+import { markdownToPptxBuffer } from "@/lib/files/markdownToPptx";
 
 export interface Artifact {
   id: string;
@@ -85,6 +87,7 @@ export function listVersions(id: string): Artifact[] {
 export function createArtifact(input: {
   projectId: string;
   conversationId?: string;
+  messageId?: string;
   title: string;
   type?: string;
   content: string;
@@ -94,12 +97,13 @@ export function createArtifact(input: {
   const id = newId("art");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO artifacts (id, project_id, conversation_id, title, type, content, mime_type, file_path, version, parent_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)`
+    `INSERT INTO artifacts (id, project_id, conversation_id, message_id, title, type, content, mime_type, file_path, version, parent_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, ?)`
   ).run(
     id,
     input.projectId,
     input.conversationId ?? null,
+    input.messageId ?? null,
     input.title,
     input.type ?? "document",
     input.content,
@@ -147,29 +151,67 @@ export function createNewVersion(
   return getArtifact(id);
 }
 
-const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+// A run_python call that writes to /output produces one of these per file
+// (see collectOutputFiles() in workers/codeExecWorker.mjs) — a chart, a CSV,
+// any bytes the sandbox isn't allowed to reach the real filesystem to save
+// itself. Always a fresh artifact (version 1): unlike create_docx there's no
+// artifact_id concept for run_python to revise, since each run is its own
+// standalone execution rather than an edit to a specific prior document.
+export function saveGeneratedFile(input: {
+  projectId: string;
+  conversationId?: string;
+  title: string;
+  bytes: Uint8Array;
+  mimeType: string;
+}): Artifact {
+  ensureDir();
+  const fileId = newId("art");
+  const ext = input.title.includes(".") ? input.title.slice(input.title.lastIndexOf(".")) : "";
+  const filePath = path.join(ARTIFACTS_DIR, `${fileId}${ext}`);
+  fs.writeFileSync(filePath, input.bytes);
+  return createArtifact({
+    projectId: input.projectId,
+    conversationId: input.conversationId,
+    title: input.title,
+    type: "generated_file",
+    content: `Generated file: ${input.title} (${input.mimeType})`,
+    filePath,
+    mimeType: input.mimeType,
+  });
+}
 
-// The one place that turns Markdown into a real, downloadable Word document —
-// see src/lib/files/markdownToDocx.ts for the actual conversion. `content`
-// stores the Markdown source (not text extracted back out of the .docx), so
-// the artifact stays FTS-searchable exactly like a plain-text artifact.
-export async function saveDocxArtifact(input: {
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+// The one place that turns Markdown into a real, downloadable Office file —
+// see src/lib/files/markdownToDocx.ts / markdownToXlsx.ts / markdownToPptx.ts
+// for the three format-specific converters this dispatches to. `content`
+// stores the Markdown source (not text extracted back out of the file), so
+// the artifact stays FTS-searchable exactly like a plain-text artifact, and
+// re-generating a later version only ever needs the markdown, never the
+// previous binary.
+async function saveMarkdownFileArtifact(input: {
   projectId: string;
   conversationId?: string;
   title: string;
   markdown: string;
   parentId?: string;
+  type: string;
+  ext: string;
+  mimeType: string;
+  toBuffer: (markdown: string, title: string) => Promise<Buffer>;
 }): Promise<Artifact> {
-  const buffer = await markdownToDocxBuffer(input.markdown, input.title);
+  const buffer = await input.toBuffer(input.markdown, input.title);
   ensureDir();
   // Just for a unique filename — the actual artifact row's id is assigned
   // inside createArtifact()/createNewVersion() below, independently.
   const fileId = newId("art");
-  const filePath = path.join(ARTIFACTS_DIR, `${fileId}.docx`);
+  const filePath = path.join(ARTIFACTS_DIR, `${fileId}${input.ext}`);
   fs.writeFileSync(filePath, buffer);
 
   if (input.parentId) {
-    const version = createNewVersion(input.parentId, input.markdown, input.title, { filePath, mimeType: DOCX_MIME });
+    const version = createNewVersion(input.parentId, input.markdown, input.title, { filePath, mimeType: input.mimeType });
     if (!version) throw new Error(`Artifact ${input.parentId} not found — can't create a new version.`);
     return version;
   }
@@ -177,9 +219,39 @@ export async function saveDocxArtifact(input: {
     projectId: input.projectId,
     conversationId: input.conversationId,
     title: input.title,
-    type: "docx",
+    type: input.type,
     content: input.markdown,
     filePath,
-    mimeType: DOCX_MIME,
+    mimeType: input.mimeType,
   });
+}
+
+export function saveDocxArtifact(input: {
+  projectId: string;
+  conversationId?: string;
+  title: string;
+  markdown: string;
+  parentId?: string;
+}): Promise<Artifact> {
+  return saveMarkdownFileArtifact({ ...input, type: "docx", ext: ".docx", mimeType: DOCX_MIME, toBuffer: markdownToDocxBuffer });
+}
+
+export function saveXlsxArtifact(input: {
+  projectId: string;
+  conversationId?: string;
+  title: string;
+  markdown: string;
+  parentId?: string;
+}): Promise<Artifact> {
+  return saveMarkdownFileArtifact({ ...input, type: "xlsx", ext: ".xlsx", mimeType: XLSX_MIME, toBuffer: markdownToXlsxBuffer });
+}
+
+export function savePptxArtifact(input: {
+  projectId: string;
+  conversationId?: string;
+  title: string;
+  markdown: string;
+  parentId?: string;
+}): Promise<Artifact> {
+  return saveMarkdownFileArtifact({ ...input, type: "pptx", ext: ".pptx", mimeType: PPTX_MIME, toBuffer: markdownToPptxBuffer });
 }

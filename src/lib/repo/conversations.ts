@@ -82,6 +82,17 @@ export function listMessages(conversationId: string): Message[] {
     .all(conversationId) as Message[];
 }
 
+// Used by regenerate (chat/regenerate/route.ts) to discard the assistant
+// reply being replaced. Artifacts aren't FK-enforced against messages (see
+// db.ts's migrated message_id column), so any artifact this message produced
+// is detached rather than deleted — the artifact and its version history
+// survive, they just stop showing up as this (deleted) message's attachment.
+export function deleteMessage(id: string) {
+  db.prepare(`UPDATE artifacts SET message_id = NULL WHERE message_id = ?`).run(id);
+  db.prepare(`DELETE FROM messages WHERE id = ?`).run(id);
+  indexRemove("message", id);
+}
+
 export function addMessage(input: {
   conversationId: string;
   role: Message["role"];

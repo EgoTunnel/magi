@@ -18,6 +18,7 @@ export async function POST(req: NextRequest) {
   const artifact = createArtifact({
     projectId: body.projectId,
     conversationId: body.conversationId,
+    messageId: body.messageId,
     title: body.title,
     type: body.type,
     content: body.content ?? "",

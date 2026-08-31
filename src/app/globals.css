@@ -182,3 +182,37 @@ button {
   color: var(--color-text-muted);
   margin: 0 0 1em 0;
 }
+.prose-magi h4, .prose-magi h5, .prose-magi h6 {
+  font-family: var(--font-ui), sans-serif;
+  font-weight: 600;
+  margin: 1.2em 0 0.4em 0;
+}
+.prose-magi a { color: var(--color-accent); text-decoration: underline; }
+.prose-magi hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.5em 0;
+}
+.prose-magi table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 1em 0;
+  font-size: 0.9em;
+}
+.prose-magi th, .prose-magi td {
+  border: 1px solid var(--color-border);
+  padding: 0.4em 0.65em;
+  text-align: left;
+}
+.prose-magi th { background: var(--color-surface-2); font-weight: 600; }
+
+/* The "Magi is working" indicator — a slow, continuous spin of the M-mark
+   itself rather than a generic spinner, so the one moment users stare at
+   while waiting carries the brand instead of a borrowed control. */
+@keyframes magi-spin {
+  to { transform: rotate(360deg); }
+}
+.magi-spinner {
+  animation: magi-spin 1.3s linear infinite;
+  transform-origin: 50% 50%;
+}

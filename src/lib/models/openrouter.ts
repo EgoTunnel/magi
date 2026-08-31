@@ -416,17 +416,20 @@ export const openRouterProvider: ModelProvider = {
     const working = toWorkingMessages(opts);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      const stream = c.chat.completions.stream({
-        model: opts.model,
-        messages: working,
-        tools,
-        max_tokens: maxTokens,
-        // Required for an OpenAI-compatible streaming response to report usage
-        // at all — without this, the final chunk simply omits the field.
-        stream_options: { include_usage: true },
-        ...(reasoning ? { reasoning } : {}),
-        ...(plugins ? { plugins } : {}),
-      } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming);
+      const stream = c.chat.completions.stream(
+        {
+          model: opts.model,
+          messages: working,
+          tools,
+          max_tokens: maxTokens,
+          // Required for an OpenAI-compatible streaming response to report usage
+          // at all — without this, the final chunk simply omits the field.
+          stream_options: { include_usage: true },
+          ...(reasoning ? { reasoning } : {}),
+          ...(plugins ? { plugins } : {}),
+        } as OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming,
+        { signal: opts.signal }
+      );
       let emitted = "";
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta?.content;

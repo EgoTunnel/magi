@@ -11,10 +11,21 @@ const WORKER_FILE = path.join(process.cwd(), "workers", "codeExecWorker.mjs");
 const TIMEOUT_MS = 15000;
 const MEMORY_LIMIT_MB = 512;
 
+// A file run_python's sandbox wrote under /output — see codeExecWorker.mjs's
+// collectOutputFiles(). `bytes` survives the worker->main-thread postMessage
+// as a real Uint8Array (Node's worker_threads structured-clones typed
+// arrays), not a base64 string.
+export interface CodeExecFile {
+  name: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
 interface WorkerResult {
   ok: boolean;
   out: string;
   error?: string;
+  files: CodeExecFile[];
 }
 
 function runInWorker(lang: "python" | "javascript", code: string): Promise<WorkerResult> {
@@ -26,7 +37,7 @@ function runInWorker(lang: "python" | "javascript", code: string): Promise<Worke
 
     const timer = setTimeout(() => {
       worker.terminate();
-      resolve({ ok: false, out: "", error: `Timed out after ${TIMEOUT_MS / 1000}s.` });
+      resolve({ ok: false, out: "", error: `Timed out after ${TIMEOUT_MS / 1000}s.`, files: [] });
     }, TIMEOUT_MS);
 
     worker.once("message", (msg: WorkerResult) => {
@@ -36,21 +47,28 @@ function runInWorker(lang: "python" | "javascript", code: string): Promise<Worke
     });
     worker.once("error", (err) => {
       clearTimeout(timer);
-      resolve({ ok: false, out: "", error: err instanceof Error ? err.message : String(err) });
+      resolve({ ok: false, out: "", error: err instanceof Error ? err.message : String(err), files: [] });
     });
   });
 }
 
-async function run(lang: "python" | "javascript", code: string): Promise<string> {
-  const result = await runInWorker(lang, code);
+export interface PythonRunResult {
+  text: string;
+  files: CodeExecFile[];
+}
+
+export async function runPython(code: string): Promise<PythonRunResult> {
+  const result = await runInWorker("python", code);
+  const text = !result.ok
+    ? `Error: ${result.error ?? "execution failed"}`
+    : result.out.trim()
+      ? result.out
+      : "(no output — use print()/console.log() to produce output)";
+  return { text, files: result.ok ? result.files : [] };
+}
+
+export async function runJavaScript(code: string): Promise<string> {
+  const result = await runInWorker("javascript", code);
   if (!result.ok) return `Error: ${result.error ?? "execution failed"}`;
   return result.out.trim() ? result.out : "(no output — use print()/console.log() to produce output)";
-}
-
-export function runPython(code: string): Promise<string> {
-  return run("python", code);
-}
-
-export function runJavaScript(code: string): Promise<string> {
-  return run("javascript", code);
 }

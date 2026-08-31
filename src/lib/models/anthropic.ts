@@ -129,13 +129,16 @@ export const anthropicProvider: ModelProvider = {
     const working: Anthropic.MessageParam[] = toWorkingMessages(opts.messages);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      const stream = c.messages.stream({
-        model: opts.model,
-        system: opts.system,
-        max_tokens: opts.maxTokens ?? 4096,
-        messages: working,
-        tools,
-      });
+      const stream = c.messages.stream(
+        {
+          model: opts.model,
+          system: opts.system,
+          max_tokens: opts.maxTokens ?? 4096,
+          messages: working,
+          tools,
+        },
+        { signal: opts.signal }
+      );
       for await (const event of stream) {
         if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
           yield { type: "text", text: event.delta.text } satisfies StreamEvent;

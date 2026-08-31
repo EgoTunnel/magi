@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
-import { IconChevronRight, IconDocument, IconPlus, IconTrash } from "@/components/icons";
+import { IconChevronRight, IconDocument, IconDownload, IconPlus, IconTrash } from "@/components/icons";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
+import { ArtifactViewerButton } from "@/components/ArtifactHistory";
 
 interface Project {
   id: string;
@@ -523,24 +524,32 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                 Artifacts
               </h2>
               <div className="flex flex-col gap-1.5">
-                {artifacts.map((a) =>
-                  a.mime_type ? (
-                    <a key={a.id} href={`/api/artifacts/${a.id}/file`} download>
-                      <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
-                        <span className="flex min-w-0 items-center gap-2">
-                          <IconDocument className="shrink-0 text-[var(--color-text-faint)]" />
-                          <span className="truncate text-[13.5px] text-[var(--color-text)]">{a.title}</span>
-                        </span>
-                        <Tag>v{a.version}</Tag>
-                      </Panel>
-                    </a>
-                  ) : (
-                    <Panel key={a.id} className="flex items-center justify-between px-3.5 py-2.5">
+                {artifacts.map((a) => (
+                  <Panel key={a.id} className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
+                    <ArtifactViewerButton
+                      artifactId={a.id}
+                      onRestored={load}
+                      className="flex min-w-0 items-center gap-2 text-left focus-ring"
+                    >
+                      <IconDocument className="shrink-0 text-[var(--color-text-faint)]" />
                       <span className="truncate text-[13.5px] text-[var(--color-text)]">{a.title}</span>
+                    </ArtifactViewerButton>
+                    <div className="flex shrink-0 items-center gap-2">
                       <Tag>v{a.version}</Tag>
-                    </Panel>
-                  )
-                )}
+                      {a.mime_type && (
+                        <a
+                          href={`/api/artifacts/${a.id}/file`}
+                          download
+                          aria-label="Download"
+                          title="Download"
+                          className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-accent)]"
+                        >
+                          <IconDownload />
+                        </a>
+                      )}
+                    </div>
+                  </Panel>
+                ))}
               </div>
             </section>
           )}
