@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
-import { IconPlus, IconTrash } from "@/components/icons";
+import { IconAttach, IconEdit, IconPlus, IconTrash } from "@/components/icons";
+import { arrayBufferToBase64 } from "@/lib/clientFiles";
+import { MagiSpinner } from "@/components/MagiSpinner";
 
 interface Project {
   id: string;
@@ -73,9 +75,30 @@ export function ImageLabClient() {
   const [charFormOpen, setCharFormOpen] = useState(false);
   const [charName, setCharName] = useState("");
   const [charDescription, setCharDescription] = useState("");
+  const [charPhotoFile, setCharPhotoFile] = useState<File | null>(null);
+  const [creatingCharacter, setCreatingCharacter] = useState(false);
+  const newCharPhotoInputRef = useRef<HTMLInputElement>(null);
+
+  const [uploadPhotoForCharId, setUploadPhotoForCharId] = useState<string | null>(null);
+  const [uploadingCharPhoto, setUploadingCharPhoto] = useState(false);
+  const existingCharPhotoInputRef = useRef<HTMLInputElement>(null);
+
+  const [editingCharId, setEditingCharId] = useState<string | null>(null);
+  const [editCharName, setEditCharName] = useState("");
+  const [editCharDescription, setEditCharDescription] = useState("");
+  const [savingCharEdit, setSavingCharEdit] = useState(false);
 
   const [assigningRefFor, setAssigningRefFor] = useState<string | null>(null);
   const [viewingImage, setViewingImage] = useState<GeneratedImage | null>(null);
+
+  const [newProjectFormOpen, setNewProjectFormOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  const [uploadingToProject, setUploadingToProject] = useState(false);
+  const [projectUploadError, setProjectUploadError] = useState<string | null>(null);
+  const [projectUploadNote, setProjectUploadNote] = useState<string | null>(null);
+  const projectUploadInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch("/api/projects")
@@ -110,6 +133,22 @@ export function ImageLabClient() {
   function selectProject(id: string) {
     setProjectId(id);
     router.push(`/image-lab?project=${id}`);
+  }
+
+  async function createProject() {
+    if (!newProjectName.trim()) return;
+    setCreatingProject(true);
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newProjectName }),
+    });
+    const data = await res.json();
+    setCreatingProject(false);
+    setNewProjectName("");
+    setNewProjectFormOpen(false);
+    setProjects((prev) => [...prev, data.project]);
+    selectProject(data.project.id);
   }
 
   async function generate() {
@@ -157,21 +196,118 @@ export function ImageLabClient() {
     loadProjectData();
   }
 
+  // Shared by every image-upload path on this page (a character's reference
+  // photo, or the general Project upload shortcut) — base64-encodes the file
+  // and posts it to /api/images/upload, which stores it in the same table
+  // and directory as an AI generation, just tagged source: "uploaded".
+  async function uploadImageFile(file: File): Promise<{ id: string } | null> {
+    if (!projectId) return null;
+    const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+    const res = await fetch("/api/images/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, dataBase64 }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()).image;
+  }
+
   async function createCharacter() {
     if (!projectId || !charName.trim()) return;
-    await fetch("/api/characters", {
+    setCreatingCharacter(true);
+    const res = await fetch("/api/characters", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ projectId, name: charName, description: charDescription }),
     });
+    const data = await res.json();
+    if (charPhotoFile && data.character) {
+      const image = await uploadImageFile(charPhotoFile);
+      if (image) {
+        await fetch(`/api/characters/${data.character.id}/reference-image`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageId: image.id }),
+        });
+      }
+    }
+    setCreatingCharacter(false);
     setCharName("");
     setCharDescription("");
+    setCharPhotoFile(null);
     setCharFormOpen(false);
     loadProjectData();
   }
 
+  async function handleExistingCharPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    const characterId = uploadPhotoForCharId;
+    setUploadPhotoForCharId(null);
+    if (!file || !characterId) return;
+    setUploadingCharPhoto(true);
+    const image = await uploadImageFile(file);
+    if (image) await assignReferenceImage(characterId, image.id);
+    setUploadingCharPhoto(false);
+  }
+
+  async function handleProjectUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !projectId) return;
+    setUploadingToProject(true);
+    setProjectUploadError(null);
+    setProjectUploadNote(null);
+    try {
+      const isImage = file.type.startsWith("image/");
+      if (isImage) {
+        const image = await uploadImageFile(file);
+        if (!image) {
+          setProjectUploadError("Upload failed.");
+          return;
+        }
+        setProjectUploadNote(`Added "${file.name}" to the gallery.`);
+        loadProjectData();
+      } else {
+        const dataBase64 = arrayBufferToBase64(await file.arrayBuffer());
+        const res = await fetch("/api/documents/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId, filename: file.name, mimeType: file.type, dataBase64 }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setProjectUploadError(data.error ?? "Upload failed.");
+          return;
+        }
+        setProjectUploadNote(`Added "${file.name}" to Project documents.`);
+      }
+    } finally {
+      setUploadingToProject(false);
+    }
+  }
+
   async function removeCharacter(id: string) {
     await fetch(`/api/characters/${id}`, { method: "DELETE" });
+    loadProjectData();
+  }
+
+  function startEditCharacter(c: Character) {
+    setEditingCharId(c.id);
+    setEditCharName(c.name);
+    setEditCharDescription(c.description);
+  }
+
+  async function saveCharacterEdit() {
+    if (!editingCharId || !editCharName.trim()) return;
+    setSavingCharEdit(true);
+    await fetch(`/api/characters/${editingCharId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: editCharName, description: editCharDescription }),
+    });
+    setSavingCharEdit(false);
+    setEditingCharId(null);
     loadProjectData();
   }
 
@@ -199,12 +335,21 @@ export function ImageLabClient() {
     return (
       <div className="mx-auto max-w-md px-8 py-16 text-center">
         <p className="mb-4 text-[13.5px] text-[var(--color-text-muted)]">
-          Choose a Project to work in — characters, Style Guides, and generated images all belong to
-          one, the same way everything else in Magi does.
+          Choose a Project to work in. Characters, Style Guides, and generated images all belong
+          to one, same as everything else here.
         </p>
-        {projects.length === 0 ? (
-          <EmptyState title="No Projects yet" description="Create one first, then come back here." />
-        ) : (
+        {projects.length === 0 && !newProjectFormOpen && (
+          <EmptyState
+            title="No Projects yet"
+            description="Create one first, then come back here."
+            action={
+              <Button variant="accent" onClick={() => setNewProjectFormOpen(true)}>
+                <IconPlus /> New Project
+              </Button>
+            }
+          />
+        )}
+        {projects.length > 0 && (
           <div className="flex flex-col gap-1.5">
             {projects.map((p) => (
               <button
@@ -217,26 +362,99 @@ export function ImageLabClient() {
             ))}
           </div>
         )}
+        {newProjectFormOpen ? (
+          <div className="mt-3 flex items-center gap-2">
+            <Input
+              autoFocus
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && createProject()}
+              placeholder="New Project name"
+            />
+            <Button variant="accent" onClick={createProject} disabled={!newProjectName.trim() || creatingProject}>
+              Create
+            </Button>
+            <Button variant="ghost" onClick={() => setNewProjectFormOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          projects.length > 0 && (
+            <Button variant="ghost" className="mt-3" onClick={() => setNewProjectFormOpen(true)}>
+              <IconPlus /> New Project
+            </Button>
+          )
+        )}
       </div>
     );
   }
+
+  const selectedModel = imageModels.find((m) => m.id === modelId);
+  const hasReferenceImages =
+    !!sourceImage || selectedCharacterIds.some((id) => characters.find((c) => c.id === id)?.reference_image_id);
+  const modelIgnoresReferences = !!selectedModel && !selectedModel.editsImages && hasReferenceImages;
 
   return (
     <div className="mx-auto grid max-w-5xl grid-cols-1 gap-6 px-8 py-7 lg:grid-cols-[1fr_320px]">
       <div className="flex flex-col gap-6">
         {/* Generation panel */}
         <Panel className="px-5 py-5">
-          <select
-            value={projectId}
-            onChange={(e) => selectProject(e.target.value)}
-            className="focus-ring mb-3 rounded-[3px] border border-[var(--color-border)] bg-[var(--color-bg-raised)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)]"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
+          <div className="mb-3 flex items-center gap-2">
+            <select
+              value={projectId}
+              onChange={(e) => selectProject(e.target.value)}
+              className="focus-ring rounded-[3px] border border-[var(--color-border)] bg-[var(--color-bg-raised)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)]"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            {newProjectFormOpen ? (
+              <>
+                <Input
+                  autoFocus
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && createProject()}
+                  placeholder="New Project name"
+                  className="h-7 max-w-[180px] py-0.5 text-[11.5px]"
+                />
+                <Button variant="accent" onClick={createProject} disabled={!newProjectName.trim() || creatingProject}>
+                  Create
+                </Button>
+                <Button variant="ghost" onClick={() => setNewProjectFormOpen(false)}>
+                  Cancel
+                </Button>
+              </>
+            ) : (
+              <Button variant="ghost" onClick={() => setNewProjectFormOpen(true)}>
+                <IconPlus /> New Project
+              </Button>
+            )}
+            <input
+              ref={projectUploadInputRef}
+              type="file"
+              accept=".pdf,.docx,.pptx,.txt,.md,.csv,.json,image/png,image/jpeg,image/webp,image/gif"
+              className="hidden"
+              onChange={handleProjectUpload}
+            />
+            <Button variant="ghost" onClick={() => projectUploadInputRef.current?.click()} disabled={uploadingToProject}>
+              <IconAttach /> {uploadingToProject ? "Uploading…" : "Upload to Project"}
+            </Button>
+          </div>
+          {(projectUploadError || projectUploadNote) && (
+            <div
+              className={`mb-3 rounded-[4px] border px-3 py-2 text-[12px] ${
+                projectUploadError
+                  ? "border-[var(--color-danger)] text-[var(--color-danger)]"
+                  : "border-[var(--color-border)] text-[var(--color-text-muted)]"
+              }`}
+            >
+              {projectUploadError ?? projectUploadNote}
+            </div>
+          )}
 
           {!modelsConfigured && (
             <div className="mb-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-bg)] px-4 py-3 text-[13px] text-[var(--color-text)]">
@@ -280,6 +498,7 @@ export function ImageLabClient() {
               {imageModels.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
+                  {m.editsImages ? " (uses reference images)" : ""}
                 </option>
               ))}
             </select>
@@ -315,8 +534,15 @@ export function ImageLabClient() {
             </div>
           )}
 
+          {modelIgnoresReferences && (
+            <div className="mb-3 rounded-[4px] border border-[var(--color-border-strong)] px-3 py-2 text-[12.5px] text-[var(--color-text-muted)]">
+              {selectedModel?.label} doesn&apos;t accept reference images — it will generate from the text
+              description alone and ignore the {sourceImage ? "source image" : "character photo"} attached here.
+              Pick a model marked &quot;uses reference images&quot; to match a likeness.
+            </div>
+          )}
           <Button variant="accent" onClick={generate} disabled={!prompt.trim() || !modelId || generating}>
-            {generating ? "Generating…" : "Generate"}
+            {generating && <MagiSpinner className="mr-1" />} {generating ? "Generating…" : "Generate"}
           </Button>
           {genError && (
             <div className="mt-3 rounded-[4px] border border-[var(--color-danger)] px-3 py-2 text-[12.5px] text-[var(--color-danger)]">
@@ -330,10 +556,16 @@ export function ImageLabClient() {
           <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
             Gallery
           </h2>
-          {images.length === 0 ? (
-            <EmptyState title="No images yet" description="Generated images accumulate here, organized by Project, same as everything else." />
+          {images.length === 0 && !generating ? (
+            <EmptyState title="No images yet" description="Images you generate collect here, organized by Project." />
           ) : (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {generating && (
+                <div className="flex aspect-square flex-col items-center justify-center gap-2 rounded-[4px] border border-dashed border-[var(--color-border-strong)] text-[var(--color-text-faint)]">
+                  <MagiSpinner width={20} height={20} />
+                  <span className="text-[11px]">Generating…</span>
+                </div>
+              )}
               {images.map((img) => (
                 <button
                   key={img.id}
@@ -425,12 +657,33 @@ export function ImageLabClient() {
                 className="mb-3"
                 placeholder="Appearance, clothing, distinguishing features, personality"
               />
+              <Label>Reference photo (optional)</Label>
+              <div className="mb-3 flex items-center gap-2">
+                <input
+                  ref={newCharPhotoInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  className="hidden"
+                  onChange={(e) => setCharPhotoFile(e.target.files?.[0] ?? null)}
+                />
+                <Button variant="default" onClick={() => newCharPhotoInputRef.current?.click()}>
+                  <IconAttach /> {charPhotoFile ? charPhotoFile.name : "Choose photo"}
+                </Button>
+                {charPhotoFile && (
+                  <button
+                    onClick={() => setCharPhotoFile(null)}
+                    className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
               <div className="flex justify-end gap-2">
                 <Button variant="ghost" onClick={() => setCharFormOpen(false)}>
                   Cancel
                 </Button>
-                <Button variant="accent" onClick={createCharacter}>
-                  Save
+                <Button variant="accent" onClick={createCharacter} disabled={!charName.trim() || creatingCharacter}>
+                  {creatingCharacter ? "Saving…" : "Save"}
                 </Button>
               </div>
             </Panel>
@@ -441,24 +694,73 @@ export function ImageLabClient() {
             </p>
           ) : (
             <div className="flex flex-col gap-1.5">
-              {characters.map((c) => (
-                <Panel key={c.id} className="px-3.5 py-2.5">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      {c.reference_image_id && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={`/api/images/${c.reference_image_id}/file`} alt="" className="h-7 w-7 rounded-[2px] object-cover" />
-                      )}
-                      <span className="text-[13px] font-medium text-[var(--color-text)]">{c.name}</span>
+              <input
+                ref={existingCharPhotoInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                className="hidden"
+                onChange={handleExistingCharPhoto}
+              />
+              {characters.map((c) =>
+                editingCharId === c.id ? (
+                  <Panel key={c.id} className="px-3.5 py-3">
+                    <Label>Name</Label>
+                    <Input value={editCharName} onChange={(e) => setEditCharName(e.target.value)} className="mb-2" />
+                    <Label>Description</Label>
+                    <Textarea
+                      value={editCharDescription}
+                      onChange={(e) => setEditCharDescription(e.target.value)}
+                      rows={3}
+                      className="mb-2"
+                    />
+                    <div className="flex justify-end gap-2">
+                      <Button variant="ghost" onClick={() => setEditingCharId(null)}>
+                        Cancel
+                      </Button>
+                      <Button variant="accent" onClick={saveCharacterEdit} disabled={!editCharName.trim() || savingCharEdit}>
+                        {savingCharEdit ? "Saving…" : "Save"}
+                      </Button>
                     </div>
-                    <button onClick={() => removeCharacter(c.id)} className="focus-ring shrink-0 text-[var(--color-text-faint)] hover:text-[var(--color-danger)]">
-                      <IconTrash />
-                    </button>
-                  </div>
-                  {c.description && <p className="mt-1 text-[11.5px] text-[var(--color-text-muted)] line-clamp-2">{c.description}</p>}
-                  {!c.reference_image_id && <Tag>no reference image</Tag>}
-                </Panel>
-              ))}
+                  </Panel>
+                ) : (
+                  <Panel key={c.id} className="px-3.5 py-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        {c.reference_image_id && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={`/api/images/${c.reference_image_id}/file`} alt="" className="h-7 w-7 rounded-[2px] object-cover" />
+                        )}
+                        <span className="text-[13px] font-medium text-[var(--color-text)]">{c.name}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button
+                          onClick={() => startEditCharacter(c)}
+                          title="Edit"
+                          className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-accent)]"
+                        >
+                          <IconEdit />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setUploadPhotoForCharId(c.id);
+                            existingCharPhotoInputRef.current?.click();
+                          }}
+                          disabled={uploadingCharPhoto}
+                          title={c.reference_image_id ? "Replace photo" : "Upload photo"}
+                          className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-accent)] disabled:opacity-40"
+                        >
+                          <IconAttach />
+                        </button>
+                        <button onClick={() => removeCharacter(c.id)} className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]">
+                          <IconTrash />
+                        </button>
+                      </div>
+                    </div>
+                    {c.description && <p className="mt-1 text-[11.5px] text-[var(--color-text-muted)] line-clamp-2">{c.description}</p>}
+                    {!c.reference_image_id && <Tag>no reference image</Tag>}
+                  </Panel>
+                )
+              )}
             </div>
           )}
         </section>

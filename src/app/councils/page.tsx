@@ -7,7 +7,7 @@ export default function CouncilsPage() {
       <PageHeader
         eyebrow="Collective intelligence"
         title="Magi Council"
-        description="Several intelligences operating within a shared environment — independent analysis, mutual critique, and a synthesis that does not paper over real disagreement."
+        description="Multiple models take on a question together: independent analysis, mutual critique, and a synthesis that still tells you where they disagreed."
       />
       <CouncilsClient />
     </div>

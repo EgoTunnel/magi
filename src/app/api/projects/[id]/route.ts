@@ -11,7 +11,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
   const body = await req.json();
-  const project = updateProject(id, body);
+  let project;
+  try {
+    project = updateProject(id, body);
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "invalid update" }, { status: 400 });
+  }
   if (!project) return NextResponse.json({ error: "not found" }, { status: 404 });
   return NextResponse.json({ project });
 }

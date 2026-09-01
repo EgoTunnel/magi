@@ -5,9 +5,9 @@ export default function MemoryPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Deliberate, not automatic"
+        eyebrow="Kept on purpose"
         title="Memory"
-        description="Something said once should not automatically become permanent knowledge. This is what Magi has been told, explicitly, to retain."
+        description="Saying something once doesn't make it permanent. This page shows exactly what Magi has been told to remember."
       />
       <MemoryClient />
     </div>

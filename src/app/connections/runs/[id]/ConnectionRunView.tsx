@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, Panel, Tag } from "@/components/ui";
+import { renderMarkdown } from "@/lib/markdownToReact";
 
 interface Finding {
   targetProjectId: string;
@@ -105,9 +106,7 @@ export function ConnectionRunView({ runId }: { runId: string }) {
               <Tag tone={relevanceTone(f.relevance)}>{f.relevance}</Tag>
             </div>
             <div className="prose-magi text-[13.5px]">
-              {f.summary.split("\n").map((line, i) => (
-                <p key={i}>{line || " "}</p>
-              ))}
+              {renderMarkdown(f.summary)}
             </div>
             {f.toolCalls && f.toolCalls.length > 0 && (
               <div className="mt-3 flex flex-col gap-1 border-t border-[var(--color-border)] pt-3">

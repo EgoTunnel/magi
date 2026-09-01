@@ -205,6 +205,15 @@ export interface GeneratedImagePart {
   dataUrl: string;
 }
 
+// A named reference image — the label is sent as its own text block
+// immediately before the image so the model knows what the image actually
+// is (a specific character's real appearance, vs. a base image to vary),
+// rather than a pile of unlabeled images it has to guess about.
+export interface ReferenceImageInput {
+  label: string;
+  dataUrl: string;
+}
+
 // A direct fetch call rather than routing through the `openai` SDK's typed
 // chat.completions.create — the request needs `modalities` and the response's
 // `message.images[].image_url.url` field, neither of which are in the SDK's
@@ -213,16 +222,38 @@ export interface GeneratedImagePart {
 export async function generateOpenRouterImage(opts: {
   model: string;
   prompt: string;
-  referenceImageDataUrls?: string[];
+  referenceImages?: ReferenceImageInput[];
 }): Promise<GeneratedImagePart[]> {
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) throw new Error("NO_API_KEY");
 
+  const refs = opts.referenceImages ?? [];
   const content: Array<
     { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }
-  > = [{ type: "text", text: opts.prompt }];
-  for (const url of opts.referenceImageDataUrls ?? []) {
-    content.push({ type: "image_url", image_url: { url } });
+  > = [];
+
+  // With references attached, an unadorned prompt + trailing images leaves
+  // the model to guess whether an image is mood-board inspiration or a
+  // strict identity reference — it isn't reliable about assuming the
+  // latter on its own. Say so explicitly, label each image right before it
+  // appears, and only then give the actual request text.
+  if (refs.length) {
+    content.push({
+      type: "text",
+      text:
+        "Reference images are attached below, each preceded by a label saying what it shows. Where a label " +
+        "identifies a character, that image shows their real appearance — match their face, identity, and " +
+        "distinguishing features as closely as you can; only their pose, expression, and the surroundings " +
+        "should change to fit the request. Where a label marks a base image to vary, keep its composition and " +
+        "subject recognizable while applying the requested change.",
+    });
+    for (const ref of refs) {
+      content.push({ type: "text", text: ref.label });
+      content.push({ type: "image_url", image_url: { url: ref.dataUrl } });
+    }
+    content.push({ type: "text", text: `Request: ${opts.prompt}` });
+  } else {
+    content.push({ type: "text", text: opts.prompt });
   }
 
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -385,7 +416,7 @@ export const openRouterProvider: ModelProvider = {
     const { tools, reasoning, maxTokens, plugins } = requestExtras(opts);
     const working = toWorkingMessages(opts);
 
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    for (let iteration = 0; iteration < (opts.maxToolIterations ?? MAX_TOOL_ITERATIONS); iteration++) {
       const res = await c.chat.completions.create({
         model: opts.model,
         messages: working,

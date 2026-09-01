@@ -35,6 +35,15 @@ export function setCharacterReferenceImage(id: string, imageId: string) {
   db.prepare(`UPDATE characters SET reference_image_id = ? WHERE id = ?`).run(imageId, id);
 }
 
+export function updateCharacter(id: string, patch: { name?: string; description?: string }): Character | null {
+  const existing = getCharacter(id);
+  if (!existing) return null;
+  const next = { ...existing, ...patch };
+  db.prepare(`UPDATE characters SET name = ?, description = ? WHERE id = ?`).run(next.name, next.description, id);
+  indexUpsert({ kind: "character", refId: id, projectId: next.project_id, title: next.name, content: next.description });
+  return getCharacter(id);
+}
+
 export function deleteCharacter(id: string) {
   db.prepare(`DELETE FROM characters WHERE id = ?`).run(id);
   indexRemove("character", id);

@@ -5,7 +5,7 @@ export default async function AgentRunPage({ params }: PageProps<"/agents/runs/[
   const { id } = await params;
   return (
     <div>
-      <PageHeader eyebrow="Agent" title="Pursuing an objective" description="Plan, research, draft, critique, revise — inspectable at every step, and stoppable at any point." />
+      <PageHeader eyebrow="Agent" title="Pursuing an objective" description="Plan, research, draft, critique, revise. You can watch each step happen and stop it whenever you want." />
       <AgentRunView runId={id} />
     </div>
   );

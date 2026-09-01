@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
-import { generateOpenRouterImage } from "@/lib/models/openrouter";
+import { generateOpenRouterImage, type ReferenceImageInput } from "@/lib/models/openrouter";
 import { getOpenRouterApiKey } from "@/lib/settings";
 import { getImage, saveGeneratedImage } from "@/lib/repo/images";
 import { getStyleGuide } from "@/lib/repo/styleGuides";
@@ -44,16 +44,26 @@ export async function POST(req: NextRequest) {
   }
   const composedPrompt = promptParts.join("\n\n");
 
-  const referenceImageDataUrls: string[] = [];
+  const referenceImages: ReferenceImageInput[] = [];
   if (sourceImageId) {
     const source = getImage(sourceImageId);
-    if (source) referenceImageDataUrls.push(fileToDataUrl(source.file_path, source.mime_type));
+    if (source) {
+      referenceImages.push({
+        label: "Base image to create a variation of:",
+        dataUrl: fileToDataUrl(source.file_path, source.mime_type),
+      });
+    }
   }
   for (const character of characters) {
-    if (referenceImageDataUrls.length >= 4) break;
+    if (referenceImages.length >= 4) break;
     if (character.reference_image_id) {
       const ref = getImage(character.reference_image_id);
-      if (ref) referenceImageDataUrls.push(fileToDataUrl(ref.file_path, ref.mime_type));
+      if (ref) {
+        referenceImages.push({
+          label: `Reference photo showing the actual appearance of the character "${character.name}":`,
+          dataUrl: fileToDataUrl(ref.file_path, ref.mime_type),
+        });
+      }
     }
   }
 
@@ -61,7 +71,7 @@ export async function POST(req: NextRequest) {
     const parts = await generateOpenRouterImage({
       model: modelId,
       prompt: composedPrompt,
-      referenceImageDataUrls,
+      referenceImages,
     });
     const images = parts.map((part) =>
       saveGeneratedImage({

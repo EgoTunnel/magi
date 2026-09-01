@@ -7,7 +7,7 @@ export default function ImageLabPage() {
       <PageHeader
         eyebrow="Creative atelier"
         title="Image Lab"
-        description="Not a prompt playground — a place where a visual language, a cast of characters, and a body of generated work accumulate together."
+        description="A visual style, a cast of characters, and everything you've generated build up here over time, so a new image can actually look like it belongs with the rest."
       />
       <ImageLabClient />
     </div>

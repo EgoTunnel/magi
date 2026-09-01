@@ -116,7 +116,10 @@ export interface SearchResult {
   similarity?: number;
 }
 
-export function search(query: string, opts: { projectId?: string; kinds?: SearchKind[]; limit?: number } = {}): SearchResult[] {
+export function search(
+  query: string,
+  opts: { projectId?: string | string[]; kinds?: SearchKind[]; limit?: number } = {}
+): SearchResult[] {
   const trimmed = query.trim();
   if (!trimmed) return [];
   // FTS5 query syntax dislikes bare punctuation; escape by quoting each term.
@@ -128,7 +131,12 @@ export function search(query: string, opts: { projectId?: string; kinds?: Search
   const conditions: string[] = ["search_index MATCH ?"];
   const params: unknown[] = [ftsQuery];
 
-  if (opts.projectId) {
+  if (Array.isArray(opts.projectId)) {
+    if (opts.projectId.length) {
+      conditions.push(`project_id IN (${opts.projectId.map(() => "?").join(",")})`);
+      params.push(...opts.projectId);
+    }
+  } else if (opts.projectId) {
     conditions.push("project_id = ?");
     params.push(opts.projectId);
   }
@@ -174,7 +182,7 @@ export function search(query: string, opts: { projectId?: string; kinds?: Search
 // ignored, not deleted, so switching back to an earlier model works instantly.
 export async function semanticSearch(
   query: string,
-  opts: { projectId?: string; kinds?: SearchKind[]; limit?: number } = {}
+  opts: { projectId?: string | string[]; kinds?: SearchKind[]; limit?: number } = {}
 ): Promise<SearchResult[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
@@ -185,7 +193,12 @@ export async function semanticSearch(
 
   const conditions: string[] = ["model = ?"];
   const params: unknown[] = [modelId];
-  if (opts.projectId) {
+  if (Array.isArray(opts.projectId)) {
+    if (opts.projectId.length) {
+      conditions.push(`project_id IN (${opts.projectId.map(() => "?").join(",")})`);
+      params.push(...opts.projectId);
+    }
+  } else if (opts.projectId) {
     conditions.push("project_id = ?");
     params.push(opts.projectId);
   }

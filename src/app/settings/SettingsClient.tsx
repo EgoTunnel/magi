@@ -416,9 +416,9 @@ export function SettingsClient() {
             </Button>
           </div>
           <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
-            Backs the web_search and web_fetch tools below. Without a key, OpenRouter-routed models
-            automatically fall back to OpenRouter&apos;s own built-in web search instead — Anthropic
-            models have no such fallback and need this key to search the web at all.
+            Backs the web_search and web_fetch tools below. Without a key, models routed through
+            OpenRouter fall back to OpenRouter&apos;s own built-in web search — but Anthropic&apos;s
+            models have no fallback, and need this key to search the web at all.
           </p>
         </Panel>
       </section>
@@ -545,10 +545,10 @@ export function SettingsClient() {
       <section>
         <h2 className="mb-1 text-[14px] font-semibold text-[var(--color-text)]">Semantic search</h2>
         <p className="mb-3 text-[13px] text-[var(--color-text-muted)]">
-          Lets the Archive page search by meaning, not just wording. Anthropic has no embeddings API,
-          so — same as the Image Lab — this requires an OpenRouter key specifically. OpenRouter
-          doesn&apos;t list embedding models in its regular catalog, so this is a short, hand-picked
-          selection rather than the live dropdown used elsewhere.
+          Lets the Archive page search by meaning instead of exact wording. This needs an OpenRouter
+          key specifically, since Anthropic has no embeddings API — the Image Lab has the same
+          requirement, for the same reason. OpenRouter doesn&apos;t list embedding models in its regular
+          catalog either, so the list below is hand-picked rather than the live dropdown used elsewhere.
         </p>
         {!openRouterKeySet ? (
           <Panel className="px-4 py-3.5 text-[13px] text-[var(--color-text-muted)]">
@@ -690,16 +690,19 @@ export function SettingsClient() {
       <section>
         <h2 className="mb-1 text-[14px] font-semibold text-[var(--color-text)]">About this build</h2>
         <p className="text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-          This is a working subset of the full Magi vision: Projects, persistent Project instructions,
-          streaming conversations with tool use and automatic model selection, deliberate memory,
-          full-text and semantic archive search, reusable Skills with per-Skill tool permissions, the
-          Magi Council in Independent Analysis, Debate, or Red Team mode, Agents that pursue an
-          objective across multiple steps with per-run tool permissions, an Image Lab with Style Guides
-          and Characters for visual continuity, cross-Project
-          connection discovery, Project export/import (including ingesting a ChatGPT or Claude data
-          export), usage &amp; cost tracking across every model call, and per-role reasoning-effort
-          control. Model support covers Anthropic directly and every model OpenRouter proxies; the
-          provider layer is built to add more without touching the rest of the app.
+          This build covers a working subset of the full Magi vision. Projects carry persistent
+          instructions and memory; conversations stream with tool use and automatic model selection;
+          the archive supports full-text and semantic search. Skills bundle tool permissions into a
+          reusable method, and the Magi Council can run Independent Analysis, Debate, or Red Team
+          deliberations. Agents pursue a multi-step objective on their own, within whatever tool
+          permissions you set for that run. The Image Lab keeps Style Guides and Characters around for
+          visual continuity. Projects can discover connections to each other, and can be exported or
+          imported — including a ChatGPT or Claude data export. Every model call is logged for cost and
+          usage, with per-role reasoning-effort control.
+        </p>
+        <p className="mt-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+          Anthropic is supported directly, along with every model OpenRouter proxies. The provider
+          layer is built to add more without touching the rest of the app.
         </p>
       </section>
     </div>

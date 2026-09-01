@@ -8,7 +8,7 @@ export default async function ConnectionRunPage({ params }: PageProps<"/connecti
       <PageHeader
         eyebrow="Cross-Project intelligence"
         title="Connections"
-        description="The Projects stay separate. What might genuinely be relevant between them becomes discoverable, on request."
+        description="Projects stay separate by default. Ask, and Magi will go look for what actually connects them."
       />
       <ConnectionRunView runId={id} />
     </div>

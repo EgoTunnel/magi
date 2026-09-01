@@ -12,6 +12,18 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import type { Root, RootContent, PhrasingContent, List } from "mdast";
+import type { DocumentTheme } from "@/lib/files/theme";
+
+function argb(hex?: string): { argb: string } | undefined {
+  return hex ? { argb: `FF${hex.toUpperCase()}` } : undefined;
+}
+
+function fontExtra(name?: string, color?: { argb: string }): Partial<ExcelJS.Font> {
+  const f: Partial<ExcelJS.Font> = {};
+  if (name) f.name = name;
+  if (color) f.color = color;
+  return f;
+}
 
 const MAX_COL_WIDTH = 60;
 const HEADER_FILL: ExcelJS.Fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFEDEDED" } };
@@ -113,59 +125,79 @@ function addSingleCellRow(ws: ExcelJS.Worksheet, runs: ExcelJS.RichText[], colWi
   return row;
 }
 
-function listRows(ws: ExcelJS.Worksheet, node: List, colWidths: number[], level: number) {
+function listRows(ws: ExcelJS.Worksheet, node: List, colWidths: number[], level: number, theme?: DocumentTheme) {
   node.children.forEach((item, i) => {
     const marker = node.ordered ? `${(node.start ?? 1) + i}.` : "•";
     const prefix = `${"    ".repeat(level)}${marker} `;
     for (const child of item.children) {
       if (child.type === "paragraph") {
-        addSingleCellRow(ws, [{ text: prefix }, ...richRuns(child.children)], colWidths);
+        const extra = fontExtra(theme?.bodyFont, argb(theme?.bodyColor));
+        addSingleCellRow(ws, [{ text: prefix, font: Object.keys(extra).length ? extra : undefined }, ...richRuns(child.children, {}, extra)], colWidths);
       } else if (child.type === "list") {
-        listRows(ws, child, colWidths, level + 1);
+        listRows(ws, child, colWidths, level + 1, theme);
       } else {
-        blockToRows(ws, child, colWidths);
+        blockToRows(ws, child, colWidths, theme);
       }
     }
   });
 }
 
-function tableRows(ws: ExcelJS.Worksheet, node: Extract<RootContent, { type: "table" }>, colWidths: number[]) {
+function tableRows(ws: ExcelJS.Worksheet, node: Extract<RootContent, { type: "table" }>, colWidths: number[], theme?: DocumentTheme) {
+  const bodyExtra = fontExtra(theme?.bodyFont, argb(theme?.bodyColor));
   node.children.forEach((row, rowIndex) => {
     const wsRow = ws.addRow([]);
     row.children.forEach((cell, colIndex) => {
-      const runs = richRuns(cell.children, rowIndex === 0 ? { bold: true } : {});
+      const runs = richRuns(cell.children, rowIndex === 0 ? { bold: true } : {}, rowIndex === 0 ? {} : bodyExtra);
       const plain = plainText(runs);
       const wsCell = wsRow.getCell(colIndex + 1);
       const numeric = rowIndex > 0 ? parseNumeric(plain) : null;
       wsCell.value = numeric !== null ? numeric : cellValueFor(runs);
       wsCell.border = CELL_BORDER;
       if (rowIndex === 0) {
-        wsCell.font = { bold: true };
+        wsCell.font = { bold: true, ...fontExtra(theme?.headingFont, argb(theme?.labelColor)) };
         wsCell.fill = HEADER_FILL;
+      } else if (Object.keys(bodyExtra).length) {
+        wsCell.font = bodyExtra;
       }
       track(colWidths, colIndex, plain.length);
     });
   });
 }
 
-function blockToRows(ws: ExcelJS.Worksheet, node: RootContent, colWidths: number[]) {
+function blockToRows(ws: ExcelJS.Worksheet, node: RootContent, colWidths: number[], theme?: DocumentTheme) {
   switch (node.type) {
-    case "heading":
-      addSingleCellRow(ws, richRuns(node.children, {}, { bold: true, size: HEADING_SIZES[Math.min(node.depth - 1, 5)] }), colWidths);
+    case "heading": {
+      const color = node.depth === 1 ? theme?.headingColor : (theme?.subtitleColor ?? theme?.headingColor);
+      addSingleCellRow(
+        ws,
+        richRuns(node.children, {}, {
+          bold: true,
+          size: HEADING_SIZES[Math.min(node.depth - 1, 5)],
+          ...fontExtra(theme?.headingFont, argb(color)),
+        }),
+        colWidths
+      );
       break;
+    }
     case "paragraph":
-      addSingleCellRow(ws, richRuns(node.children), colWidths);
+      addSingleCellRow(ws, richRuns(node.children, {}, fontExtra(theme?.bodyFont, argb(theme?.bodyColor))), colWidths);
       break;
     case "list":
-      listRows(ws, node, colWidths, 0);
+      listRows(ws, node, colWidths, 0, theme);
       break;
     case "table":
-      tableRows(ws, node, colWidths);
+      tableRows(ws, node, colWidths, theme);
       break;
     case "blockquote":
       for (const child of node.children) {
-        if (child.type === "paragraph") addSingleCellRow(ws, richRuns(child.children, { italic: true }), colWidths, 1);
-        else blockToRows(ws, child, colWidths);
+        if (child.type === "paragraph") {
+          addSingleCellRow(
+            ws,
+            richRuns(child.children, { italic: true }, fontExtra(theme?.bodyFont, argb(theme?.bodyColor))),
+            colWidths,
+            1
+          );
+        } else blockToRows(ws, child, colWidths, theme);
       }
       break;
     case "code":
@@ -181,7 +213,7 @@ function blockToRows(ws: ExcelJS.Worksheet, node: RootContent, colWidths: number
   }
 }
 
-export async function markdownToXlsxBuffer(markdown: string, title: string): Promise<Buffer> {
+export async function markdownToXlsxBuffer(markdown: string, title: string, theme?: DocumentTheme): Promise<Buffer> {
   const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown) as Root;
   const workbook = new ExcelJS.Workbook();
   const sheetName = title.replace(/[\\/*?:[\]]/g, "").slice(0, 31).trim() || "Sheet1";
@@ -190,7 +222,7 @@ export async function markdownToXlsxBuffer(markdown: string, title: string): Pro
   const colWidths: number[] = [];
   for (const node of tree.children) {
     try {
-      blockToRows(ws, node, colWidths);
+      blockToRows(ws, node, colWidths, theme);
     } catch {
       // Skip a node the walker doesn't know how to render rather than
       // failing the whole document over it.

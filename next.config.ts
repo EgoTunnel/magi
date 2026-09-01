@@ -10,6 +10,10 @@ const nextConfig: NextConfig = {
   // too dynamic"). quickjs-emscripten is included alongside it defensively,
   // for the same reason.
   serverExternalPackages: ["pdf-parse", "@napi-rs/canvas", "pyodide", "quickjs-emscripten"],
+  // Hide the floating dev-mode indicator badge — this is a personal single-user
+  // instrument, not a multi-dev project where build/route status needs to be
+  // visible at a glance.
+  devIndicators: false,
 };
 
 export default nextConfig;

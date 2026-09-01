@@ -29,6 +29,7 @@ async function runStep(opts: {
   allowedTools?: string[] | null;
   projectId?: string | null;
   maxTokens?: number;
+  maxToolIterations?: number;
 }): Promise<{ content: string; toolCalls: ToolCallRecord[] }> {
   const modelId = modelForRole(opts.modelRole);
   const resolved = getModel(modelId);
@@ -49,6 +50,7 @@ async function runStep(opts: {
     toolLog,
     usage,
     reasoningEffort: reasoningEffortForRole(opts.modelRole),
+    maxToolIterations: opts.maxToolIterations,
   });
   recordUsage({
     projectId: opts.projectId ?? undefined,
@@ -114,12 +116,18 @@ export async function runAgent(opts: {
     const research = await runStep({
       runId,
       modelRole: "researcher",
-      system: `${AGENT_BOUNDARIES} You are researching. Use search_archive where it could plausibly hold relevant material; use calculator for any real computation. Report findings plainly, including where you found nothing.`,
+      system: `${AGENT_BOUNDARIES} You are researching. Use search_archive where it could plausibly hold relevant material; use calculator for any real computation. This Agent is running inside the Project "${
+        project?.name ?? "none"
+      }" — search_archive defaults to searching that Project ONLY. The objective may reference other Projects by name, or otherwise require material that lives outside this one; whenever that's plausible, call search_archive with scope: "all" rather than assuming an empty or thin result from the default scope means nothing exists. Report findings plainly, including where you found nothing.`,
       prompt: `Objective: ${objective}${projectContext}\n\nResearch plan:\n${plan.content}\n\nInvestigate and report what you find.`,
       withTools: true,
       allowedTools,
       projectId,
       maxTokens: 4000,
+      // A broad, multi-Project research task can legitimately need many more
+      // searches than an ordinary chat turn's default budget allows — this is
+      // the only step that gets a materially higher ceiling.
+      maxToolIterations: 30,
     });
     record(runId, "research", "Research", research.content, research.toolCalls);
     if (stopped()) return;
@@ -128,7 +136,12 @@ export async function runAgent(opts: {
     const draft = await runStep({
       runId,
       modelRole: "writer",
-      system: `${AGENT_BOUNDARIES} Write a clear, substantive draft addressing the objective directly, grounded in the research below. Editorial clarity, no filler.`,
+      system: `${AGENT_BOUNDARIES} Write a clear, substantive draft addressing the objective directly, grounded ` +
+        `strictly in the research below — never invent specific facts, numbers, names, scenarios, or examples ` +
+        `that aren't actually supported by it. If the research is thin, incomplete, or is itself a placeholder ` +
+        `reporting that search/tool calls failed or ran out of budget, say exactly that plainly and state what ` +
+        `real information would be needed, rather than filling the gap with plausible-sounding invention. A ` +
+        `draft that honestly says "the research didn't turn up X" is far more useful than one that fabricates X.`,
       prompt: `Objective: ${objective}${projectContext}\n\nResearch findings:\n${research.content}\n\nWrite the draft now. Begin immediately with its first sentence.`,
       maxTokens: 5000,
     });

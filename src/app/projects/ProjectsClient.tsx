@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
-import { IconPlus } from "@/components/icons";
+import { IconPlus, IconPin, IconTrash } from "@/components/icons";
 
 interface Project {
   id: string;
@@ -13,6 +13,15 @@ interface Project {
   purpose: string | null;
   status: string;
   updated_at: string;
+  parent_project_id: string | null;
+  pinned: number;
+}
+interface ProjectCounts {
+  conversations: number;
+  memory: number;
+  documents: number;
+  artifacts: number;
+  skills: number;
 }
 interface ClaudeAccountImportSummary {
   projectsCreated: number;
@@ -26,9 +35,22 @@ interface ClaudeAccountImportSummary {
 export function ProjectsClient() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
-  const searchParams = useSearchParams();
+  const [statusFilter, setStatusFilter] = useState<"active" | "archived">("active");
   const router = useRouter();
-  const [formOpen, setFormOpen] = useState(searchParams.get("new") === "1");
+  // Read the ?new=1 query param on the client only, rather than via
+  // next/navigation's useSearchParams() — that hook requires a Suspense
+  // boundary, and Suspense + SSR streaming got stuck (rendered but never
+  // revealed) on a fresh hard load of a URL, the same issue documented in
+  // ImageLabClient.tsx for its ?project= param. This sidesteps it.
+  const [formOpen, setFormOpen] = useState(false);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("new") === "1") setFormOpen(true);
+  }, []);
+
+  const [moveOpenFor, setMoveOpenFor] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [deleteCounts, setDeleteCounts] = useState<ProjectCounts | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [name, setName] = useState("");
   const [tagline, setTagline] = useState("");
@@ -49,7 +71,7 @@ export function ProjectsClient() {
 
   async function load() {
     setLoading(true);
-    const res = await fetch("/api/projects");
+    const res = await fetch(`/api/projects?status=${statusFilter}`);
     const data = await res.json();
     setProjects(data.projects);
     setLoading(false);
@@ -57,7 +79,67 @@ export function ProjectsClient() {
 
   useEffect(() => {
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
+
+  async function togglePin(p: Project) {
+    await fetch(`/api/projects/${p.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned: p.pinned ? 0 : 1 }),
+    });
+    load();
+  }
+
+  async function setArchived(p: Project, archived: boolean) {
+    await fetch(`/api/projects/${p.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: archived ? "archived" : "active" }),
+    });
+    load();
+  }
+
+  // A Project can't become its own or its own descendant's parent — walk
+  // down from candidate parent p to see if it ever reaches `of`.
+  function isDescendantOf(candidateId: string, of: string): boolean {
+    let current = projects.find((q) => q.id === candidateId);
+    const seen = new Set<string>();
+    while (current?.parent_project_id && !seen.has(current.id)) {
+      if (current.parent_project_id === of) return true;
+      seen.add(current.id);
+      current = projects.find((q) => q.id === current!.parent_project_id);
+    }
+    return false;
+  }
+
+  async function reparent(p: Project, newParentId: string) {
+    await fetch(`/api/projects/${p.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent_project_id: newParentId || null }),
+    });
+    setMoveOpenFor(null);
+    load();
+  }
+
+  async function openDeleteConfirm(p: Project) {
+    setDeleteTarget(p);
+    setDeleteCounts(null);
+    const res = await fetch(`/api/projects/${p.id}`);
+    const data = await res.json();
+    setDeleteCounts(data.counts ?? null);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    await fetch(`/api/projects/${deleteTarget.id}`, { method: "DELETE" });
+    setDeleting(false);
+    setDeleteTarget(null);
+    setDeleteCounts(null);
+    load();
+  }
 
   async function createProject() {
     if (!name.trim()) return;
@@ -255,10 +337,26 @@ export function ProjectsClient() {
         </Panel>
       )}
 
-      {!loading && projects.length === 0 && !formOpen && (
+      <div className="mb-4 flex gap-1 border-b border-[var(--color-border)]">
+        {(["active", "archived"] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setStatusFilter(s)}
+            className={`focus-ring border-b-2 px-3 py-2 text-[12.5px] font-medium capitalize transition-colors ${
+              statusFilter === s
+                ? "border-[var(--color-accent)] text-[var(--color-text)]"
+                : "border-transparent text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {!loading && projects.length === 0 && !formOpen && statusFilter === "active" && (
         <EmptyState
           title="No Projects yet"
-          description="Create one to give a piece of your work a durable place to live."
+          description="Create one, and the details of that work will start accumulating around it."
           action={
             <Button variant="accent" onClick={() => setFormOpen(true)}>
               Create your first Project
@@ -266,20 +364,132 @@ export function ProjectsClient() {
           }
         />
       )}
+      {!loading && projects.length === 0 && statusFilter === "archived" && (
+        <EmptyState title="Nothing archived" description="Projects you archive from the Active tab show up here." />
+      )}
 
       <div className="flex flex-col gap-2">
-        {projects.map((p) => (
-          <Link key={p.id} href={`/projects/${p.id}`}>
-            <Panel className="flex items-center justify-between px-4 py-3 transition-colors hover:border-[var(--color-border-strong)]">
-              <div>
-                <div className="text-[14px] font-medium text-[var(--color-text)]">{p.name}</div>
-                {p.tagline && <div className="text-[12.5px] text-[var(--color-text-muted)]">{p.tagline}</div>}
+        {projects.map((p) => {
+          const parent = p.parent_project_id ? projects.find((q) => q.id === p.parent_project_id) : null;
+          const childCount = projects.filter((q) => q.parent_project_id === p.id).length;
+          const moveCandidates = projects.filter((q) => q.id !== p.id && !isDescendantOf(q.id, p.id));
+          return (
+            <Panel
+              key={p.id}
+              className="flex items-center justify-between gap-3 px-4 py-3 transition-colors hover:border-[var(--color-border-strong)]"
+            >
+              <Link href={`/projects/${p.id}`} className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <div className="truncate text-[14px] font-medium text-[var(--color-text)]">{p.name}</div>
+                  {parent && <Tag>Branch of {parent.name}</Tag>}
+                  {childCount > 0 && <Tag>{childCount} sub-project{childCount === 1 ? "" : "s"}</Tag>}
+                </div>
+                {p.tagline && <div className="truncate text-[12.5px] text-[var(--color-text-muted)]">{p.tagline}</div>}
+              </Link>
+
+              <div className="flex shrink-0 items-center gap-1">
+                <Tag>{new Date(p.updated_at).toLocaleDateString()}</Tag>
+
+                <button
+                  onClick={() => togglePin(p)}
+                  title={p.pinned ? "Unpin" : "Pin"}
+                  className={`focus-ring rounded-[3px] p-1.5 transition-colors ${
+                    p.pinned
+                      ? "text-[var(--color-accent)]"
+                      : "text-[var(--color-text-faint)] hover:text-[var(--color-text)]"
+                  }`}
+                >
+                  <IconPin fill={p.pinned ? "currentColor" : "none"} width={15} height={15} />
+                </button>
+
+                {statusFilter === "active" && (
+                  <div className="relative">
+                    <Button variant="ghost" onClick={() => setMoveOpenFor(moveOpenFor === p.id ? null : p.id)}>
+                      Move
+                    </Button>
+                    {moveOpenFor === p.id && (
+                      <div className="absolute right-0 top-full z-20 mt-1 w-56 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg-raised)] p-2.5 shadow-lg">
+                        <select
+                          defaultValue=""
+                          onChange={(e) => reparent(p, e.target.value)}
+                          className="focus-ring w-full rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[12.5px] text-[var(--color-text)]"
+                        >
+                          <option value="" disabled>
+                            {parent ? "Change parent…" : "Set parent…"}
+                          </option>
+                          <option value="">None — stands on its own</option>
+                          {moveCandidates.map((q) => (
+                            <option key={q.id} value={q.id}>
+                              {q.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {statusFilter === "active" ? (
+                  <Button variant="ghost" onClick={() => setArchived(p, true)}>
+                    Archive
+                  </Button>
+                ) : (
+                  <>
+                    <Button variant="ghost" onClick={() => setArchived(p, false)}>
+                      Restore
+                    </Button>
+                    <button
+                      onClick={() => openDeleteConfirm(p)}
+                      title="Delete permanently"
+                      className="focus-ring rounded-[3px] p-1.5 text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-danger)]"
+                    >
+                      <IconTrash width={15} height={15} />
+                    </button>
+                  </>
+                )}
               </div>
-              <Tag>{new Date(p.updated_at).toLocaleDateString()}</Tag>
             </Panel>
-          </Link>
-        ))}
+          );
+        })}
       </div>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6">
+          <Panel className="w-full max-w-md px-5 py-5">
+            <div className="mb-2 text-[15px] font-medium text-[var(--color-text)]">
+              Delete &ldquo;{deleteTarget.name}&rdquo; permanently?
+            </div>
+            <p className="mb-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
+              This can&apos;t be undone. It will permanently delete this Project and everything in it
+              {deleteCounts && (
+                <>
+                  {" "}
+                  — {deleteCounts.conversations} conversation{deleteCounts.conversations === 1 ? "" : "s"},{" "}
+                  {deleteCounts.documents} document{deleteCounts.documents === 1 ? "" : "s"},{" "}
+                  {deleteCounts.artifacts} artifact{deleteCounts.artifacts === 1 ? "" : "s"}, {deleteCounts.memory}{" "}
+                  memory item{deleteCounts.memory === 1 ? "" : "s"}, and {deleteCounts.skills} Skill
+                  {deleteCounts.skills === 1 ? "" : "s"}
+                </>
+              )}
+              .
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteCounts(null);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={confirmDelete} disabled={deleting}>
+                {deleting ? "Deleting…" : "Delete permanently"}
+              </Button>
+            </div>
+          </Panel>
+        </div>
+      )}
     </div>
   );
 }

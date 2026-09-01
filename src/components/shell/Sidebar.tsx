@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { listProjects } from "@/lib/repo/projects";
+import { listRecentConversations } from "@/lib/repo/conversations";
 import {
   IconArchive,
   IconCouncil,
@@ -12,6 +13,7 @@ import {
 } from "@/components/icons";
 import { MagiMark } from "@/components/MagiMark";
 import { ThemeToggle } from "@/components/shell/ThemeToggle";
+import { SidebarSection } from "@/components/shell/SidebarSection";
 
 const NAV = [
   { href: "/", label: "Home", icon: IconHome },
@@ -25,15 +27,16 @@ const NAV = [
 
 export function Sidebar() {
   const projects = listProjects().slice(0, 8);
+  const conversations = listRecentConversations(5);
 
   return (
     <aside className="flex h-full w-60 shrink-0 flex-col border-r border-[var(--color-border)] bg-[var(--color-bg-raised)]">
-      <div className="flex items-center gap-2.5 px-4 py-4">
+      <Link href="/" className="focus-ring flex items-center gap-2.5 px-4 py-4">
         <MagiMark width={19} height={19} className="text-[var(--color-accent)]" />
         <span className="text-[13px] font-semibold tracking-[0.18em] uppercase text-[var(--color-text)]">
           Magi
         </span>
-      </div>
+      </Link>
 
       <nav className="flex flex-col gap-0.5 px-2">
         {NAV.map((item) => (
@@ -49,10 +52,7 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-5 flex-1 overflow-y-auto px-2">
-        <div className="px-2.5 pb-1.5 text-[10.5px] font-medium uppercase tracking-[0.12em] text-[var(--color-text-faint)]">
-          Recent Projects
-        </div>
-        <div className="flex flex-col gap-0.5">
+        <SidebarSection title="Recent Projects">
           {projects.length === 0 && (
             <div className="px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-faint)]">
               No projects yet
@@ -68,7 +68,28 @@ export function Sidebar() {
               {p.name}
             </Link>
           ))}
-        </div>
+        </SidebarSection>
+
+        <SidebarSection title="Recent Conversations">
+          {conversations.length === 0 && (
+            <div className="px-2.5 py-1.5 text-[12.5px] text-[var(--color-text-faint)]">
+              No conversations yet
+            </div>
+          )}
+          {conversations.map((c) => (
+            <Link
+              key={c.id}
+              href={`/projects/${c.project_id}/c/${c.id}`}
+              className="focus-ring group flex flex-col rounded-[3px] px-2.5 py-1.5 hover:bg-[var(--color-surface)] transition-colors"
+              title={c.title}
+            >
+              <span className="truncate text-[12.5px] text-[var(--color-text-muted)] group-hover:text-[var(--color-text)]">
+                {c.title}
+              </span>
+              <span className="truncate text-[10.5px] text-[var(--color-text-faint)]">{c.project_name}</span>
+            </Link>
+          ))}
+        </SidebarSection>
       </div>
 
       <div className="flex items-center justify-between border-t border-[var(--color-border)] px-3 py-3">

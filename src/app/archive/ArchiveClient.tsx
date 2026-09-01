@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button, EmptyState, Input, Tag } from "@/components/ui";
 import { IconSearch } from "@/components/icons";
+import { renderMarkdown } from "@/lib/markdownToReact";
 
 interface SearchResult {
   kind: string;
@@ -152,9 +153,7 @@ export function ArchiveClient() {
           {answer && (
             <div className="mt-4 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4">
               <div className="prose-magi text-[15px]">
-                {answer.split("\n").map((line, i) => (
-                  <p key={i}>{line || " "}</p>
-                ))}
+                {renderMarkdown(answer)}
               </div>
               {answerSources.length > 0 && (
                 <div className="mt-4 flex flex-wrap gap-1.5 border-t border-[var(--color-border)] pt-3">

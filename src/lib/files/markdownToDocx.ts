@@ -26,6 +26,7 @@ import {
   HeadingLevel,
   type ParagraphChild,
 } from "docx";
+import type { DocumentTheme } from "@/lib/files/theme";
 
 const ORDERED_REF = "magi-ordered-list";
 const HEADINGS = [
@@ -45,6 +46,7 @@ interface Style {
   italics?: boolean;
   strike?: boolean;
   code?: boolean;
+  color?: string;
 }
 
 function run(text: string, style: Style): TextRun {
@@ -54,6 +56,7 @@ function run(text: string, style: Style): TextRun {
     italics: style.italics,
     strike: style.strike,
     font: style.code ? "Consolas" : undefined,
+    color: style.color,
   });
 }
 
@@ -96,7 +99,7 @@ function inlineChildren(nodes: PhrasingContent[] | undefined, style: Style = {})
   return out;
 }
 
-function listItemParagraphs(item: ListItem, ordered: boolean, level: number): (Paragraph | Table)[] {
+function listItemParagraphs(item: ListItem, ordered: boolean, level: number, theme?: DocumentTheme): (Paragraph | Table)[] {
   const out: (Paragraph | Table)[] = [];
   for (const child of item.children) {
     if (child.type === "paragraph") {
@@ -107,26 +110,33 @@ function listItemParagraphs(item: ListItem, ordered: boolean, level: number): (P
         })
       );
     } else if (child.type === "list") {
-      out.push(...listBlock(child, level + 1));
+      out.push(...listBlock(child, level + 1, theme));
     } else {
-      out.push(...blockToContent(child));
+      out.push(...blockToContent(child, theme));
     }
   }
   return out;
 }
 
-function listBlock(node: List, level = 0): (Paragraph | Table)[] {
-  return node.children.flatMap((item) => listItemParagraphs(item, !!node.ordered, level));
+function listBlock(node: List, level = 0, theme?: DocumentTheme): (Paragraph | Table)[] {
+  return node.children.flatMap((item) => listItemParagraphs(item, !!node.ordered, level, theme));
 }
 
-function tableBlock(node: Extract<RootContent, { type: "table" }>): Table {
+function tableBlock(node: Extract<RootContent, { type: "table" }>, theme?: DocumentTheme): Table {
   const rows = node.children.map(
     (row, rowIndex) =>
       new TableRow({
         children: row.children.map(
           (cell) =>
             new TableCell({
-              children: [new Paragraph({ children: inlineChildren(cell.children, rowIndex === 0 ? { bold: true } : {}) })],
+              children: [
+                new Paragraph({
+                  children: inlineChildren(
+                    cell.children,
+                    rowIndex === 0 ? { bold: true, color: theme?.labelColor } : {}
+                  ),
+                }),
+              ],
               shading: rowIndex === 0 ? HEADER_SHADING : undefined,
             })
         ),
@@ -147,7 +157,7 @@ function codeBlock(node: Extract<RootContent, { type: "code" }>): Paragraph[] {
   );
 }
 
-function blockquoteBlock(node: Extract<RootContent, { type: "blockquote" }>): (Paragraph | Table)[] {
+function blockquoteBlock(node: Extract<RootContent, { type: "blockquote" }>, theme?: DocumentTheme): (Paragraph | Table)[] {
   const out: (Paragraph | Table)[] = [];
   for (const child of node.children) {
     if (child.type === "paragraph") {
@@ -159,24 +169,24 @@ function blockquoteBlock(node: Extract<RootContent, { type: "blockquote" }>): (P
         })
       );
     } else {
-      out.push(...blockToContent(child));
+      out.push(...blockToContent(child, theme));
     }
   }
   return out;
 }
 
-function blockToContent(node: RootContent): (Paragraph | Table)[] {
+function blockToContent(node: RootContent, theme?: DocumentTheme): (Paragraph | Table)[] {
   switch (node.type) {
     case "heading":
       return [new Paragraph({ heading: HEADINGS[node.depth - 1], children: inlineChildren(node.children) })];
     case "paragraph":
       return [new Paragraph({ children: inlineChildren(node.children), spacing: { after: 160 } })];
     case "list":
-      return listBlock(node);
+      return listBlock(node, 0, theme);
     case "table":
-      return [tableBlock(node)];
+      return [tableBlock(node, theme)];
     case "blockquote":
-      return blockquoteBlock(node);
+      return blockquoteBlock(node, theme);
     case "code":
       return codeBlock(node);
     case "thematicBreak":
@@ -186,23 +196,23 @@ function blockToContent(node: RootContent): (Paragraph | Table)[] {
   }
 }
 
-function headingStyle(id: string, size: number) {
+function headingStyle(id: string, size: number, color: string, font?: string) {
   return {
     id,
     name: id,
     basedOn: "Normal",
     next: "Normal",
     quickFormat: true,
-    run: { bold: true, size, color: "1F3864" },
+    run: { bold: true, size, color, font },
     paragraph: { spacing: { before: 240, after: 120 } },
   };
 }
 
-export async function markdownToDocxBuffer(markdown: string, title: string): Promise<Buffer> {
+export async function markdownToDocxBuffer(markdown: string, title: string, theme?: DocumentTheme): Promise<Buffer> {
   const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown) as Root;
   const children = tree.children.flatMap((node) => {
     try {
-      return blockToContent(node);
+      return blockToContent(node, theme);
     } catch {
       return [];
     }
@@ -225,15 +235,15 @@ export async function markdownToDocxBuffer(markdown: string, title: string): Pro
     },
     styles: {
       default: {
-        document: { run: { size: 22, color: "1A1A1A" } },
+        document: { run: { size: 22, color: theme?.bodyColor ?? "1A1A1A", font: theme?.bodyFont } },
       },
       paragraphStyles: [
-        headingStyle("Heading1", 32),
-        headingStyle("Heading2", 28),
-        headingStyle("Heading3", 26),
-        headingStyle("Heading4", 24),
-        headingStyle("Heading5", 22),
-        headingStyle("Heading6", 22),
+        headingStyle("Heading1", 32, theme?.headingColor ?? "1F3864", theme?.headingFont),
+        headingStyle("Heading2", 28, theme?.subtitleColor ?? theme?.headingColor ?? "1F3864", theme?.headingFont),
+        headingStyle("Heading3", 26, theme?.subtitleColor ?? theme?.headingColor ?? "1F3864", theme?.headingFont),
+        headingStyle("Heading4", 24, theme?.subtitleColor ?? theme?.headingColor ?? "1F3864", theme?.headingFont),
+        headingStyle("Heading5", 22, theme?.subtitleColor ?? theme?.headingColor ?? "1F3864", theme?.headingFont),
+        headingStyle("Heading6", 22, theme?.subtitleColor ?? theme?.headingColor ?? "1F3864", theme?.headingFont),
       ],
     },
     sections: [{ children: children.length ? children : [new Paragraph({ text: title })] }],

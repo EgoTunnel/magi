@@ -266,6 +266,19 @@ addColumnIfMissing("documents", "file_path", "TEXT");
 addColumnIfMissing("artifacts", "mime_type", "TEXT");
 addColumnIfMissing("artifacts", "file_path", "TEXT");
 addColumnIfMissing("artifacts", "message_id", "TEXT");
+addColumnIfMissing("projects", "brand_philosophy", "TEXT");
+addColumnIfMissing("projects", "brand_heading_font", "TEXT");
+addColumnIfMissing("projects", "brand_body_font", "TEXT");
+addColumnIfMissing("projects", "brand_primary_color", "TEXT");
+addColumnIfMissing("projects", "brand_accent_color", "TEXT");
+addColumnIfMissing("projects", "brand_text_color", "TEXT");
+addColumnIfMissing("projects", "brand_subtitle_color", "TEXT");
+addColumnIfMissing("projects", "brand_label_color", "TEXT");
+addColumnIfMissing("projects", "brand_secondary_accent_color", "TEXT");
+addColumnIfMissing("projects", "parent_project_id", "TEXT REFERENCES projects(id) ON DELETE SET NULL");
+addColumnIfMissing("projects", "pinned", "INTEGER NOT NULL DEFAULT 0");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_project_id)`);
+addColumnIfMissing("images", "source", "TEXT NOT NULL DEFAULT 'generated'");
 
 export function nowIso() {
   return new Date().toISOString();

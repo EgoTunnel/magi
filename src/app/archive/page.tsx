@@ -7,7 +7,7 @@ export default function ArchivePage() {
       <PageHeader
         eyebrow="What has happened"
         title="Archive"
-        description="Not everything needs to become memory. The archive keeps the record; search it by wording, or ask it a question directly."
+        description="The archive keeps a record of everything, whether or not it's worth remembering as a fact. Search it by wording, or just ask it a question."
       />
       <ArchiveClient />
     </div>

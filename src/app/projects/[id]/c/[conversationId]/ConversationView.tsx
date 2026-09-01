@@ -2,12 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button, Input, Tag } from "@/components/ui";
 import { IconAttach, IconChevronDown, IconChevronRight, IconDocument, IconDownload, IconRefresh, IconSend, IconStop, IconTrash } from "@/components/icons";
 import type { ContextProvenance } from "@/lib/contextBuilder";
+import { renderMarkdown } from "@/lib/markdownToReact";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
 import { ArtifactViewerButton } from "@/components/ArtifactHistory";
 import { MagiSpinner } from "@/components/MagiSpinner";
+import { MoveConversationControl } from "@/components/MoveConversationControl";
 
 interface Message {
   id: string;
@@ -39,6 +42,7 @@ interface ArtifactFile {
 }
 
 export function ConversationView({ projectId, conversationId }: { projectId: string; conversationId: string }) {
+  const router = useRouter();
   const [projectName, setProjectName] = useState("");
   const [title, setTitle] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -338,12 +342,19 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
           <IconChevronRight />
           <span className="truncate text-[var(--color-text-muted)]">{title}</span>
         </div>
-        <button
-          onClick={() => setContextOpen((v) => !v)}
-          className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors"
-        >
-          Context
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <MoveConversationControl
+            conversationId={conversationId}
+            currentProjectId={projectId}
+            onMoved={(newProjectId) => router.push(`/projects/${newProjectId}/c/${conversationId}`)}
+          />
+          <button
+            onClick={() => setContextOpen((v) => !v)}
+            className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors"
+          >
+            Context
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -415,7 +426,16 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                   <div className="text-[var(--color-text-faint)]">Project</div>
                   <div className="text-[var(--color-text)]">{provenance.projectName}</div>
                 </div>
+                {provenance.ancestorProjects.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[var(--color-text-faint)]">Inherits from</div>
+                    <div className="text-[var(--color-text)]">
+                      {provenance.ancestorProjects.map((a) => a.name).join(" → ")}
+                    </div>
+                  </div>
+                )}
                 <div>{provenance.usedInstructions ? "Project instructions applied" : "No Project instructions set"}</div>
+                <div>{provenance.usedBrandGuide ? "Brand Guide applied" : "No Brand Guide set"}</div>
                 <div>{provenance.globalMemoryCount} global memory item(s)</div>
                 <div>{provenance.projectMemoryCount} Project memory item(s)</div>
                 {provenance.documentsUsed.length > 0 && (
@@ -524,7 +544,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
             <input
               ref={attachFileInputRef}
               type="file"
-              accept=".pdf,.docx,.txt,.md,.csv,.json,image/png,image/jpeg,image/webp,image/gif"
+              accept=".pdf,.docx,.pptx,.txt,.md,.csv,.json,image/png,image/jpeg,image/webp,image/gif"
               className="hidden"
               onChange={handleAttachFile}
             />
@@ -609,7 +629,7 @@ function MessageBlock({
         )}
       </div>
       <div className={isUser ? "text-[15px] leading-relaxed text-[var(--color-text)]" : "prose-magi"}>
-        {message.content.split("\n").map((line, i) => (
+        {!isUser && !streaming ? renderMarkdown(message.content) : message.content.split("\n").map((line, i) => (
           <p key={i}>{line || " "}</p>
         ))}
       </div>

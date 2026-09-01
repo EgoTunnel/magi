@@ -197,7 +197,7 @@ export function SkillsClient() {
         <div className="mb-8">
           <EmptyState
             title="No Skills yet"
-            description="A Skill is a reusable method — not just a tool, a whole process. Start from an example:"
+            description="A Skill bundles instructions, tools, and a whole process into one reusable method. Start from an example:"
           />
           <div className="mt-3 flex flex-wrap gap-2">
             {STARTER_SKILLS.map((s) => (

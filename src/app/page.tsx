@@ -4,8 +4,12 @@ import { isAnyProviderConfigured } from "@/lib/models/registry";
 import { Button, EmptyState, Panel, Tag } from "@/components/ui";
 import { IconArchive, IconCouncil, IconMemory, IconPlus, IconSkills } from "@/components/icons";
 
+const HOMEPAGE_PROJECT_LIMIT = 4;
+
 export default function HomePage() {
-  const projects = listProjects();
+  const allProjects = listProjects();
+  const projects = allProjects.slice(0, HOMEPAGE_PROJECT_LIMIT);
+  const remaining = allProjects.length - projects.length;
   const configured = isAnyProviderConfigured();
 
   return (
@@ -17,8 +21,8 @@ export default function HomePage() {
         Welcome back.
       </h1>
       <p className="mt-2 max-w-xl text-[14px] leading-relaxed text-[var(--color-text-muted)]">
-        Magi is the durable layer above the model layer — the environment where your Projects, memory,
-        and archive persist regardless of which intelligence you happen to be using today.
+        Magi holds onto your Projects, memory, and archive no matter which AI model you're using today.
+        Switch models whenever you like — the work underneath stays exactly where you left it.
       </p>
 
       {!configured && (
@@ -34,22 +38,29 @@ export default function HomePage() {
 
       <div className="mt-9 flex items-center justify-between">
         <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
-          Projects
+          Recent Projects
         </h2>
-        <Link href="/projects">
-          <Button variant="ghost">
-            <IconPlus /> New Project
-          </Button>
-        </Link>
+        <div className="flex items-center gap-1">
+          {remaining > 0 && (
+            <Link href="/projects">
+              <Button variant="ghost">View all {allProjects.length}</Button>
+            </Link>
+          )}
+          <Link href="/projects?new=1">
+            <Button variant="ghost">
+              <IconPlus /> New Project
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {projects.length === 0 ? (
         <div className="mt-4">
           <EmptyState
             title="No Projects yet"
-            description="A Project is a place, not a folder — it holds instructions, conversations, memory, documents, and everything that accumulates around one area of your work."
+            description="A Project holds everything that belongs to one piece of your work — instructions, conversations, memory, documents, whatever else accumulates as you go."
             action={
-              <Link href="/projects">
+              <Link href="/projects?new=1">
                 <Button variant="accent">Create your first Project</Button>
               </Link>
             }
@@ -62,9 +73,11 @@ export default function HomePage() {
             return (
               <Link key={p.id} href={`/projects/${p.id}`}>
                 <Panel className="h-full px-4 py-3.5 transition-colors hover:border-[var(--color-border-strong)]">
-                  <div className="text-[14.5px] font-medium text-[var(--color-text)]">{p.name}</div>
+                  <div className="truncate text-[14.5px] font-medium text-[var(--color-text)]">{p.name}</div>
                   {p.tagline && (
-                    <div className="mt-0.5 text-[12.5px] text-[var(--color-text-muted)]">{p.tagline}</div>
+                    <div className="mt-0.5 line-clamp-2 text-[12.5px] leading-relaxed text-[var(--color-text-muted)]">
+                      {p.tagline}
+                    </div>
                   )}
                   <div className="mt-3 flex gap-1.5">
                     <Tag>{counts.conversations} conversations</Tag>

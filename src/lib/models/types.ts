@@ -83,6 +83,10 @@ export interface CompleteOptions {
   tools?: ToolSpec[];
   onToolCall?: (name: string, input: unknown) => Promise<string>;
   toolLog?: ToolCallRecord[];
+  // Overrides each provider's default MAX_TOOL_ITERATIONS bound. Callers with
+  // a genuinely broad research task (see agent.ts's Research step) can raise
+  // this; everything else keeps the conservative default.
+  maxToolIterations?: number;
   // How hard a model should think before answering, where the model supports
   // saying so. Unset defaults to "low" for providers where reasoning is
   // otherwise mandatory-and-unbounded — see openrouter.ts. Some current

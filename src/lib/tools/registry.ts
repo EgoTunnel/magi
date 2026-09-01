@@ -1,11 +1,13 @@
 import type { ToolSpec } from "@/lib/models/types";
-import { search } from "@/lib/searchIndex";
-import { getCrossProjectSearchEnabled, getDisabledTools } from "@/lib/settings";
+import { search, semanticSearch, type SearchResult } from "@/lib/searchIndex";
+import { getCrossProjectSearchEnabled, getDisabledTools, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
 import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
 import { runPython, runJavaScript } from "@/lib/tools/codeExec";
 import { saveDocxArtifact, saveXlsxArtifact, savePptxArtifact, saveGeneratedFile } from "@/lib/repo/artifacts";
 import { getSkill } from "@/lib/repo/skills";
+import { getProject, listAncestorProjects, familyProjectIds } from "@/lib/repo/projects";
+import { projectTheme } from "@/lib/files/theme";
 
 export interface ToolContext {
   projectId?: string | null;
@@ -26,7 +28,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "search_archive",
     description:
-      "Search Magi's archive of past conversations, Projects, memory, documents, and artifacts by keyword. Use this before claiming you don't know something the user may have already told Magi, or to find prior work relevant to the current question. Set scope to \"all\" to search across every Project — only do that when it's actually relevant to what's being asked, and say so when you use it. Defaults to the current Project.",
+      "Search Magi's archive of past conversations, Projects, memory, documents, and artifacts by keyword. Use this before claiming you don't know something the user may have already told Magi, or to find prior work relevant to the current question. Defaults to the current Project ONLY. If the question or objective names a different Project, references work that plausibly lives elsewhere, or asks you to search \"across Projects\" — set scope to \"all\" immediately; don't assume the current Project's own results are all there is just because a same-scoped search came back empty or thin. Say so when you use cross-Project scope.",
     inputSchema: {
       type: "object",
       properties: {
@@ -170,6 +172,16 @@ export function resolveTools(opts: { skillId?: string | null; allowedNames?: str
   return specs;
 }
 
+function themeForProject(projectId: string) {
+  const project = getProject(projectId);
+  if (!project) return undefined;
+  // Nearest-ancestor-first, so a branch's own brand guide wins over its
+  // parent's wherever the branch actually sets a field, and only falls
+  // through to inherited values it leaves blank.
+  const ancestors = listAncestorProjects(projectId).reverse();
+  return projectTheme([project, ...ancestors]);
+}
+
 export async function executeTool(name: string, rawInput: unknown, ctx: ToolContext): Promise<string> {
   try {
     if (ctx.allowedToolNames && !ctx.allowedToolNames.has(name)) {
@@ -188,21 +200,43 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       if (!query) return "Error: no query given.";
       const wantsAll = input?.scope === "all";
       const crossProjectAllowed = wantsAll && getCrossProjectSearchEnabled();
-      const results = search(query, {
-        projectId: crossProjectAllowed ? undefined : ctx.projectId ?? undefined,
-        limit: 10,
-      });
+      // Not "all": search this Project's whole hierarchy branch — itself,
+      // every ancestor it inherits context from, and every descendant a
+      // meta-project's members live in — not just the one row's own id.
+      const scopeProjectId = crossProjectAllowed ? undefined : ctx.projectId ? familyProjectIds(ctx.projectId) : undefined;
+      let results: SearchResult[] = search(query, { projectId: scopeProjectId, limit: 10 });
+      let matchedByMeaning = false;
+      // Keyword FTS ANDs every term of the query together — one word phrased
+      // differently than the archive's own wording zeroes out the whole
+      // result set. Fall back to embedding similarity (if an embedding model
+      // is configured) before reporting a dead end, since a paraphrased
+      // query is exactly the case this catches and keyword search can't.
+      if (results.length === 0 && getEmbeddingModelId() && getOpenRouterApiKey()) {
+        try {
+          const semanticResults = await semanticSearch(query, { projectId: scopeProjectId, limit: 10 });
+          if (semanticResults.length) {
+            results = semanticResults;
+            matchedByMeaning = true;
+          }
+        } catch {
+          // Fall through to "No matches found" below.
+        }
+      }
       if (results.length === 0) {
         return wantsAll && !crossProjectAllowed
           ? "No matches in this Project. Cross-Project search is turned off in Settings, so other Projects were not searched."
           : "No matches found.";
       }
-      return results
-        .map((r, i) => {
-          const elsewhere = r.projectId && r.projectId !== ctx.projectId ? ", from another Project" : "";
-          return `[${i + 1}] (${r.kind}${elsewhere}) ${r.title}\n${r.snippet.replace(/⟦|⟧/g, "")}`;
-        })
-        .join("\n\n");
+      const header = matchedByMeaning ? "(matched by meaning/topic, not exact wording)\n\n" : "";
+      return (
+        header +
+        results
+          .map((r, i) => {
+            const elsewhere = r.projectId && r.projectId !== ctx.projectId ? ", from another Project" : "";
+            return `[${i + 1}] (${r.kind}${elsewhere}) ${r.title}\n${r.snippet.replace(/⟦|⟧/g, "")}`;
+          })
+          .join("\n\n")
+      );
     }
 
     if (name === "web_search") {
@@ -255,6 +289,7 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
         title: input.title,
         markdown: input.markdown,
         parentId: input.artifact_id,
+        theme: themeForProject(ctx.projectId),
       });
       ctx.onArtifactCreated?.(artifact.id);
       return `Saved "${artifact.title}" as a Word document (version ${artifact.version}, artifact id ${artifact.id}).`;
@@ -270,6 +305,7 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
         title: input.title,
         markdown: input.markdown,
         parentId: input.artifact_id,
+        theme: themeForProject(ctx.projectId),
       });
       ctx.onArtifactCreated?.(artifact.id);
       return `Saved "${artifact.title}" as a spreadsheet (version ${artifact.version}, artifact id ${artifact.id}).`;
@@ -285,6 +321,7 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
         title: input.title,
         markdown: input.markdown,
         parentId: input.artifact_id,
+        theme: themeForProject(ctx.projectId),
       });
       ctx.onArtifactCreated?.(artifact.id);
       return `Saved "${artifact.title}" as a presentation (version ${artifact.version}, artifact id ${artifact.id}).`;

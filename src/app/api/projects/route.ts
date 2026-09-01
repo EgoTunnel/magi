@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
     tagline: body.tagline,
     purpose: body.purpose,
     instructions: body.instructions,
+    parentProjectId: body.parentProjectId,
   });
   return NextResponse.json({ project }, { status: 201 });
 }

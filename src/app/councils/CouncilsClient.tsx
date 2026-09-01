@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
 import { IconChevronRight, IconPlus, IconTrash } from "@/components/icons";
+import { CouncilSpinner } from "@/components/CouncilSpinner";
 
 interface CouncilRole {
   name: string;
@@ -155,11 +156,15 @@ export function CouncilsClient() {
     });
     const data = await res.json();
     setRunning(false);
-    if (data.run?.status === "error") {
-      setError(data.run.synthesis ?? "The Council failed to reach a conclusion.");
+    if (!res.ok || !data.run) {
+      setError(data.error ?? "Failed to start the Council.");
       return;
     }
-    if (data.run) router.push(`/councils/runs/${data.run.id}`);
+    // The run has only just been created (status "running", empty
+    // transcript) — deliberation itself continues server-side after this
+    // response, so navigate immediately rather than waiting for it to
+    // finish; the run page polls for progress from here.
+    router.push(`/councils/runs/${data.run.id}`);
   }
 
   function updateRole(i: number, patch: Partial<CouncilRole>) {
@@ -357,7 +362,14 @@ export function CouncilsClient() {
                     <div className="text-[11.5px] text-[var(--color-text-faint)]">{new Date(r.created_at).toLocaleString()}</div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    {r.consensus && <Tag>{r.consensus}</Tag>}
+                    {r.status === "running" ? (
+                      <Tag tone="accent">
+                        <CouncilSpinner className="mr-1" />
+                        Running
+                      </Tag>
+                    ) : (
+                      r.consensus && <Tag>{r.consensus}</Tag>
+                    )}
                     <IconChevronRight className="text-[var(--color-text-faint)]" />
                   </div>
                 </Panel>

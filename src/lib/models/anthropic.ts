@@ -98,7 +98,7 @@ export const anthropicProvider: ModelProvider = {
     const tools = toAnthropicTools(opts.tools);
     const working: Anthropic.MessageParam[] = toWorkingMessages(opts.messages);
 
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    for (let iteration = 0; iteration < (opts.maxToolIterations ?? MAX_TOOL_ITERATIONS); iteration++) {
       const res = await c.messages.create({
         model: opts.model,
         system: opts.system,

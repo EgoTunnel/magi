@@ -19,6 +19,7 @@ import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import type { Root, RootContent, PhrasingContent, List } from "mdast";
+import type { DocumentTheme } from "@/lib/files/theme";
 
 // LAYOUT_WIDE is PptxGenJS's built-in 13.33" x 7.5" slide size.
 const SLIDE_W = 13.33;
@@ -174,15 +175,16 @@ function listTextRuns(node: List, level: number): PptxGenJS.TextProps[] {
   return out;
 }
 
-function tablePropsFor(node: Extract<RootContent, { type: "table" }>): PptxGenJS.TableRow[] {
+function tablePropsFor(node: Extract<RootContent, { type: "table" }>, theme?: DocumentTheme): PptxGenJS.TableRow[] {
+  const bodyFace = theme?.bodyFont ?? "Arial";
   return node.children.map((row, rowIndex) =>
     row.children.map(
       (cell): PptxGenJS.TableCell => ({
         text: plainTextOf(cell.children) || " ",
         options:
           rowIndex === 0
-            ? { bold: true, fill: { color: "EDEDED" }, fontFace: "Arial", fontSize: 13 }
-            : { fontFace: "Arial", fontSize: 13 },
+            ? { bold: true, fill: { color: "EDEDED" }, fontFace: bodyFace, fontSize: 13, color: theme?.labelColor }
+            : { fontFace: bodyFace, fontSize: 13, color: theme?.bodyColor },
       })
     )
   );
@@ -191,7 +193,10 @@ function tablePropsFor(node: Extract<RootContent, { type: "table" }>): PptxGenJS
 // Renders one block onto `slide` at vertical position `y`, returning the
 // cursor position for the next block. Table height doesn't need to be
 // exact — see file header on autoPage.
-function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number): number {
+function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number, theme?: DocumentTheme): number {
+  const headingFace = theme?.headingFont ?? "Arial";
+  const headingColor = theme?.headingColor ?? "1F3864";
+  const bodyFace = theme?.bodyFont ?? "Arial";
   switch (node.type) {
     case "heading": {
       const size = HEADING_SIZES[Math.min(node.depth - 1, 5)];
@@ -201,9 +206,9 @@ function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number): numb
         y,
         w: BODY_W,
         h,
-        fontFace: "Arial",
+        fontFace: headingFace,
         fontSize: size,
-        color: "1F3864",
+        color: node.depth === 1 ? headingColor : (theme?.subtitleColor ?? headingColor),
         valign: "top",
       });
       return y + h;
@@ -215,8 +220,9 @@ function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number): numb
         y,
         w: BODY_W,
         h,
-        fontFace: "Arial",
+        fontFace: bodyFace,
         fontSize: BODY_SIZE,
+        color: theme?.bodyColor,
         valign: "top",
       });
       return y + h;
@@ -228,14 +234,15 @@ function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number): numb
         y,
         w: BODY_W,
         h,
-        fontFace: "Arial",
+        fontFace: bodyFace,
         fontSize: BODY_SIZE,
+        color: theme?.bodyColor,
         valign: "top",
       });
       return y + h;
     }
     case "table": {
-      const rows = tablePropsFor(node);
+      const rows = tablePropsFor(node, theme);
       const h = rows.length * 0.35 + 0.25;
       slide.addTable(rows, {
         x: MARGIN_X,
@@ -258,7 +265,7 @@ function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number): numb
           y: cursor,
           w: BODY_W - 0.3,
           h,
-          fontFace: "Arial",
+          fontFace: bodyFace,
           fontSize: BODY_SIZE,
           color: "555555",
           valign: "top",
@@ -291,7 +298,7 @@ function renderBlock(slide: PptxGenJS.Slide, node: RootContent, y: number): numb
   }
 }
 
-function renderGroup(pres: PptxGenJS, group: SlideGroup) {
+function renderGroup(pres: PptxGenJS, group: SlideGroup, theme?: DocumentTheme) {
   let slide = pres.addSlide();
   let cursorY = BODY_START_Y;
   if (group.title) {
@@ -300,10 +307,10 @@ function renderGroup(pres: PptxGenJS, group: SlideGroup) {
       y: TITLE_Y,
       w: BODY_W,
       h: TITLE_H,
-      fontFace: "Arial",
+      fontFace: theme?.headingFont ?? "Arial",
       fontSize: 28,
       bold: true,
-      color: "1F3864",
+      color: theme?.headingColor ?? "1F3864",
       valign: "top",
     });
   } else {
@@ -316,7 +323,7 @@ function renderGroup(pres: PptxGenJS, group: SlideGroup) {
       slide = pres.addSlide();
       cursorY = TITLE_Y;
     }
-    cursorY = renderBlock(slide, node, cursorY);
+    cursorY = renderBlock(slide, node, cursorY, theme);
   }
 }
 
@@ -354,7 +361,7 @@ function groupIntoSlides(children: RootContent[], docTitle: string): SlideGroup[
   return groups;
 }
 
-export async function markdownToPptxBuffer(markdown: string, title: string): Promise<Buffer> {
+export async function markdownToPptxBuffer(markdown: string, title: string, theme?: DocumentTheme): Promise<Buffer> {
   const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown) as Root;
   const groups = groupIntoSlides(tree.children, title);
 
@@ -364,7 +371,7 @@ export async function markdownToPptxBuffer(markdown: string, title: string): Pro
 
   for (const group of groups) {
     try {
-      renderGroup(pres, group);
+      renderGroup(pres, group, theme);
     } catch {
       // Skip a slide group the walker doesn't know how to render rather
       // than failing the whole deck over it.

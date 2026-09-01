@@ -5,6 +5,7 @@ import { indexUpsert } from "@/lib/searchIndex";
 import { markdownToDocxBuffer } from "@/lib/files/markdownToDocx";
 import { markdownToXlsxBuffer } from "@/lib/files/markdownToXlsx";
 import { markdownToPptxBuffer } from "@/lib/files/markdownToPptx";
+import type { DocumentTheme } from "@/lib/files/theme";
 
 export interface Artifact {
   id: string;
@@ -200,9 +201,10 @@ async function saveMarkdownFileArtifact(input: {
   type: string;
   ext: string;
   mimeType: string;
-  toBuffer: (markdown: string, title: string) => Promise<Buffer>;
+  theme?: DocumentTheme;
+  toBuffer: (markdown: string, title: string, theme?: DocumentTheme) => Promise<Buffer>;
 }): Promise<Artifact> {
-  const buffer = await input.toBuffer(input.markdown, input.title);
+  const buffer = await input.toBuffer(input.markdown, input.title, input.theme);
   ensureDir();
   // Just for a unique filename — the actual artifact row's id is assigned
   // inside createArtifact()/createNewVersion() below, independently.
@@ -232,6 +234,7 @@ export function saveDocxArtifact(input: {
   title: string;
   markdown: string;
   parentId?: string;
+  theme?: DocumentTheme;
 }): Promise<Artifact> {
   return saveMarkdownFileArtifact({ ...input, type: "docx", ext: ".docx", mimeType: DOCX_MIME, toBuffer: markdownToDocxBuffer });
 }
@@ -242,6 +245,7 @@ export function saveXlsxArtifact(input: {
   title: string;
   markdown: string;
   parentId?: string;
+  theme?: DocumentTheme;
 }): Promise<Artifact> {
   return saveMarkdownFileArtifact({ ...input, type: "xlsx", ext: ".xlsx", mimeType: XLSX_MIME, toBuffer: markdownToXlsxBuffer });
 }
@@ -252,6 +256,7 @@ export function savePptxArtifact(input: {
   title: string;
   markdown: string;
   parentId?: string;
+  theme?: DocumentTheme;
 }): Promise<Artifact> {
   return saveMarkdownFileArtifact({ ...input, type: "pptx", ext: ".pptx", mimeType: PPTX_MIME, toBuffer: markdownToPptxBuffer });
 }

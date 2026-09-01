@@ -26,8 +26,14 @@ export async function POST(req: NextRequest) {
   }
 
   const run = createCouncilRun({ councilId: body.councilId, projectId: body.projectId, question, mode });
-  await runCouncilDeliberation({ runId: run.id, question, roles, projectId: body.projectId, mode });
 
-  const { getCouncilRun } = await import("@/lib/repo/councils");
-  return NextResponse.json({ run: getCouncilRun(run.id) });
+  // Fire-and-forget: Magi runs as a long-lived local server, not a serverless
+  // function, so this keeps running after the response below is sent. The
+  // client polls the run instead of holding the request open — deliberation
+  // across several roles can take a while, and there's no reason to block on
+  // it. runCouncilDeliberation catches its own errors and marks the run
+  // "error" internally, so nothing here needs to react to a rejection.
+  runCouncilDeliberation({ runId: run.id, question, roles, projectId: body.projectId, mode }).catch(() => {});
+
+  return NextResponse.json({ run }, { status: 201 });
 }

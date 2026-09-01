@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button, Panel, Tag } from "@/components/ui";
+import { renderMarkdown } from "@/lib/markdownToReact";
+import { MagiSpinner } from "@/components/MagiSpinner";
 
 interface AgentStep {
   id: string;
@@ -76,7 +78,10 @@ export function AgentRunView({ runId }: { runId: string }) {
     <div className="mx-auto max-w-2xl px-8 py-8">
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Tag tone={isActive ? "accent" : "default"}>{STATUS_LABEL[run.status]}</Tag>
+          <Tag tone={isActive ? "accent" : "default"}>
+            {isActive && <MagiSpinner className="mr-1" />}
+            {STATUS_LABEL[run.status]}
+          </Tag>
           {run.project_id && (
             <Link href={`/projects/${run.project_id}`} className="text-[12px] text-[var(--color-text-faint)] hover:text-[var(--color-text)]">
               back to Project
@@ -102,9 +107,7 @@ export function AgentRunView({ runId }: { runId: string }) {
               {STEP_LABEL[step.type]}
             </div>
             <div className="prose-magi text-[13.5px]">
-              {step.content.split("\n").map((line, i) => (
-                <p key={i}>{line || " "}</p>
-              ))}
+              {renderMarkdown(step.content)}
             </div>
             {step.toolCalls && step.toolCalls.length > 0 && (
               <div className="mt-3 flex flex-col gap-1 border-t border-[var(--color-border)] pt-3">
@@ -121,7 +124,8 @@ export function AgentRunView({ runId }: { runId: string }) {
           </Panel>
         ))}
         {isActive && (
-          <Panel className="px-4 py-4 text-[12.5px] text-[var(--color-text-faint)]">
+          <Panel className="flex items-center gap-2 px-4 py-4 text-[12.5px] text-[var(--color-text-faint)]">
+            <MagiSpinner />
             {run.status === "stopping" ? "Finishing the current step before stopping…" : "Working on the next step…"}
           </Panel>
         )}

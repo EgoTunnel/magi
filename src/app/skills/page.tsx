@@ -7,7 +7,7 @@ export default function SkillsPage() {
       <PageHeader
         eyebrow="Reusable methods"
         title="Skills"
-        description="A tool says “search the web.” A Skill says “conduct a rigorous research investigation.” Invoke one from any conversation in its scope."
+        description="A Skill bundles instructions, tools, and a model into one reusable method. Call it from any conversation it's available in."
       />
       <SkillsClient />
     </div>

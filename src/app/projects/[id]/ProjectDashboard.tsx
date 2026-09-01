@@ -7,6 +7,7 @@ import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/compon
 import { IconChevronRight, IconDocument, IconDownload, IconPlus, IconTrash } from "@/components/icons";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
 import { ArtifactViewerButton } from "@/components/ArtifactHistory";
+import { MoveConversationControl } from "@/components/MoveConversationControl";
 
 interface Project {
   id: string;
@@ -14,6 +15,45 @@ interface Project {
   tagline: string | null;
   purpose: string | null;
   instructions: string | null;
+  brand_philosophy: string | null;
+  brand_heading_font: string | null;
+  brand_body_font: string | null;
+  brand_primary_color: string | null;
+  brand_accent_color: string | null;
+  brand_text_color: string | null;
+  brand_subtitle_color: string | null;
+  brand_label_color: string | null;
+  brand_secondary_accent_color: string | null;
+  parent_project_id: string | null;
+}
+
+function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (hex: string) => void;
+}) {
+  return (
+    <div>
+      <Label>{label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          type="color"
+          value={`#${(value || "888888").replace(/^#/, "")}`}
+          onChange={(e) => onChange(e.target.value.replace(/^#/, "").toUpperCase())}
+          className="h-[30px] w-[36px] shrink-0 cursor-pointer rounded-[3px] border border-[var(--color-border-strong)] bg-transparent p-0.5"
+        />
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/^#/, "").toUpperCase())}
+          placeholder="1F3864"
+        />
+      </div>
+    </div>
+  );
 }
 interface Conversation {
   id: string;
@@ -55,6 +95,7 @@ interface AgentRun {
 interface OtherProject {
   id: string;
   name: string;
+  parent_project_id: string | null;
 }
 interface ConnectionRun {
   id: string;
@@ -81,6 +122,17 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [instructionsDraft, setInstructionsDraft] = useState("");
   const [purposeDraft, setPurposeDraft] = useState("");
 
+  const [editingBrandGuide, setEditingBrandGuide] = useState(false);
+  const [brandPhilosophyDraft, setBrandPhilosophyDraft] = useState("");
+  const [brandHeadingFontDraft, setBrandHeadingFontDraft] = useState("");
+  const [brandBodyFontDraft, setBrandBodyFontDraft] = useState("");
+  const [brandPrimaryColorDraft, setBrandPrimaryColorDraft] = useState("");
+  const [brandAccentColorDraft, setBrandAccentColorDraft] = useState("");
+  const [brandTextColorDraft, setBrandTextColorDraft] = useState("");
+  const [brandSubtitleColorDraft, setBrandSubtitleColorDraft] = useState("");
+  const [brandLabelColorDraft, setBrandLabelColorDraft] = useState("");
+  const [brandSecondaryAccentColorDraft, setBrandSecondaryAccentColorDraft] = useState("");
+
   const [docFormOpen, setDocFormOpen] = useState(false);
   const [docTitle, setDocTitle] = useState("");
   const [docContent, setDocContent] = useState("");
@@ -104,6 +156,12 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   }
 
   const [otherProjects, setOtherProjects] = useState<OtherProject[]>([]);
+  const [editingParent, setEditingParent] = useState(false);
+  const [parentDraft, setParentDraft] = useState("");
+  const [parentError, setParentError] = useState<string | null>(null);
+  const [addSubProjectId, setAddSubProjectId] = useState("");
+  const [newSubProjectName, setNewSubProjectName] = useState("");
+  const [creatingSubProject, setCreatingSubProject] = useState(false);
   const [connectionRuns, setConnectionRuns] = useState<ConnectionRun[]>([]);
   const [connectionFormOpen, setConnectionFormOpen] = useState(false);
   const [connectionTargetId, setConnectionTargetId] = useState("");
@@ -120,6 +178,16 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setProject(data.project);
     setInstructionsDraft(data.project.instructions ?? "");
     setPurposeDraft(data.project.purpose ?? "");
+    setBrandPhilosophyDraft(data.project.brand_philosophy ?? "");
+    setBrandHeadingFontDraft(data.project.brand_heading_font ?? "");
+    setBrandBodyFontDraft(data.project.brand_body_font ?? "");
+    setBrandPrimaryColorDraft(data.project.brand_primary_color ?? "");
+    setBrandAccentColorDraft(data.project.brand_accent_color ?? "");
+    setBrandTextColorDraft(data.project.brand_text_color ?? "");
+    setBrandSubtitleColorDraft(data.project.brand_subtitle_color ?? "");
+    setBrandLabelColorDraft(data.project.brand_label_color ?? "");
+    setBrandSecondaryAccentColorDraft(data.project.brand_secondary_accent_color ?? "");
+    setParentDraft(data.project.parent_project_id ?? "");
 
     const [convRes, memRes, docRes, skillRes, artRes, agentRes, projRes, connRes, settingsRes] = await Promise.all([
       fetch(`/api/projects/${projectId}/conversations`),
@@ -157,6 +225,110 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
       body: JSON.stringify({ instructions: instructionsDraft, purpose: purposeDraft }),
     });
     setEditingInstructions(false);
+    load();
+  }
+
+  async function saveBrandGuide() {
+    await fetch(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        brand_philosophy: brandPhilosophyDraft,
+        brand_heading_font: brandHeadingFontDraft,
+        brand_body_font: brandBodyFontDraft,
+        brand_primary_color: brandPrimaryColorDraft,
+        brand_accent_color: brandAccentColorDraft,
+        brand_text_color: brandTextColorDraft,
+        brand_subtitle_color: brandSubtitleColorDraft,
+        brand_label_color: brandLabelColorDraft,
+        brand_secondary_accent_color: brandSecondaryAccentColorDraft,
+      }),
+    });
+    setEditingBrandGuide(false);
+    load();
+  }
+
+  // otherProjects carries every other active Project's parent_project_id,
+  // so the whole hierarchy can be walked client-side for display and for
+  // ruling out choices that would create a loop — the server re-validates
+  // this regardless (see updateProject's cycle check), this is just so the
+  // dropdowns don't offer an obviously-invalid option in the first place.
+  function descendantIds(rootId: string): Set<string> {
+    const ids = new Set<string>();
+    let frontier = [rootId];
+    while (frontier.length) {
+      const children = otherProjects.filter((p) => frontier.includes(p.parent_project_id ?? ""));
+      frontier = children.map((c) => c.id).filter((id) => !ids.has(id));
+      frontier.forEach((id) => ids.add(id));
+    }
+    return ids;
+  }
+
+  function ancestorIds(startId: string): Set<string> {
+    const ids = new Set<string>();
+    let current = startId === projectId ? project : otherProjects.find((p) => p.id === startId);
+    while (current?.parent_project_id && !ids.has(current.parent_project_id)) {
+      ids.add(current.parent_project_id);
+      current = otherProjects.find((p) => p.id === current!.parent_project_id);
+    }
+    return ids;
+  }
+
+  const childProjects = otherProjects.filter((p) => p.parent_project_id === projectId);
+  const parentProject = otherProjects.find((p) => p.id === project?.parent_project_id);
+  const myDescendantIds = descendantIds(projectId);
+  const eligibleParents = otherProjects.filter((p) => p.id !== projectId && !myDescendantIds.has(p.id));
+  const myAncestorIds = ancestorIds(projectId);
+  const eligibleSubProjects = otherProjects.filter(
+    (p) => p.id !== projectId && p.parent_project_id !== projectId && !myAncestorIds.has(p.id)
+  );
+
+  async function saveParent() {
+    setParentError(null);
+    const res = await fetch(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent_project_id: parentDraft || null }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setParentError(data.error ?? "Couldn't set that parent.");
+      return;
+    }
+    setEditingParent(false);
+    load();
+  }
+
+  async function addExistingSubProject() {
+    if (!addSubProjectId) return;
+    await fetch(`/api/projects/${addSubProjectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent_project_id: projectId }),
+    });
+    setAddSubProjectId("");
+    load();
+  }
+
+  async function removeSubProject(childId: string) {
+    await fetch(`/api/projects/${childId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ parent_project_id: null }),
+    });
+    load();
+  }
+
+  async function createSubProject() {
+    if (!newSubProjectName.trim()) return;
+    setCreatingSubProject(true);
+    await fetch(`/api/projects`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newSubProjectName, parentProjectId: projectId }),
+    });
+    setCreatingSubProject(false);
+    setNewSubProjectName("");
     load();
   }
 
@@ -293,12 +465,20 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
             ) : (
               <div className="flex flex-col gap-1.5">
                 {conversations.map((c) => (
-                  <Link key={c.id} href={`/projects/${projectId}/c/${c.id}`}>
-                    <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
+                  <Panel
+                    key={c.id}
+                    className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]"
+                  >
+                    <Link href={`/projects/${projectId}/c/${c.id}`} className="min-w-0 flex-1 truncate">
                       <span className="truncate text-[13.5px] text-[var(--color-text)]">{c.title}</span>
-                      <IconChevronRight className="shrink-0 text-[var(--color-text-faint)]" />
-                    </Panel>
-                  </Link>
+                    </Link>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <MoveConversationControl conversationId={c.id} currentProjectId={projectId} onMoved={() => load()} />
+                      <Link href={`/projects/${projectId}/c/${c.id}`}>
+                        <IconChevronRight className="text-[var(--color-text-faint)]" />
+                      </Link>
+                    </div>
+                  </Panel>
                 ))}
               </div>
             )}
@@ -364,7 +544,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
             {agentRuns.length === 0 && !agentFormOpen ? (
               <EmptyState
                 title="No Agents run yet"
-                description="An Agent is more autonomous than a Skill — give it an objective and it pursues it using tools and models on your behalf."
+                description="An Agent is more autonomous than a Skill — give it an objective, and it works through it on its own, using whatever tools and models it needs."
               />
             ) : (
               <div className="flex flex-col gap-1.5">
@@ -432,7 +612,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
             {connectionRuns.length === 0 && !connectionFormOpen ? (
               <EmptyState
                 title="No connections explored yet"
-                description="Ask what in another Project might be relevant to this one — research, not psychic memory."
+                description="Ask what in another Project might be relevant to this one. Magi will actually go look, rather than guess."
               />
             ) : (
               <div className="flex flex-col gap-1.5">
@@ -465,7 +645,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                 <input
                   ref={docFileInputRef}
                   type="file"
-                  accept=".pdf,.docx,.txt,.md,.csv,.json"
+                  accept=".pdf,.docx,.pptx,.txt,.md,.csv,.json"
                   className="hidden"
                   onChange={handleUploadDocFile}
                 />
@@ -556,6 +736,130 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
         </div>
 
         <div className="flex flex-col gap-6">
+          {/* Hierarchy — parent Project and sub-projects */}
+          <section>
+            <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+              Hierarchy
+            </h2>
+            <Panel className="px-4 py-4">
+              <div className="flex flex-col gap-3 text-[13px]">
+                <div>
+                  <div className="mb-1 text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                    Parent Project
+                  </div>
+                  {editingParent ? (
+                    <div className="flex flex-col gap-2">
+                      <select
+                        value={parentDraft}
+                        onChange={(e) => setParentDraft(e.target.value)}
+                        className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[13px] text-[var(--color-text)]"
+                      >
+                        <option value="">None — this Project stands on its own</option>
+                        {eligibleParents.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                      </select>
+                      {parentError && <div className="text-[12px] text-[var(--color-danger)]">{parentError}</div>}
+                      <div className="flex justify-end gap-2">
+                        <Button variant="ghost" onClick={() => { setEditingParent(false); setParentError(null); }}>
+                          Cancel
+                        </Button>
+                        <Button variant="accent" onClick={saveParent}>
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between">
+                      <span className="text-[var(--color-text-muted)]">
+                        {parentProject ? (
+                          <>
+                            Branch of{" "}
+                            <Link href={`/projects/${parentProject.id}`} className="text-[var(--color-accent)] hover:underline">
+                              {parentProject.name}
+                            </Link>
+                            {" "}— inherits its instructions and brand guide automatically.
+                          </>
+                        ) : (
+                          "Not set — this Project stands on its own."
+                        )}
+                      </span>
+                      <Button variant="ghost" onClick={() => setEditingParent(true)}>
+                        Change
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <div className="mb-1 text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                    Sub-projects{childProjects.length ? ` (${childProjects.length})` : ""}
+                  </div>
+                  {childProjects.length === 0 ? (
+                    <p className="text-[var(--color-text-muted)]">
+                      None — group existing Projects under this one to make it a meta-project, or start a new branch below.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      {childProjects.map((c) => (
+                        <div key={c.id} className="flex items-center justify-between rounded-[3px] px-1 py-1 hover:bg-[var(--color-surface)]">
+                          <Link href={`/projects/${c.id}`} className="truncate text-[var(--color-text)] hover:text-[var(--color-accent)]">
+                            {c.name}
+                          </Link>
+                          <button
+                            onClick={() => removeSubProject(c.id)}
+                            className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {eligibleSubProjects.length > 0 && (
+                      <>
+                        <select
+                          value={addSubProjectId}
+                          onChange={(e) => setAddSubProjectId(e.target.value)}
+                          className="focus-ring rounded-[3px] border border-[var(--color-border)] bg-[var(--color-bg-raised)] px-2 py-1 text-[11.5px] text-[var(--color-text-muted)]"
+                        >
+                          <option value="">Add existing Project…</option>
+                          {eligibleSubProjects.map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button variant="ghost" onClick={addExistingSubProject} disabled={!addSubProjectId}>
+                          Add
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Input
+                      value={newSubProjectName}
+                      onChange={(e) => setNewSubProjectName(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && createSubProject()}
+                      placeholder="New sub-project name"
+                      className="max-w-[220px]"
+                    />
+                    <Button
+                      variant="ghost"
+                      onClick={createSubProject}
+                      disabled={!newSubProjectName.trim() || creatingSubProject}
+                    >
+                      <IconPlus /> New sub-project
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          </section>
+
           {/* Purpose & instructions */}
           <section>
             <div className="mb-2.5 flex items-center justify-between">
@@ -601,10 +905,132 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                       Instructions
                     </div>
                     <p className="whitespace-pre-wrap text-[var(--color-text-muted)]">
-                      {project.instructions || "Not set — Magi will use only its general disposition here."}
+                      {project.instructions || "Not set — Magi has no special instructions for this Project yet."}
                     </p>
                   </div>
                 </div>
+              )}
+            </Panel>
+          </section>
+
+          {/* Brand Guide */}
+          <section>
+            <div className="mb-2.5 flex items-center justify-between">
+              <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                Brand Guide
+              </h2>
+              {!editingBrandGuide && (
+                <Button variant="ghost" onClick={() => setEditingBrandGuide(true)}>
+                  Edit
+                </Button>
+              )}
+            </div>
+            <Panel className="px-4 py-4">
+              {editingBrandGuide ? (
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <Label>Design philosophy</Label>
+                    <Textarea
+                      value={brandPhilosophyDraft}
+                      onChange={(e) => setBrandPhilosophyDraft(e.target.value)}
+                      rows={3}
+                      placeholder="How this Project's visual work should feel — tone, imagery, spacing, anything beyond fonts and colors."
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <Label>Heading font</Label>
+                      <Input
+                        value={brandHeadingFontDraft}
+                        onChange={(e) => setBrandHeadingFontDraft(e.target.value)}
+                        placeholder="e.g. Georgia"
+                      />
+                    </div>
+                    <div>
+                      <Label>Body font</Label>
+                      <Input
+                        value={brandBodyFontDraft}
+                        onChange={(e) => setBrandBodyFontDraft(e.target.value)}
+                        placeholder="e.g. Calibri"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <ColorField label="Primary" value={brandPrimaryColorDraft} onChange={setBrandPrimaryColorDraft} />
+                    <ColorField label="Accent" value={brandAccentColorDraft} onChange={setBrandAccentColorDraft} />
+                    <ColorField label="Text" value={brandTextColorDraft} onChange={setBrandTextColorDraft} />
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <ColorField label="Subtitle" value={brandSubtitleColorDraft} onChange={setBrandSubtitleColorDraft} />
+                    <ColorField label="Label" value={brandLabelColorDraft} onChange={setBrandLabelColorDraft} />
+                    <ColorField
+                      label="Secondary accent"
+                      value={brandSecondaryAccentColorDraft}
+                      onChange={setBrandSecondaryAccentColorDraft}
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" onClick={() => setEditingBrandGuide(false)}>
+                      Cancel
+                    </Button>
+                    <Button variant="accent" onClick={saveBrandGuide}>
+                      Save
+                    </Button>
+                  </div>
+                </div>
+              ) : project.brand_philosophy ||
+                project.brand_heading_font ||
+                project.brand_body_font ||
+                project.brand_primary_color ||
+                project.brand_accent_color ||
+                project.brand_text_color ||
+                project.brand_subtitle_color ||
+                project.brand_label_color ||
+                project.brand_secondary_accent_color ? (
+                <div className="flex flex-col gap-3 text-[13px] leading-relaxed">
+                  {project.brand_philosophy && (
+                    <p className="whitespace-pre-wrap text-[var(--color-text-muted)]">{project.brand_philosophy}</p>
+                  )}
+                  {(project.brand_heading_font || project.brand_body_font) && (
+                    <div className="text-[var(--color-text-muted)]">
+                      Fonts: {project.brand_heading_font || "—"} (headings) / {project.brand_body_font || "—"} (body)
+                    </div>
+                  )}
+                  {(project.brand_primary_color ||
+                    project.brand_accent_color ||
+                    project.brand_text_color ||
+                    project.brand_subtitle_color ||
+                    project.brand_label_color ||
+                    project.brand_secondary_accent_color) && (
+                    <div className="flex flex-wrap items-center gap-3">
+                      {[
+                        { label: "Primary", hex: project.brand_primary_color },
+                        { label: "Secondary accent", hex: project.brand_secondary_accent_color },
+                        { label: "Accent", hex: project.brand_accent_color },
+                        { label: "Subtitle", hex: project.brand_subtitle_color },
+                        { label: "Label", hex: project.brand_label_color },
+                        { label: "Text", hex: project.brand_text_color },
+                      ]
+                        .filter((c) => c.hex)
+                        .map((c) => (
+                          <div key={c.label} className="flex items-center gap-1.5">
+                            <span
+                              className="h-3.5 w-3.5 rounded-full border border-[var(--color-border-strong)]"
+                              style={{ backgroundColor: `#${c.hex}` }}
+                            />
+                            <span className="text-[var(--color-text-muted)]">
+                              {c.label} #{c.hex}
+                            </span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  Not set — Word/PowerPoint/Excel exports use Magi&apos;s default styling, and the model has no brand
+                  direction for this Project.
+                </p>
               )}
             </Panel>
           </section>

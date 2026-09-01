@@ -26,6 +26,21 @@ export function listConversations(projectId: string): Conversation[] {
     .all(projectId) as Conversation[];
 }
 
+// Cross-project "what have I been doing lately" list for the sidebar — active
+// conversations in active Projects only, newest first.
+export function listRecentConversations(limit: number): (Conversation & { project_name: string })[] {
+  return db
+    .prepare(
+      `SELECT c.*, p.name AS project_name
+       FROM conversations c
+       JOIN projects p ON p.id = c.project_id
+       WHERE c.status = 'active' AND p.status = 'active'
+       ORDER BY c.updated_at DESC
+       LIMIT ?`
+    )
+    .all(limit) as (Conversation & { project_name: string })[];
+}
+
 export function getConversation(id: string): Conversation | null {
   return (db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(id) as Conversation) ?? null;
 }
@@ -65,6 +80,48 @@ export function archiveConversation(id: string, archived = true) {
     nowIso(),
     id
   );
+}
+
+// Reassigns a conversation (and everything that travels with it — its
+// artifacts, and the search/embedding rows for the conversation itself, its
+// messages, and its artifacts) to a different Project. Message rows and
+// attachments don't carry their own project_id (they're scoped only via
+// conversation_id), so those need no update at all.
+export function moveConversation(id: string, newProjectId: string): Conversation | null {
+  const existing = getConversation(id);
+  if (!existing) return null;
+
+  const messageIds = (db.prepare(`SELECT id FROM messages WHERE conversation_id = ?`).all(id) as { id: string }[]).map(
+    (m) => m.id
+  );
+  const artifactIds = (
+    db.prepare(`SELECT id FROM artifacts WHERE conversation_id = ?`).all(id) as { id: string }[]
+  ).map((a) => a.id);
+
+  db.prepare(`UPDATE conversations SET project_id = ?, updated_at = ? WHERE id = ?`).run(newProjectId, nowIso(), id);
+  if (artifactIds.length) {
+    db.prepare(`UPDATE artifacts SET project_id = ? WHERE conversation_id = ?`).run(newProjectId, id);
+  }
+
+  const retarget = (kind: string, refIds: string[]) => {
+    if (!refIds.length) return;
+    const placeholders = refIds.map(() => "?").join(",");
+    db.prepare(`UPDATE search_index SET project_id = ? WHERE kind = ? AND ref_id IN (${placeholders})`).run(
+      newProjectId,
+      kind,
+      ...refIds
+    );
+    db.prepare(`UPDATE embeddings SET project_id = ? WHERE kind = ? AND ref_id IN (${placeholders})`).run(
+      newProjectId,
+      kind,
+      ...refIds
+    );
+  };
+  retarget("conversation", [id]);
+  retarget("message", messageIds);
+  retarget("artifact", artifactIds);
+
+  return getConversation(id);
 }
 
 export function deleteConversation(id: string) {

@@ -234,3 +234,21 @@ export function IconDownload(props: SVGProps<SVGSVGElement>) {
     </Base>
   );
 }
+
+export function IconPin(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <path d="M12 21s-6.5-6.2-6.5-11A6.5 6.5 0 0 1 12 3.5 6.5 6.5 0 0 1 18.5 10c0 4.8-6.5 11-6.5 11Z" />
+      <circle cx="12" cy="10" r="2.2" />
+    </Base>
+  );
+}
+
+export function IconEdit(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Base {...props}>
+      <path d="M4 20l1-4.5L16.5 4l3.5 3.5L8.5 19 4 20Z" />
+      <path d="M14 6.5 17.5 10" />
+    </Base>
+  );
+}
