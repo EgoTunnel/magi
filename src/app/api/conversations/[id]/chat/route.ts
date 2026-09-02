@@ -39,7 +39,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: "content or at least one attachment is required" }, { status: 400 });
   }
 
-  const turnModel = await resolveTurnModel(requestedRole, content);
+  const turnModel = await resolveTurnModel(requestedRole, content, skillId);
   if (!turnModel.ok) return turnModel.response;
   const { resolved } = turnModel.value;
 

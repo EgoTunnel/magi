@@ -127,12 +127,25 @@ export function moveConversation(id: string, newProjectId: string): Conversation
 }
 
 export function deleteConversation(id: string) {
+  // The message ids have to be collected *before* the conversation row goes:
+  // messages cascade on that delete, so querying for them afterwards returns
+  // nothing and every message's search, embedding, and passage rows are
+  // orphaned — leaving a deleted conversation permanently searchable.
+  const messageIds = (db.prepare(`SELECT id FROM messages WHERE conversation_id = ?`).all(id) as {
+    id: string;
+  }[]).map((m) => m.id);
+  const artifactIds = (
+    db.prepare(`SELECT id FROM artifacts WHERE conversation_id = ?`).all(id) as { id: string }[]
+  ).map((a) => a.id);
+
   db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
   indexRemove("conversation", id);
-  const messages = db.prepare(`SELECT id FROM messages WHERE conversation_id = ?`).all(id) as {
-    id: string;
-  }[];
-  for (const m of messages) indexRemove("message", m.id);
+  for (const messageId of messageIds) indexRemove("message", messageId);
+  // Artifacts don't cascade (conversation_id has no FK), so they survive the
+  // delete and keep their index rows — but any that did go need clearing too.
+  for (const artifactId of artifactIds) {
+    if (!db.prepare(`SELECT 1 FROM artifacts WHERE id = ?`).get(artifactId)) indexRemove("artifact", artifactId);
+  }
 }
 
 export function listMessages(conversationId: string): Message[] {

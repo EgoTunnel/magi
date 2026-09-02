@@ -12,6 +12,7 @@ interface CouncilRole {
   systemPrompt: string;
   modelRole: string;
   allowedTools?: string[] | null;
+  skillId?: string | null;
 }
 interface Council {
   id: string;
@@ -158,19 +159,23 @@ export function CouncilsClient() {
   const [description, setDescription] = useState("");
   const [roles, setRoles] = useState<CouncilRole[]>([{ name: "", systemPrompt: "", modelRole: "default", allowedTools: null }]);
 
+  const [skills, setSkills] = useState<{ id: string; name: string }[]>([]);
+
   async function load() {
-    const [councilsRes, runsRes, projRes, modelsRes, settingsRes] = await Promise.all([
+    const [councilsRes, runsRes, projRes, modelsRes, settingsRes, skillsRes] = await Promise.all([
       fetch("/api/councils"),
       fetch("/api/councils/runs"),
       fetch("/api/projects"),
       fetch("/api/models"),
       fetch("/api/settings"),
+      fetch("/api/skills"),
     ]);
     setCouncils((await councilsRes.json()).councils);
     setRuns((await runsRes.json()).runs);
     setProjects((await projRes.json()).projects);
     setRoleInfos((await modelsRes.json()).roles);
     setTools((await settingsRes.json()).tools ?? []);
+    setSkills((await skillsRes.json()).skills ?? []);
   }
 
   useEffect(() => {
@@ -415,6 +420,23 @@ export function CouncilsClient() {
                     placeholder="What this role should do"
                     className="mb-2"
                   />
+                  {/* A member can work by a Skill: the Skill supplies the
+                      method, this role supplies who is applying it. */}
+                  <label className="mb-2 flex items-center gap-2 text-[11.5px] text-[var(--color-text-muted)]">
+                    Works by Skill
+                    <select
+                      value={r.skillId ?? ""}
+                      onChange={(e) => updateRole(i, { skillId: e.target.value || null })}
+                      className="focus-ring rounded-[3px] border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-1 text-[11.5px] text-[var(--color-text)]"
+                    >
+                      <option value="">None</option>
+                      {skills.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   {tools.length > 0 && (
                     <div>
                       <div className="flex flex-wrap gap-2.5">

@@ -6,6 +6,7 @@ import { getProject } from "@/lib/repo/projects";
 import { listDocuments } from "@/lib/repo/documents";
 import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
+import { composeSkill, composeSystemPrompt, isModelRole, narrowTools, preferredRole } from "@/lib/skillComposition";
 
 // Same budget contextBuilder.ts uses for Project documents in a normal chat
 // turn — keeps a Council role's system prompt from growing unbounded when a
@@ -59,7 +60,11 @@ async function completeAs(
   prompt: string,
   opts: { withTools?: boolean; projectId?: string | null; runId: string; contextBlock: string }
 ): Promise<{ content: string; modelId: string; toolCalls: ToolCallRecord[] }> {
-  const roleId = (role.modelRole as ModelRoleId) ?? "default";
+  // A member may work by a Skill. Its method joins this member's own framing,
+  // and it supplies the model role and tool allowlist wherever the member
+  // leaves them unset — never overriding what the member explicitly states.
+  const skill = composeSkill(role.skillId);
+  const roleId = preferredRole(isModelRole(role.modelRole) ? role.modelRole : null, skill, "default");
   const modelId = modelForRole(roleId);
   const resolved = getModel(modelId);
   if (!resolved || !resolved.provider.isConfigured()) {
@@ -67,11 +72,13 @@ async function completeAs(
   }
   const toolLog: ToolCallRecord[] = [];
   const usage: TokenUsage[] = [];
-  const tools = opts.withTools ? resolveTools({ allowedNames: role.allowedTools }) : undefined;
+  const tools = opts.withTools
+    ? resolveTools({ allowedNames: narrowTools(role.allowedTools, skill?.allowedTools) })
+    : undefined;
   const allowedToolNames = tools ? new Set(tools.map((t) => t.name)) : undefined;
   const content = await resolved.provider.complete({
     model: modelId,
-    system: `${role.systemPrompt}\n\n${COUNCIL_TOOL_GUIDANCE}${opts.contextBlock}`,
+    system: `${composeSystemPrompt(skill, role.systemPrompt)}\n\n${COUNCIL_TOOL_GUIDANCE}${opts.contextBlock}`,
     messages: [{ role: "user", content: prompt }],
     maxTokens: 3000,
     tools,

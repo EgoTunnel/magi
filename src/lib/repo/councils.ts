@@ -9,6 +9,11 @@ export interface CouncilRole {
   // run allowedTools (see resolveTools() in src/lib/tools/registry.ts).
   // null/absent means no restriction.
   allowedTools?: string[] | null;
+  // A Skill this member works by (Product Vision §39: Councils are groups of
+  // actors, actors use Skills). The Skill supplies its method, and fills in
+  // the model role and tool allowlist wherever this role leaves them unset —
+  // see src/lib/skillComposition.ts for the precedence.
+  skillId?: string | null;
 }
 
 export interface RunAttachment {

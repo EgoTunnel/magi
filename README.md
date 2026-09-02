@@ -33,6 +33,18 @@ live from OpenRouter's own API rather than hardcoded. Keys are stored locally in
 database (`data/magi.db`, gitignored) and used only to call that provider's API directly from your
 local server.
 
+## Tests
+
+```bash
+npm test
+```
+
+Vitest, against a throwaway SQLite database per test file and a mock model provider — no network, no
+API key, a few seconds to run. It covers the repo layer, retrieval, and the pipelines end to end
+(conversation windowing, episode closing, Agents including Skill-driven ones, and Councils). Many of
+the tests are labelled regressions for specific bugs, which is the point: this codebase is edited
+quickly, and silent regression is the likeliest way it gets hurt.
+
 ## How it's built
 
 - **Next.js (App Router) + TypeScript** — server components for read paths, API routes for
@@ -45,11 +57,18 @@ local server.
   provider means writing one adapter and registering it.
 - **Full-text search** (SQLite FTS5) over Projects, conversations, memory, documents, artifacts, and
   Skills, plus an "Ask my archive" mode that hands matching material to a model to synthesize.
+- **Projects as places** (`src/components/ProjectStanding.tsx`) — a Project opens on where the work
+  stands: open questions, decisions, and what has happened lately, above its contents rather than
+  among them. Fed by closing conversations, and editable by hand.
 - **Conversation lifecycle** (`src/lib/conversationWindow.ts`, `src/lib/episodeClose.ts`) — long
   conversations send a recent verbatim window plus a rolling summary of older turns rather than the whole
   history every time. Closing one drafts a summary, the decisions it settled, the questions it left open,
   and proposed memory — all of it inert until kept by hand, which is what the `suggested` memory status
   is for.
+- **Trajectory** (`src/lib/trajectory.ts`) — because every passage is dated, the archive can answer
+  when a topic first appeared, how often it came up since, and what was being said at each point.
+  The timeline is pure retrieval and costs nothing; having a model characterize the change is a
+  separate, opt-in step.
 - **Retrieval-first context assembly** (`src/lib/retrieval.ts`) — everything in a Project is also
   indexed as ~1200-character passages. Each turn retrieves the passages that bear on the message
   actually being asked, fusing embedding similarity with keyword bm25, rather than injecting whichever
@@ -61,6 +80,10 @@ local server.
 - **Agents** (`src/lib/agent.ts`) — given an objective, an Agent plans, researches (with tools),
   drafts, critiques itself, revises, and saves the result as a Project artifact. Runs as a
   fire-and-forget background job on Magi's own server, polled by the client, stoppable mid-run.
+- **A composing hierarchy** (`src/lib/skillComposition.ts`) — a Skill is a method: instructions, the
+  model role it wants, its tool allowlist, and optionally a staged pipeline. Agents run a Skill's
+  stages in place of their built-in ones; Council members can work by a Skill. A Skill supplies
+  defaults and can only ever narrow permissions — it never overrides a choice the user made.
 - **Image Lab** (`src/app/image-lab/`, `src/lib/repo/images.ts`) — generation and editing through
   OpenRouter's multimodal chat-completions models (Gemini "Nano Banana," GPT-5 Image, and whichever
   others advertise image output — discovered live, not hardcoded). Style Guides and Characters are

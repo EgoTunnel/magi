@@ -84,7 +84,12 @@ src/
     contextBuilder.ts            Builds the system prompt + provenance for a conversation turn
     conversationWindow.ts        Recent-turns window + rolling summary of older turns
     episodeClose.ts              "Close this episode" — drafts summary/decisions/questions/memory
+    trajectory.ts                Retrieval reorganized by time — "when did I first think about this"
+    skillComposition.ts          The §39 seam — resolves a Skill into an executable method
     sourceLinks.ts               (kind, ref_id) → a URL and a human-readable place
+      repo/activity.ts            One UNION over everything a Project accumulates, newest first
+      repo/projectNotes.ts        Decisions and open questions (proposed → open/settled/resolved)
+      repo/episodes.ts            Episode-closing records
     chunking.ts                  Splits text into passage-sized chunks on paragraph seams
     retrieval.ts                 Passage index + hybrid (semantic ⊕ bm25) retrieval
     vectors.ts                   Float32 BLOB pack/unpack + cosine, shared by both indexes
@@ -222,6 +227,112 @@ src/
     closing. Both are parsed back into real `source_conversation_id` values on startup, so existing items
     get working links rather than displaying a raw id. Verified: all 5 episode-proposed items relinked,
     zero raw ids left, the 26 imported items correctly showing just a date.
+- **Project as a place (§11–13)** — the dashboard was a stack of section panels: it opened onto a
+  Project's *contents*, which is the folder feel the Vision explicitly says to avoid. A **Where the work
+  stands** band now sits between the header and the section grid — open questions, decisions, and a
+  recent-activity strip — so the first thing a Project tells you is its state, not its inventory.
+  - Questions and decisions come from the `project_notes` table built for episode closings. Proposals
+    from a closing appear here tagged `PROPOSED` with Keep/discard **always visible** (not hover-gated —
+    the band announces "4 proposed by a closed episode", and hiding the action behind a hover would be
+    advertising a door with no handle). Notes written by hand skip `proposed` entirely and land as
+    `open`/`settled`, because writing one *is* the deliberate act.
+  - `repo/activity.ts` is one `UNION ALL` over conversations, documents, artifacts, established memory,
+    Agent runs, Council runs, Connections, episode closings, and images. Titles are truncated in SQL so a
+    200KB artifact body never crosses the process boundary just to be cut to a line.
+  - **A real flaw caught by running it against the live database:** a strictly chronological strip is
+    useless, because whichever kind was busiest most recently monopolizes it — KRG's first render was
+    seven near-identical image generations and nothing else. Fixed the same way retrieval caps passages
+    per source: dedupe repeated `(kind, title)` pairs, then allow `MAX_PER_KIND = 3` on a first pass and
+    top up chronologically from the overflow. A Project that genuinely only contains documents still
+    fills its strip with documents; one with a burst of images shows the burst *and* the conversations.
+  - `GET /api/projects/[id]/standing` serves notes and activity together — it's one reading of a
+    Project's state, not three widgets that could disagree about when they loaded.
+- **The §39 hierarchy composes** — Skills, Agents and Councils were three parallel implementations
+  sharing only the model and tool layers: a Skill was a system-prompt block plus a tool allowlist, an
+  Agent was one hardcoded five-stage pipeline, and a Council role couldn't reference a Skill at all.
+  `skillComposition.ts` is the seam that makes the stack real; everything that can use a Skill resolves
+  it through there, so "what does this Skill actually specify?" has one answer instead of three.
+  - **A Skill is now a method**: `skills.model_role` (which model the method wants) and `skills.stages`
+    (an ordered pipeline of `{name, instructions, modelRole?, useTools?}`). Both null is exactly the
+    plain single-pass Skill every existing Skill already is, so nothing changed underneath them.
+  - **Agents use Skills.** `runAgent` takes a `skillId`. A Skill *with* stages replaces the built-in
+    plan/research/draft/critique/revise pipeline entirely — each stage sees the objective plus everything
+    earlier stages produced, and steps are recorded with the new `"stage"` type, named by the Skill. A
+    Skill *without* stages still applies: its method is folded into every built-in stage's system prompt.
+  - **Council roles use Skills.** `CouncilRole.skillId`. The Skill supplies the method, the role supplies
+    who is applying it (`composeSystemPrompt` puts the method first, the role's framing last).
+  - **Conversations honour a Skill's model role**, but only when the user left the composer on "Default".
+    An explicitly picked role, and a classifier's answer on an Auto turn, both outrank it.
+  - **Two invariants worth not breaking.** `preferredRole()`: an explicit caller choice always wins, the
+    Skill fills gaps, then a fallback — a Skill is default-bearing, never an override of a deliberate
+    choice. `narrowTools()`: allowlists compose by *intersection*, so referencing a Skill can never widen
+    an Agent's or a Council role's permissions, matching what `resolveTools()` already does with the
+    global disabled list. Both verified directly, including the "cannot widen" case.
+  - A `model_role` naming a role that no longer exists degrades to "no preference" rather than a broken
+    lookup — `isModelRole()` validates against `MODEL_ROLES` on the way out of the database.
+  - Verified end-to-end: a two-stage Skill run through a real Agent produced two `stage` steps named by
+    the Skill, with stage 2 demonstrably building on stage 1's output, and saved its artifact. Also
+    exercised the failure path — a provider 429 on the first attempt was recorded as an error step and
+    set the run to `error`, exactly as intended.
+- **Trajectory: "when did I first think about this"** — the question a personal archive can answer and a
+  chat product cannot. `trajectory.ts` reorganizes retrieval by time; the **Over time** mode on the
+  Archive page and a `trace_thinking` tool both read it, and the persona points models at it for any
+  question about time or change.
+  - **The naive version is wrong and worth not building.** Taking the top N passages by relevance and
+    sorting them by date produces a timeline of whenever the topic was hottest, presented as if it were a
+    history — relevance clusters. Instead: a large pool is retrieved, bucketed into periods, and the most
+    relevant few kept *within each period*, which guarantees coverage across the whole span. Granularity
+    switches from months to quarters past 14 periods.
+  - **Counts and passages come from different places, deliberately.** Period counts and the true
+    first/last dates come from `matchCountsByDate()` — an uncapped `GROUP BY` over the passage FTS. The
+    passages shown are a relevance-ranked sample. Counting the *pool* instead would mean every topic
+    reported the pool cap: the first run of this returned `total=240` for every query, because 240 was
+    POOL_SIZE. A period can therefore legitimately show a count with no passages, and the UI says so
+    rather than rendering an empty period.
+  - **Three real bugs found by running it against the live archive**, all of which made the feature
+    meaningless rather than merely imperfect:
+    1. **Every chunk was dated the day it was indexed.** `ensureChunkIndex` seeded `source_date` from
+       `search_index.created_at`, which for everything predating the passage index is one afternoon — so
+       every trajectory spanned 2 days. `repairChunkDates()` pulls the real dates from the source tables
+       (`messages.created_at` et al.), which recovered **15 months** of actual history.
+    2. **Stopwords wrecked the counts.** The lexical half ORs its terms, so "AI in the classroom" matched
+       on `the` and reported **14,574** passages. bm25 ranks that noise away for ordinary retrieval, but
+       a *count* has no ranking to save it. With a stopword list the same query reports 94 — a readable
+       shape with a real nine-month gap in it.
+    3. **Orphaned chunks outlive their source.** A chunk whose row was deleted outside the app's own
+       delete path (`indexRemove` → `removeChunks`) stays searchable forever and shows up as the topic's
+       most recent mention. The date repair now prunes them in the same pass.
+  - Narration is opt-in and separate: the timeline is pure retrieval and costs nothing, so "when did I
+    first write about X" is free and only "how did it change" spends. The prompt insists on honesty about
+    the shape of the evidence — verified live, and it correctly refused to manufacture an arc, concluding
+    of one topic that it "never developed — it was *repurposed*", and naming the gap that made a
+    development narrative unsupportable.
+- **A test layer** — `npm test` (vitest, the only new dependency). 93 tests, ~6 seconds, no network and no
+  API key. Two small production seams make it possible: `MAGI_DATA_DIR` in `db.ts` (each test file gets a
+  throwaway SQLite database via `tests/setup.ts`) and `__setProvidersForTests()` in the model registry.
+  - **`tests/helpers/provider.ts`** is the mock provider — it records what it was asked, replies with
+    whatever the test queued, and can be told to fail or to request a tool call. That's what makes the
+    *pipelines* testable: `buildHistoryWindow`, `draftClosure`, `runAgent` (both the built-in pipeline and
+    a Skill's stages), `runCouncilDeliberation`, and `buildSystemPrompt` are all exercised end to end.
+  - Structure: `tests/unit` (pure functions), `tests/repo` (round-trips against a real database),
+    `tests/integration` (retrieval, and the pipelines). Files run serially — `db.ts` caches its connection
+    on `globalThis`, so parallel workers would share one database.
+  - Many tests are explicitly labelled regressions for bugs found while building items 1–6: the
+    `**Decisions:**` heading that swallowed a section, a reasoning model's deliberation parsing as
+    content, counting the retrieval pool instead of the archive, stopwords inflating a count, passages
+    dated when they were indexed, a redraft deleting a kept proposal, and an unknown model role breaking
+    a lookup.
+  - **Two real bugs the suite found on its first run**, both pre-existing and neither visible from
+    reading the code:
+    1. **`deleteConversation` left every message searchable.** It deleted the conversation row first,
+       which cascades the messages away, and only *then* queried for message ids to unindex — so the
+       query returned nothing and every message's search, embedding, and passage rows were orphaned. A
+       deleted conversation stayed fully searchable and retrievable. Ids are now collected first.
+    2. **Suggested memory was reaching prompts through retrieval.** `buildSystemPrompt` correctly filters
+       the memory *sections* to `established`, but `createMemory` indexed every item regardless — so a
+       proposal from an episode closing was retrievable and got injected as a cited passage. That defeats
+       the entire point of a suggestion being inert until kept. Suggestions are no longer indexed;
+       promotion indexes, demotion unindexes, and a migration clears the ones already written.
 - **§25–26 Cross-Project intelligence** — `search_archive` tool with a `scope: this_project | all` param
   gated by a Settings toggle (§25), and the standalone Connections feature for proactive discovery (§26).
 - **§27–31 Model independence** — provider abstraction (`ModelProvider` interface), two providers live,

@@ -64,26 +64,35 @@ export function createMemory(input: {
     input.sourceConversationId ?? null,
     ts
   );
-  indexUpsert({
-    kind: "memory",
-    refId: id,
-    projectId: input.scope === "project" ? input.projectId ?? null : null,
-    title: `${input.scope} memory`,
-    content: input.content,
-  });
+  // A suggestion is not part of the archive yet. Filtering it out of the
+  // memory *sections* of the prompt isn't enough on its own — an indexed
+  // suggestion is retrievable, and passage retrieval would put it in front of
+  // the model as a cited extract, which is exactly what "nothing acts on it
+  // until you keep it" is supposed to prevent. It gets indexed on promotion.
+  if ((input.status ?? "established") === "established") {
+    indexUpsert({
+      kind: "memory",
+      refId: id,
+      projectId: input.scope === "project" ? input.projectId ?? null : null,
+      title: `${input.scope} memory`,
+      content: input.content,
+    });
+  }
   return db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem;
 }
 
 export function updateMemory(id: string, content: string): MemoryItem | null {
   db.prepare(`UPDATE memory SET content = ? WHERE id = ?`).run(content, id);
   const row = db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem | undefined;
-  if (row) {
+  // Editing a suggestion must not quietly index it — see createMemory.
+  if (row && row.status === "established") {
     indexUpsert({
       kind: "memory",
       refId: id,
       projectId: row.project_id,
       title: `${row.scope} memory`,
       content: row.content,
+      sourceDate: row.created_at,
     });
   }
   return row ?? null;
@@ -99,7 +108,23 @@ export function deleteMemory(id: string) {
 // a human says to keep it.
 export function setMemoryStatus(id: string, status: MemoryItem["status"]): MemoryItem | null {
   db.prepare(`UPDATE memory SET status = ? WHERE id = ?`).run(status, id);
-  return (db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem) ?? null;
+  const row = (db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem) ?? null;
+  if (!row) return null;
+  // Promotion is what puts an item into the archive; demotion takes it back
+  // out, so a suggestion can never be retrieved into a prompt.
+  if (status === "established") {
+    indexUpsert({
+      kind: "memory",
+      refId: id,
+      projectId: row.project_id,
+      title: `${row.scope} memory`,
+      content: row.content,
+      sourceDate: row.created_at,
+    });
+  } else {
+    indexRemove("memory", id);
+  }
+  return row;
 }
 
 export function listMemoryForClosure(closureId: string): MemoryItem[] {

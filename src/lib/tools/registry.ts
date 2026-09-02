@@ -1,6 +1,7 @@
-import type { ToolSpec } from "@/lib/models/types";
+﻿import type { ToolSpec } from "@/lib/models/types";
 import { search, semanticSearch, type SearchResult } from "@/lib/searchIndex";
 import { ensureChunkIndex, retrieveChunks } from "@/lib/retrieval";
+import { traceTrajectory, trajectoryDigest } from "@/lib/trajectory";
 import { getCrossProjectSearchEnabled, getDisabledTools, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
 import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
@@ -41,6 +42,23 @@ export const TOOL_SPECS: ToolSpec[] = [
         },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "trace_thinking",
+    description:
+      "Trace how a topic developed over time in the user's own archive. Returns the same material search_archive would find, but organized as a timeline: when it first appears, how often it came up in each period, and representative passages from each. Use this — not search_archive — whenever the question is about time or change: \"when did I first think about X\", \"how has my view of X changed\", \"have I always believed X\", \"what was I working on last spring\". Report what the dates actually show, including when they show the thinking was stable rather than developing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        topic: { type: "string", description: "The topic to trace, in natural language" },
+        scope: {
+          type: "string",
+          enum: ["this_project", "all"],
+          description: "\"all\" (default) traces across every Project, which is usually what a question about time wants; \"this_project\" restricts it",
+        },
+      },
+      required: ["topic"],
     },
   },
   {
@@ -253,6 +271,27 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
           })
           .join("\n\n")
       );
+    }
+
+    if (name === "trace_thinking") {
+      const input = rawInput as { topic?: string; scope?: string } | undefined;
+      const topic = input?.topic;
+      if (!topic) return "Error: no topic given.";
+      // Unlike search_archive, this defaults to every Project: a question
+      // about how thinking developed is rarely bounded by where the thinking
+      // happened to be filed. The cross-Project setting still governs it.
+      const restrict = input?.scope === "this_project" || !getCrossProjectSearchEnabled();
+      const scopeProjectId = restrict && ctx.projectId ? familyProjectIds(ctx.projectId) : undefined;
+
+      const trajectory = await traceTrajectory(topic, { projectId: scopeProjectId });
+      if (trajectory.totalPassages === 0) return "Nothing in the archive touches on this topic.";
+
+      const header =
+        `${trajectory.totalPassages} passages about "${topic}", from ` +
+        `${trajectory.firstDate?.slice(0, 10)} to ${trajectory.lastDate?.slice(0, 10)} ` +
+        `(${trajectory.spanDays} days).\n` +
+        (restrict ? "Scope: this Project and its hierarchy.\n" : "Scope: every Project.\n");
+      return `${header}\n${trajectoryDigest(trajectory)}`;
     }
 
     if (name === "web_search") {

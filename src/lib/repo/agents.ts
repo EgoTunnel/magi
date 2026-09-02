@@ -1,6 +1,16 @@
 import { db, newId, nowIso } from "@/lib/db";
 
-export type AgentStepType = "plan" | "research" | "draft" | "critique" | "revise" | "final" | "error";
+// "stage" is what a Skill-driven pipeline produces — its steps are named by
+// the Skill, not by the built-in plan/research/draft/critique/revise sequence.
+export type AgentStepType =
+  | "plan"
+  | "research"
+  | "draft"
+  | "critique"
+  | "revise"
+  | "stage"
+  | "final"
+  | "error";
 
 export interface AgentStep {
   id: string;
@@ -23,6 +33,8 @@ export interface AgentRun {
   // Null means "all globally-enabled tools" — Agents have no persistent
   // template to attach permissions to, so this is chosen once at launch.
   allowed_tools: string[] | null;
+  // The Skill whose staged pipeline this run followed, if any.
+  skill_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +47,7 @@ interface AgentRunRow {
   steps: string;
   artifact_id: string | null;
   allowed_tools: string | null;
+  skill_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -56,13 +69,22 @@ export function createAgentRun(input: {
   objective: string;
   projectId?: string | null;
   allowedTools?: string[] | null;
+  skillId?: string | null;
 }): AgentRun {
   const id = newId("agent");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO agent_runs (id, project_id, objective, status, steps, allowed_tools, created_at, updated_at)
-     VALUES (?, ?, ?, 'running', '[]', ?, ?, ?)`
-  ).run(id, input.projectId ?? null, input.objective, input.allowedTools?.length ? JSON.stringify(input.allowedTools) : null, ts, ts);
+    `INSERT INTO agent_runs (id, project_id, objective, status, steps, allowed_tools, skill_id, created_at, updated_at)
+     VALUES (?, ?, ?, 'running', '[]', ?, ?, ?, ?)`
+  ).run(
+    id,
+    input.projectId ?? null,
+    input.objective,
+    input.allowedTools?.length ? JSON.stringify(input.allowedTools) : null,
+    input.skillId ?? null,
+    ts,
+    ts
+  );
   return getAgentRun(id)!;
 }
 

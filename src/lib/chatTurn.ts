@@ -7,6 +7,7 @@ import type { ModelInfo, ModelMessage, ModelProvider, ModelRoleId, StreamEvent, 
 import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
 import { estimateCost } from "@/lib/models/pricing";
+import { composeSkill } from "@/lib/skillComposition";
 
 export interface ResolvedTurnModel {
   modelRole: ModelRoleId;
@@ -26,7 +27,10 @@ export interface ResolvedTurnModel {
 // replacement.
 export async function resolveTurnModel(
   requestedRole: ModelRoleId | "auto",
-  classifierText: string
+  classifierText: string,
+  // The Skill selected for this turn, if any. A Skill that names a model role
+  // is stating what its method needs — see src/lib/skillComposition.ts.
+  skillId?: string | null
 ): Promise<{ ok: true; value: ResolvedTurnModel } | { ok: false; response: Response }> {
   let modelRole: ModelRoleId = requestedRole === "auto" ? "default" : requestedRole;
   let autoSelectedRole: string | undefined;
@@ -40,6 +44,12 @@ export async function resolveTurnModel(
     classifierUsage = classified.usage;
     classifierModelId = classified.modelId;
     classifierProviderId = classified.providerId;
+  } else if (requestedRole === "default") {
+    // Only when the user left the composer alone. An explicitly picked role,
+    // and a classifier's answer on an Auto turn, both outrank the Skill —
+    // a Skill supplies a default, it doesn't overrule a deliberate choice.
+    const skill = composeSkill(skillId);
+    if (skill?.modelRole) modelRole = skill.modelRole;
   }
 
   const modelId = modelForRole(modelRole);

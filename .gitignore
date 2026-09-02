@@ -42,3 +42,6 @@ next-env.d.ts
 
 # Magi's local data — this is the user's own environment, never shared or committed
 /data/
+
+# vitest
+/tests/**/__snapshots__

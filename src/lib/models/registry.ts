@@ -7,7 +7,21 @@ import { MODEL_ROLES, DEFAULT_ROLE_REASONING_EFFORT } from "@/lib/models/types";
 // Every provider Magi knows about. Adding a new provider means writing one
 // adapter and registering it here — nothing else in the app should ever
 // import a provider SDK directly.
-const PROVIDERS: ModelProvider[] = [anthropicProvider, openRouterProvider];
+const DEFAULT_PROVIDERS: ModelProvider[] = [anthropicProvider, openRouterProvider];
+let PROVIDERS: ModelProvider[] = DEFAULT_PROVIDERS;
+
+// Test seam. The pipelines (agent, council, chat turn, episode closing) are the
+// part most worth testing and the part that can't be tested against a real
+// provider — this lets a suite install a deterministic fake and get the whole
+// pipeline exercised for free. Returns a restore function; production code
+// never calls it.
+export function __setProvidersForTests(providers: ModelProvider[]): () => void {
+  const previous = PROVIDERS;
+  PROVIDERS = providers;
+  return () => {
+    PROVIDERS = previous;
+  };
+}
 
 export function listProviders(): ModelProvider[] {
   return PROVIDERS;

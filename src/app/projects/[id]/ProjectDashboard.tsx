@@ -8,6 +8,7 @@ import { IconChevronRight, IconDocument, IconDownload, IconPlus, IconTrash } fro
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
 import { ArtifactViewerButton } from "@/components/ArtifactHistory";
 import { MoveConversationControl } from "@/components/MoveConversationControl";
+import { ProjectStanding } from "@/components/ProjectStanding";
 
 interface Project {
   id: string;
@@ -78,6 +79,7 @@ interface Skill {
   name: string;
   description: string | null;
   scope: string;
+  stages?: { name: string }[];
 }
 interface Artifact {
   id: string;
@@ -147,6 +149,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [agentError, setAgentError] = useState<string | null>(null);
   const [tools, setTools] = useState<ToolInfo[]>([]);
   const [agentAllowedTools, setAgentAllowedTools] = useState<string[] | null>(null);
+  const [agentSkillId, setAgentSkillId] = useState("");
 
   function toggleAgentTool(name: string) {
     setAgentAllowedTools((prev) => {
@@ -387,7 +390,12 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     const res = await fetch("/api/agents/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ objective: objectiveDraft, projectId, allowedTools: agentAllowedTools }),
+      body: JSON.stringify({
+        objective: objectiveDraft,
+        projectId,
+        allowedTools: agentAllowedTools,
+        skillId: agentSkillId || null,
+      }),
     });
     setLaunchingAgent(false);
     if (res.status === 412) {
@@ -431,6 +439,8 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
 
   if (!project) return null;
 
+  const agentSkill = skills.find((s) => s.id === agentSkillId);
+
   return (
     <div>
       <div className="flex items-start justify-between gap-6 border-b border-[var(--color-border)] px-8 py-6">
@@ -447,6 +457,12 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
           Export
         </Button>
       </div>
+
+      {/* Above the contents, not among them: what's unresolved, what's
+          settled, and what has been happening — the Vision's "place, not
+          folder" made literal. Fed by episode closings (src/lib/episodeClose.ts)
+          and editable by hand. */}
+      <ProjectStanding projectId={projectId} />
 
       <div className="mx-auto grid max-w-5xl grid-cols-1 gap-6 px-8 py-7 lg:grid-cols-[1fr_320px]">
         <div className="flex flex-col gap-6">
@@ -504,10 +520,32 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                   className="mb-3"
                   placeholder="Investigate whether X is defensible and produce a report…"
                 />
+                {/* An Agent is an actor; a Skill is the method it works by
+                    (Product Vision §39). A Skill with stages replaces the
+                    built-in pipeline entirely. */}
+                <div className="mb-3">
+                  <Label>Method</Label>
+                  <select
+                    value={agentSkillId}
+                    onChange={(e) => setAgentSkillId(e.target.value)}
+                    className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[13px] text-[var(--color-text)]"
+                  >
+                    <option value="">Built-in: plan → research → draft → critique → revise</option>
+                    {skills.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                        {s.stages?.length ? ` (${s.stages.length} stages)` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <p className="mb-3 text-[12px] text-[var(--color-text-muted)]">
-                  The Agent will plan, research (using the archive and a calculator), draft, critique itself,
-                  revise, and save the result as an artifact in this Project. You can watch it work and stop
-                  it at any point.
+                  {agentSkill?.stages?.length
+                    ? `The Agent will work through the "${agentSkill.name}" method — ${agentSkill.stages
+                        .map((s) => s.name)
+                        .join(" → ")} — and save the result as an artifact in this Project.`
+                    : "The Agent will plan, research (using the archive and a calculator), draft, critique itself, revise, and save the result as an artifact in this Project."}{" "}
+                  You can watch it work and stop it at any point.
                 </p>
                 {tools.length > 0 && (
                   <div className="mb-3">

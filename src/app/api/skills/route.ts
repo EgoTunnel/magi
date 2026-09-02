@@ -18,6 +18,8 @@ export async function POST(req: NextRequest) {
     description: body.description,
     instructions: body.instructions,
     allowedTools: body.allowedTools ?? null,
+    modelRole: body.modelRole ?? null,
+    stages: Array.isArray(body.stages) ? body.stages : null,
   });
   return NextResponse.json({ skill }, { status: 201 });
 }

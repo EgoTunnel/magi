@@ -34,7 +34,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const history = windowed.history;
 
   const lastUser = [...history].reverse().find((m) => m.role === "user");
-  const turnModel = await resolveTurnModel(requestedRole, lastUser ? textOf(lastUser.content) : "");
+  const turnModel = await resolveTurnModel(requestedRole, lastUser ? textOf(lastUser.content) : "", skillId);
   if (!turnModel.ok) return turnModel.response;
 
   deleteMessage(last.id);

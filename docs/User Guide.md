@@ -56,6 +56,17 @@ A Project is a place, not a folder. Create one from the **Projects** page. Give 
 - **Instructions** — role, tone, constraints, terminology. This is injected into every conversation in
   the Project and overrides Magi's general disposition where the two conflict.
 
+**Where the work stands** sits at the top of every Project, above its contents, and answers the question
+you actually have when you open one: what's unresolved, what's settled, and what has been happening.
+
+- **Open questions** and **Decisions** — closing a conversation proposes these, and they arrive tagged
+  `PROPOSED` with **Keep** and discard beside them. You can also write either by hand with the **+**;
+  anything you type yourself skips the proposal step, since writing it is already the deliberate part.
+  Resolve a question when it stops being open.
+- **Recent activity** — the last dozen things that happened here, of any kind, each a link. No single
+  kind can flood it: an afternoon of image generation shows up as an afternoon of image generation, not
+  as the entire history of the Project.
+
 Everything else accumulates inside a Project over time:
 
 | Section | What it holds |
@@ -171,10 +182,46 @@ scoped either globally or to one Project. Three starters are offered when you ha
 Writing, and Historical Research. Invoke a Skill from any conversation in its scope via the Skill
 dropdown.
 
-When creating a Skill, you can also uncheck which tools it's allowed to use — leave everything checked
-for no restriction beyond whatever's globally enabled in Settings. This can only narrow what a Skill
-may do, never widen it past the global setting. There's no edit flow yet, so changing a Skill's
-permissions later means deleting and recreating it.
+A Skill has four parts, and only the first is required:
+
+- **Method** — the instructions themselves.
+- **Model role** — which model this method wants. It applies when you haven't picked a role yourself;
+  an explicit choice in the composer, or an Auto turn, still wins.
+- **Stages** — leave empty for an ordinary Skill. Add stages and the Skill becomes a pipeline: an Agent
+  given it runs those stages in order instead of its built-in plan/research/draft/critique/revise
+  sequence, and each stage sees everything the earlier ones produced. Each stage can name its own model
+  role and say whether it may use tools — usually only the stage that has to look things up should.
+- **Tools allowed** — leave everything checked for no restriction beyond what's globally enabled in
+  Settings. A Skill can only ever narrow what it's used with, never widen it.
+
+Click any Skill in the list to edit it.
+
+Skills compose with the rest of Magi rather than sitting beside it. An **Agent** can be given a Skill as
+its method (the **Method** dropdown when you start one). A **Council** member can work by a Skill — the
+Skill supplies the method, the role supplies who is applying it. The Research starter is a worked
+example of a staged Skill: Frame → Gather → Cross-check → Synthesize, with tools only on Gather.
+
+---
+
+## Over time
+
+The third mode on the **Archive** page answers the questions only your own archive can: when a topic
+first came up, how often since, and what you were saying about it at each point. Type a topic and press
+**Trace this topic**.
+
+You get the true first and most recent dates, a count of matching passages in each month or quarter, and
+the passages that best represent each period — each one a link back to where it came from. The counts are
+complete; the passages are a sample, so a quiet period may show a count with nothing under it, and it
+says so when that happens.
+
+**Describe how it changed** hands the timeline to a model to characterize the development. It's a
+separate button because it's the only part that costs anything — the timeline itself is free. Magi is
+instructed to be honest about the shape of the evidence: if your thinking on something has been stable,
+or there's simply too little to say, it will tell you that rather than inventing an arc.
+
+In a conversation, asking about time or change directly ("when did I first start thinking about X?")
+does the same thing — Magi has a `trace_thinking` tool for exactly this and will use it instead of an
+ordinary archive search.
 
 ---
 

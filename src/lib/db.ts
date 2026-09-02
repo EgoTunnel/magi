@@ -4,8 +4,18 @@ import path from "node:path";
 
 // Magi's data lives in a single local SQLite file. Local-first, portable,
 // owned by the user — not a remote database the app depends on to function.
-const dataDir = path.join(process.cwd(), "data");
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+//
+// MAGI_DATA_DIR exists so the test suite can point at a throwaway directory
+// (see tests/setup.ts). Nothing in the app sets it; without it the location is
+// exactly what it always was.
+// The turbopackIgnore comments are required because the env var makes this
+// path non-static, and Turbopack otherwise traces the entire project into the
+// server bundle rather than the one directory actually being read. The path is
+// deliberate and known-good, which is exactly the case that opt-out is for.
+const dataDir = process.env.MAGI_DATA_DIR ?? path.join(process.cwd(), "data");
+if (!fs.existsSync(/*turbopackIgnore: true*/ dataDir)) {
+  fs.mkdirSync(/*turbopackIgnore: true*/ dataDir, { recursive: true });
+}
 const dbPath = path.join(dataDir, "magi.db");
 
 declare global {
@@ -318,7 +328,16 @@ function addColumnIfMissing(table: string, column: string, definition: string) {
 }
 
 addColumnIfMissing("skills", "allowed_tools", "TEXT");
+// A Skill is meant to be a *method* — model, tools, decision rules, iteration
+// — not just a system-prompt block. model_role is which model role the method
+// wants; stages is an optional ordered pipeline (JSON) that Agents can run in
+// place of their built-in one. Both null means the plain single-pass Skill
+// that every existing Skill already is.
+addColumnIfMissing("skills", "model_role", "TEXT");
+addColumnIfMissing("skills", "stages", "TEXT");
 addColumnIfMissing("agent_runs", "allowed_tools", "TEXT");
+// Which Skill's staged pipeline this Agent run followed, if any.
+addColumnIfMissing("agent_runs", "skill_id", "TEXT");
 addColumnIfMissing("council_runs", "mode", "TEXT NOT NULL DEFAULT 'independent'");
 addColumnIfMissing("documents", "mime_type", "TEXT");
 addColumnIfMissing("documents", "file_path", "TEXT");
@@ -366,6 +385,32 @@ db.exec(
 db.exec(
   `UPDATE memory SET source_conversation_id = source
    WHERE source_conversation_id IS NULL AND source LIKE 'conv\\_%' ESCAPE '\\'`
+);
+// Suggested memory used to be indexed like any other row, which made a
+// proposal retrievable into a prompt as a cited passage — defeating the point
+// of it being inert until kept. Writes no longer index them; this clears the
+// ones written before that. Raw SQL rather than indexRemove() because db.ts
+// cannot import the index layer without a cycle.
+db.exec(
+  `DELETE FROM chunk_search WHERE chunk_id IN (
+     SELECT c.id FROM chunks c JOIN memory m ON m.id = c.ref_id
+     WHERE c.kind = 'memory' AND m.status = 'suggested'
+   )`
+);
+db.exec(
+  `DELETE FROM chunks WHERE kind = 'memory' AND ref_id IN (
+     SELECT id FROM memory WHERE status = 'suggested'
+   )`
+);
+db.exec(
+  `DELETE FROM embeddings WHERE kind = 'memory' AND ref_id IN (
+     SELECT id FROM memory WHERE status = 'suggested'
+   )`
+);
+db.exec(
+  `DELETE FROM search_index WHERE kind = 'memory' AND ref_id IN (
+     SELECT id FROM memory WHERE status = 'suggested'
+   )`
 );
 
 export function nowIso() {

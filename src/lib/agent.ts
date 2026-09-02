@@ -11,6 +11,13 @@ import {
   setAgentStatus,
   type AgentStepType,
 } from "@/lib/repo/agents";
+import {
+  composeSkill,
+  isModelRole,
+  narrowTools,
+  preferredRole,
+  type ComposedSkill,
+} from "@/lib/skillComposition";
 
 const AGENT_BOUNDARIES =
   "You are an Agent operating inside Magi, pursuing a single objective on the user's behalf. " +
@@ -77,13 +84,73 @@ function record(runId: string, type: AgentStepType, title: string, content: stri
   appendAgentStep(runId, { type, title, content: content.trim() ? content : EMPTY_STEP_NOTE, toolCalls });
 }
 
+// Product Vision §39: an Agent is an actor that uses Skills. When the Skill it
+// was given defines stages, those stages *are* the pipeline — the built-in
+// plan/research/draft/critique/revise sequence is just the default method for
+// an Agent that wasn't given one. Each stage sees the objective and everything
+// produced before it, so a method can genuinely build on its own work.
+async function runSkillStages(opts: {
+  runId: string;
+  objective: string;
+  projectId?: string | null;
+  projectContext: string;
+  skill: ComposedSkill;
+  allowedTools?: string[] | null;
+  stopped: () => boolean;
+}): Promise<string | null> {
+  const { runId, objective, skill } = opts;
+  const completed: { name: string; content: string }[] = [];
+
+  for (const stage of skill.stages) {
+    const modelRole = preferredRole(isModelRole(stage.modelRole) ? stage.modelRole : null, skill, "default");
+    const priorWork = completed.length
+      ? `\n\nWork completed in earlier stages of this method:\n\n${completed
+          .map((s) => `### ${s.name}\n${s.content}`)
+          .join("\n\n")}`
+      : "";
+
+    const result = await runStep({
+      runId,
+      modelRole,
+      system:
+        `${AGENT_BOUNDARIES}\n\nYou are working through a method called "${skill.name}", one stage at a time.\n` +
+        `The method as a whole:\n${skill.instructions}\n\n` +
+        `Your stage right now is "${stage.name}". Do only this stage:\n${stage.instructions}`,
+      prompt: `Objective: ${objective}${opts.projectContext}${priorWork}\n\nCarry out the "${stage.name}" stage now.`,
+      withTools: stage.useTools,
+      allowedTools: narrowTools(opts.allowedTools, skill.allowedTools),
+      projectId: opts.projectId,
+      maxTokens: 4000,
+      maxToolIterations: stage.useTools ? 30 : undefined,
+    });
+    record(runId, "stage", stage.name, result.content, result.toolCalls);
+    completed.push({ name: stage.name, content: result.content });
+    if (opts.stopped()) return null;
+  }
+
+  // The last stage that actually produced text is the method's output —
+  // falling back the same way the built-in pipeline does rather than saving
+  // an empty artifact.
+  return [...completed].reverse().find((s) => s.content.trim())?.content ?? null;
+}
+
 export async function runAgent(opts: {
   runId: string;
   objective: string;
   projectId?: string | null;
   allowedTools?: string[] | null;
+  // A Skill this Agent works by. With stages, it replaces the built-in
+  // pipeline; without them, its method and tool allowlist still apply to every
+  // built-in stage.
+  skillId?: string | null;
 }) {
-  const { runId, objective, projectId, allowedTools } = opts;
+  const { runId, objective, projectId } = opts;
+  const skill = composeSkill(opts.skillId);
+  // A Skill can only narrow what the launcher allowed, never widen it.
+  const allowedTools = narrowTools(opts.allowedTools, skill?.allowedTools);
+  // Without stages a Skill is still a method — it just applies to every stage
+  // of the built-in pipeline instead of replacing it.
+  const method = skill && !skill.stages.length ? `\n\nWork by this method throughout:\n${skill.instructions}` : "";
   const project = projectId ? getProject(projectId) : null;
   const projectContext = project
     ? `\n\nThis objective belongs to the Project "${project.name}"${project.purpose ? `: ${project.purpose}` : ""}.${
@@ -101,11 +168,44 @@ export async function runAgent(opts: {
   }
 
   try {
+    // A Skill with stages replaces the built-in pipeline entirely.
+    if (skill?.stages.length) {
+      const output = await runSkillStages({
+        runId,
+        objective,
+        projectId,
+        projectContext,
+        skill,
+        allowedTools,
+        stopped,
+      });
+      if (output === null && isStopRequested(runId)) return;
+      if (projectId && output) {
+        const artifact = createArtifact({
+          projectId,
+          title: objective.slice(0, 80),
+          type: "agent-report",
+          content: output,
+        });
+        setAgentArtifact(runId, artifact.id);
+      }
+      record(
+        runId,
+        "final",
+        "Complete",
+        output
+          ? `The Agent finished, working by the "${skill.name}" method.`
+          : `The Agent finished the "${skill.name}" method, but never produced usable text to save as an artifact.`
+      );
+      setAgentStatus(runId, "complete");
+      return;
+    }
+
     // 1. Plan
     const plan = await runStep({
       runId,
       modelRole: "reasoner",
-      system: `${AGENT_BOUNDARIES} You are planning, not yet executing. Break the objective into 2-4 concrete questions that need answers.`,
+      system: `${AGENT_BOUNDARIES}${method} You are planning, not yet executing. Break the objective into 2-4 concrete questions that need answers.`,
       prompt: `Objective: ${objective}${projectContext}\n\nList the key questions to investigate, most important first. Be concrete.`,
       maxTokens: 3000,
     });
@@ -116,7 +216,7 @@ export async function runAgent(opts: {
     const research = await runStep({
       runId,
       modelRole: "researcher",
-      system: `${AGENT_BOUNDARIES} You are researching. Use search_archive where it could plausibly hold relevant material; use calculator for any real computation. This Agent is running inside the Project "${
+      system: `${AGENT_BOUNDARIES}${method} You are researching. Use search_archive where it could plausibly hold relevant material; use calculator for any real computation. This Agent is running inside the Project "${
         project?.name ?? "none"
       }" — search_archive defaults to searching that Project ONLY. The objective may reference other Projects by name, or otherwise require material that lives outside this one; whenever that's plausible, call search_archive with scope: "all" rather than assuming an empty or thin result from the default scope means nothing exists. Report findings plainly, including where you found nothing.`,
       prompt: `Objective: ${objective}${projectContext}\n\nResearch plan:\n${plan.content}\n\nInvestigate and report what you find.`,
@@ -136,7 +236,7 @@ export async function runAgent(opts: {
     const draft = await runStep({
       runId,
       modelRole: "writer",
-      system: `${AGENT_BOUNDARIES} Write a clear, substantive draft addressing the objective directly, grounded ` +
+      system: `${AGENT_BOUNDARIES}${method} Write a clear, substantive draft addressing the objective directly, grounded ` +
         `strictly in the research below — never invent specific facts, numbers, names, scenarios, or examples ` +
         `that aren't actually supported by it. If the research is thin, incomplete, or is itself a placeholder ` +
         `reporting that search/tool calls failed or ran out of budget, say exactly that plainly and state what ` +
@@ -152,7 +252,7 @@ export async function runAgent(opts: {
     const critique = await runStep({
       runId,
       modelRole: "critic",
-      system: `${AGENT_BOUNDARIES} You are the critic. Be genuinely skeptical: gaps in evidence, unsupported claims, unclear structure, anything that doesn't actually serve the objective.`,
+      system: `${AGENT_BOUNDARIES}${method} You are the critic. Be genuinely skeptical: gaps in evidence, unsupported claims, unclear structure, anything that doesn't actually serve the objective.`,
       prompt: `Objective: ${objective}\n\nDraft:\n${draft.content}\n\nCritique it.`,
       maxTokens: 2200,
     });
@@ -163,7 +263,7 @@ export async function runAgent(opts: {
     const revised = await runStep({
       runId,
       modelRole: "writer",
-      system: `${AGENT_BOUNDARIES} Revise the draft in light of the critique. Produce the final version only — no meta-commentary about what changed.`,
+      system: `${AGENT_BOUNDARIES}${method} Revise the draft in light of the critique. Produce the final version only — no meta-commentary about what changed.`,
       prompt: `Objective: ${objective}\n\nDraft:\n${draft.content}\n\nCritique:\n${critique.content}\n\nWrite the final, revised version. Begin immediately with its first sentence — do not restate the task or describe your approach first.`,
       maxTokens: 5000,
     });

@@ -159,6 +159,58 @@ export async function embedChunkRows(
 }
 
 const CHUNK_BACKFILL_KEY = "chunk_index_built";
+const DATE_REPAIR_KEY = "chunk_dates_repaired";
+
+// Where each kind's authoritative date actually lives. search_index.created_at
+// is only the moment a row was *indexed*, which for everything that existed
+// before the passage index shipped is the same afternoon — and a trajectory
+// built on that says every idea in the archive was had on one day. The real
+// dates were in the source tables the whole time.
+const DATE_SOURCES: Array<{ kind: SearchKind; table: string }> = [
+  { kind: "message", table: "messages" },
+  { kind: "conversation", table: "conversations" },
+  { kind: "document", table: "documents" },
+  { kind: "artifact", table: "artifacts" },
+  { kind: "memory", table: "memory" },
+  { kind: "skill", table: "skills" },
+  { kind: "project", table: "projects" },
+  { kind: "style_guide", table: "style_guides" },
+  { kind: "character", table: "characters" },
+];
+
+// One-time repair, same posture as ensureChunkIndex: local, no network, guarded
+// by a settings flag, and safe to leave un-flagged on failure so the next turn
+// retries. Only touches rows whose source row still exists.
+export function repairChunkDates() {
+  if (getSetting(DATE_REPAIR_KEY) === "1") return;
+  try {
+    for (const { kind, table } of DATE_SOURCES) {
+      db.prepare(
+        `UPDATE chunks
+         SET source_date = (SELECT created_at FROM ${table} WHERE id = chunks.ref_id)
+         WHERE kind = ? AND EXISTS (SELECT 1 FROM ${table} WHERE id = chunks.ref_id)`
+      ).run(kind);
+      // Passages whose source row is gone entirely. The app's own delete path
+      // (indexRemove → removeChunks) prevents these, so they only exist where
+      // something wrote to the database directly — but one orphan is enough to
+      // wrongly appear as a topic's most recent mention forever, so the same
+      // pass that fixes dates clears them out.
+      db.prepare(
+        `DELETE FROM chunk_search WHERE chunk_id IN (
+           SELECT id FROM chunks
+           WHERE kind = ? AND NOT EXISTS (SELECT 1 FROM ${table} WHERE id = chunks.ref_id)
+         )`
+      ).run(kind);
+      db.prepare(
+        `DELETE FROM chunks
+         WHERE kind = ? AND NOT EXISTS (SELECT 1 FROM ${table} WHERE id = chunks.ref_id)`
+      ).run(kind);
+    }
+    setSetting(DATE_REPAIR_KEY, "1");
+  } catch (err) {
+    console.error("[retrieval] chunk date repair failed", err instanceof Error ? err.message : err);
+  }
+}
 
 // Passages are built on write, which covers everything saved from here on but
 // nothing already in the database when this shipped. Chunking is pure local
@@ -168,7 +220,10 @@ const CHUNK_BACKFILL_KEY = "chunk_index_built";
 // makes it a no-op forever. Vectors are a separate, optional step (they need a
 // key) and are left to the backfill; keyword retrieval works without them.
 export function ensureChunkIndex() {
-  if (getSetting(CHUNK_BACKFILL_KEY) === "1") return;
+  if (getSetting(CHUNK_BACKFILL_KEY) === "1") {
+    repairChunkDates();
+    return;
+  }
   try {
     const covered = new Set(
       (db.prepare(`SELECT DISTINCT kind, ref_id FROM chunks`).all() as Array<{ kind: string; ref_id: string }>).map(
@@ -198,6 +253,7 @@ export function ensureChunkIndex() {
       });
     }
     setSetting(CHUNK_BACKFILL_KEY, "1");
+    repairChunkDates();
   } catch (err) {
     // Leaving the flag unset means the next turn tries again. Retrieval falls
     // back to whatever passages did get built, and the context builder falls
@@ -216,16 +272,35 @@ export function listUnembeddedChunks(modelId: string): Array<{ id: string; title
     .all(modelId) as Array<{ id: string; title: string; content: string }>;
 }
 
+// ORing every word of a natural-language query pulls in whatever the common
+// words match, which is nearly everything. bm25 ranks that noise away, so
+// ordinary retrieval survives it — but a *count* of matches doesn't, and
+// "AI in the classroom" reported 14,574 matching passages on the strength of
+// the word "the". Removing these costs nothing: a query made only of them has
+// no content to retrieve on anyway.
+const STOPWORDS = new Set([
+  "the", "and", "for", "are", "but", "not", "you", "all", "any", "can", "had", "has", "have", "her",
+  "his", "its", "our", "out", "was", "were", "what", "when", "where", "which", "who", "whom", "why",
+  "how", "with", "from", "into", "onto", "than", "that", "them", "then", "they", "this", "these",
+  "those", "there", "their", "been", "being", "does", "did", "done", "each", "some", "such", "only",
+  "own", "same", "too", "very", "will", "would", "could", "should", "about", "after", "before",
+  "between", "during", "over", "under", "again", "more", "most", "other", "your", "yours", "just",
+  "also", "get", "got", "make", "made", "one", "two", "way", "use", "used", "using",
+]);
+
 // FTS5 ANDs bare terms together, which is right for an explicit search box and
 // wrong for retrieval against a whole sentence the user typed — one unusual
 // word would zero out the result set. The lexical half of hybrid retrieval
 // therefore ORs its terms and lets bm25 do the ranking.
 function ftsOrQuery(query: string): string | null {
-  const terms = query
+  const words = query
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
-    .filter((t) => t.length > 2)
-    .slice(0, 24);
+    .filter((t) => t.length > 2);
+  // A query that is nothing but common words keeps them — matching broadly is
+  // still better than matching nothing.
+  const meaningful = words.filter((t) => !STOPWORDS.has(t));
+  const terms = (meaningful.length ? meaningful : words).slice(0, 24);
   if (!terms.length) return null;
   return terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" OR ");
 }
@@ -265,6 +340,47 @@ function keywordChunks(query: string, opts: RetrieveOptions, limit: number): Chu
        LIMIT ?`
     )
     .all(match, ...project.params, ...(opts.kinds ?? []), limit) as ChunkRow[];
+}
+
+// Uncapped counts of keyword-matching passages, grouped by date. Retrieval
+// pools are capped by relevance, so counting *them* describes the pool rather
+// than the archive — a topic that came up 400 times and one that came up 40
+// would both report the cap. This is the honest denominator: every passage
+// whose text actually matches, with its real date, no ranking involved.
+export function matchCountsByDate(
+  query: string,
+  opts: RetrieveOptions = {}
+): { total: number; earliest: string | null; latest: string | null; byMonth: Map<string, number> } {
+  const match = ftsOrQuery(query);
+  const empty = { total: 0, earliest: null, latest: null, byMonth: new Map<string, number>() };
+  if (!match) return empty;
+
+  const project = projectClause(opts.projectId, "c.project_id");
+  const kinds = opts.kinds?.length ? ` AND c.kind IN (${opts.kinds.map(() => "?").join(",")})` : "";
+  const rows = db
+    .prepare(
+      `SELECT substr(c.source_date, 1, 7) AS month, COUNT(*) AS n,
+              MIN(c.source_date) AS earliest, MAX(c.source_date) AS latest
+       FROM chunk_search
+       JOIN chunks c ON c.id = chunk_search.chunk_id
+       WHERE chunk_search MATCH ?${project.sql}${kinds}
+       GROUP BY month
+       ORDER BY month ASC`
+    )
+    .all(match, ...project.params, ...(opts.kinds ?? [])) as Array<{
+    month: string;
+    n: number;
+    earliest: string;
+    latest: string;
+  }>;
+  if (!rows.length) return empty;
+
+  return {
+    total: rows.reduce((sum, r) => sum + r.n, 0),
+    earliest: rows[0].earliest,
+    latest: rows[rows.length - 1].latest,
+    byMonth: new Map(rows.map((r) => [r.month, r.n])),
+  };
 }
 
 async function semanticChunks(
@@ -322,6 +438,11 @@ export interface RetrieveOptions {
   projectId?: string | string[];
   kinds?: SearchKind[];
   limit?: number;
+  // Overrides MAX_PER_SOURCE. Trajectory tracing raises it deliberately: when
+  // the question is how a topic developed over time, a long conversation that
+  // returned to it repeatedly *should* contribute more than three passages,
+  // because that repetition is the answer.
+  maxPerSource?: number;
 }
 
 // Hybrid passage retrieval: embedding similarity for "said the same thing in
@@ -367,13 +488,14 @@ export async function retrieveChunks(query: string, opts: RetrieveOptions = {}):
 
   const ranked = [...scores.values()].sort((a, b) => b.score - a.score);
 
+  const perSourceCap = opts.maxPerSource ?? MAX_PER_SOURCE;
   const perSource = new Map<string, number>();
   const out: RetrievedChunk[] = [];
   for (const entry of ranked) {
     if (out.length >= limit) break;
     const sourceKey = `${entry.row.kind}:${entry.row.ref_id}`;
     const used = perSource.get(sourceKey) ?? 0;
-    if (used >= MAX_PER_SOURCE) continue;
+    if (used >= perSourceCap) continue;
     perSource.set(sourceKey, used + 1);
     out.push({
       chunkId: entry.row.id,
