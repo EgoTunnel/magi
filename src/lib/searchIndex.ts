@@ -1,32 +1,13 @@
 import { db, nowIso } from "@/lib/db";
 import { getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
 import { embedText } from "@/lib/models/openrouter";
+import { packVector, unpackVector, cosineSimilarity } from "@/lib/vectors";
+import { reindexChunks, removeChunks } from "@/lib/retrieval";
 
 // Kept well under typical embedding-model input ceilings (usually a few
 // thousand tokens) without needing per-model token counting for this.
 const EMBED_TEXT_BUDGET = 8000;
 const SNIPPET_LENGTH = 240;
-
-function packVector(vector: number[]): Buffer {
-  return Buffer.from(new Float32Array(vector).buffer);
-}
-
-function unpackVector(buf: Buffer): Float32Array {
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.length / 4);
-}
-
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
 
 // Shared by the fire-and-forget per-write path below and the Settings
 // "Build index" backfill (src/lib/embeddingBackfill.ts) — one place that
@@ -87,6 +68,11 @@ export function indexUpsert(opts: {
   // unthrottled burst of concurrent requests. Use the Settings "Build index"
   // backfill (already batched and rate-limited) to index afterward instead.
   skipEmbedding?: boolean;
+  // The date the underlying item is actually *from*, when the caller knows it
+  // — an imported conversation from 2023 indexed today is 2023 material. Used
+  // by passage retrieval so "when did I first think about this" can sort by
+  // something truer than "when did this row get written."
+  sourceDate?: string;
 }) {
   db.prepare(`DELETE FROM search_index WHERE kind = ? AND ref_id = ?`).run(
     opts.kind,
@@ -95,13 +81,18 @@ export function indexUpsert(opts: {
   db.prepare(
     `INSERT INTO search_index (kind, ref_id, project_id, title, content, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(opts.kind, opts.refId, opts.projectId, opts.title, opts.content, nowIso());
+  ).run(opts.kind, opts.refId, opts.projectId, opts.title, opts.content, opts.sourceDate ?? nowIso());
+  // Every write path in Magi already funnels through here, which makes this
+  // the one place that has to know the passage index exists — see
+  // src/lib/retrieval.ts.
+  reindexChunks(opts);
   if (!opts.skipEmbedding) queueEmbedding(opts);
 }
 
 export function indexRemove(kind: SearchKind, refId: string) {
   db.prepare(`DELETE FROM search_index WHERE kind = ? AND ref_id = ?`).run(kind, refId);
   db.prepare(`DELETE FROM embeddings WHERE kind = ? AND ref_id = ?`).run(kind, refId);
+  removeChunks(kind, refId);
 }
 
 export interface SearchResult {

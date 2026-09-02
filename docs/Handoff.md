@@ -82,6 +82,12 @@ src/
     council.ts                  Council pipeline (analysis→critique→synthesis)
     connections.ts              Connection discovery pipeline
     contextBuilder.ts            Builds the system prompt + provenance for a conversation turn
+    conversationWindow.ts        Recent-turns window + rolling summary of older turns
+    episodeClose.ts              "Close this episode" — drafts summary/decisions/questions/memory
+    sourceLinks.ts               (kind, ref_id) → a URL and a human-readable place
+    chunking.ts                  Splits text into passage-sized chunks on paragraph seams
+    retrieval.ts                 Passage index + hybrid (semantic ⊕ bm25) retrieval
+    vectors.ts                   Float32 BLOB pack/unpack + cosine, shared by both indexes
     portability.ts               Project export/import
     searchIndex.ts               FTS5 wrapper (search_index virtual table)
     settings.ts                  Key-value settings (API keys, feature toggles)
@@ -120,9 +126,102 @@ src/
   Settings backfills everything older. **OpenRouter's `/models` catalog does not list embedding-capable
   models** (confirmed by direct testing — unlike chat/image models), so the embedding-model choice in
   Settings is a short, hand-verified list (`OPENROUTER_EMBEDDING_MODELS`), not a live dropdown.
-  `search_archive` (the tool models call) and `POST /api/archive/ask` deliberately still use keyword
-  FTS only — rewiring model-facing retrieval to semantic search was left as a deliberate follow-up, not
-  a side effect of this pass.
+  Model-facing retrieval was rewired in the pass described under **Retrieval-first context assembly**
+  below: `search_archive` and `POST /api/archive/ask` now return real passages from the chunk index and
+  fall back to whole-item keyword FTS only when nothing in it matched.
+- **Retrieval-first context assembly (§12, §18, §46, §81)** — the fix for the single biggest gap between
+  the Vision and the build: a turn used to get each Project document injected in list order until a
+  12,000-character budget ran out. On the largest real Project (52 documents, 1.2M characters) that was
+  ~1% of the Project's knowledge, chosen by insertion order rather than by relevance to the question.
+  Now every indexable item is also split into ~1200-character passages (`chunking.ts`, on paragraph
+  seams, sentence-aware hard splits for over-long paragraphs) and stored in a `chunks` table with its
+  own vector plus a `chunk_search` FTS5 mirror. `buildSystemPrompt()` is async and takes the turn's
+  `query`; it retrieves against it and injects a numbered **Retrieved from this Project** block (24,000
+  characters, cited as `[P1]`, `[P2]`), scoped to `familyProjectIds()` — the same boundary
+  `search_archive`'s default scope uses, so context assembly and the search tool can't disagree about
+  what "this Project" means. A titles-only document inventory is always included as well, so the model
+  knows what exists even when a passage from it didn't rank.
+  - **Hybrid, not semantic**: embedding similarity and bm25 are run separately and fused by reciprocal
+    rank (k=60). Either half works alone — with no embedding model configured this degrades to
+    passage-level keyword retrieval rather than to nothing, which is why chunk rows are written
+    synchronously on every write and vectors are filled in afterwards. bm25's half deliberately ORs its
+    terms: FTS5's default AND is right for a search box and wrong for a whole sentence the user typed.
+  - **Caps that matter**: at most 3 passages per source, so one long document can't fill the budget
+    just by being long; the semantic half `.iterate()`s and keeps a bounded top-N instead of
+    materializing every vector (a personal archive is already ~16k passages, and collecting them all to
+    sort would be a nine-figure allocation per turn).
+  - **Migration**: `ensureChunkIndex()` builds passages for everything already in `search_index` on
+    first use, guarded by a settings flag. It's pure local work — no key, no network — so retrieval
+    doesn't wait on the user knowing to press "Build index". Measured on the real database: 2,864 items
+    → 16,487 passages in ~1.3s of chunking (~18s including SQLite writes), once. Vectors remain the
+    optional second half and are left to the backfill, which now counts both halves into one total.
+  - **Falls back, never fails**: retrieval errors and empty results both drop to the old
+    head-of-each-document injection, recorded as `provenance.retrievalMode: "retrieval" | "documents" |
+    "none"`. `provenance.retrieved[]` carries every passage's kind, title, chunk index, date, match type
+    and similarity, and the Context panel lists them — so "what did it actually read?" has an answer at
+    passage granularity.
+  - **Falls out for free**: `search_archive` and `POST /api/archive/ask` now return passages instead of
+    24-token keyword windows, and every chunk carries a `source_date` (threaded through `indexUpsert`'s
+    new `sourceDate`, so imported 2023 material is dated 2023, not "indexed today").
+  - Verified against the real database through the running server: warm retrieval ~380ms, `retrieval`
+    mode on real questions, correct fallback to `documents` mode on a no-match query.
+- **Conversation lifecycle (§14, §20–21)** — the Vision calls a conversation an episode, but episodes had
+  no lifecycle: nothing closed one, summarized it, or proposed what should survive it, and every turn sent
+  the entire history (the largest real conversation is 122 messages / ~890,000 characters — expensive long
+  before it becomes impossible). Two halves, both new:
+  - **Rolling window** (`conversationWindow.ts`) — a conversation now sends a recent verbatim window
+    (40,000 characters, floor of 6 messages so a few enormous turns are never summarized away) plus a
+    rolling summary of everything older, injected as an **Earlier in this conversation** block. The fold is
+    incremental: `conversations.summary_through_id` records how far the stored summary reached, so each
+    turn only re-reads messages added since. Ordinary conversations never summarize anything and behave
+    exactly as before. Uses the `fast` role — the fold is a bounded, incremental rewrite, and putting the
+    `synthesizer` model on it would mean paying deep-model prices on most turns of every long
+    conversation. Never throws: a failed summary sends the whole history, as before.
+  - **Close this episode** (`episodeClose.ts`, `EpisodeClosePanel.tsx`) — a deliberate, user-initiated pass
+    with the `synthesizer` role that reads the conversation (rolling summary + bounded tail) and drafts a
+    summary, the decisions it settled, the questions it left open, and what's worth remembering, split into
+    Project-scoped and global. **Nothing it proposes takes effect.** Memory lands as `status='suggested'`
+    — which `buildSystemPrompt()` already filters out, so a proposal is inert in every prompt until kept —
+    and decisions/questions land in a new `project_notes` table as `status='proposed'`. Proposals are rows,
+    not modal state, so they survive dismissing the panel and are reviewable from the Memory page (new
+    **Suggested** section) as well as in place. Redrafting replaces un-kept proposals and deliberately
+    spares anything already kept.
+  - **Two real bugs found and fixed during verification**, both worth knowing about:
+    (1) the section parser matched headings with a regex that anticipated decoration, and `**Decisions:**`
+    (colon *inside* the bold markers) silently swallowed the whole section into the one above it — now
+    headings are recognized by stripping `#*_\`:` and comparing, which is decoration-agnostic;
+    (2) `synthesizer` is assigned `deepseek/deepseek-v4-pro-0813` at reasoning effort `high`, and its
+    mandatory reasoning landed *in the visible reply*, so proposals like `Is that a decision? Not exactly
+    but can be a settled fact...` were stored as memory, and the 2,000-token budget ran out mid-bullet.
+    Fixed model-agnostically with explicit `<<<CLOSEOUT>>>`/`<<<END>>>` delimiters (anything outside is
+    discarded, so pre-answer reasoning can't parse as content), 6,000 max tokens, an explicit
+    no-meta-commentary instruction, and quote-stripping in `bullets()`. Same lesson as the role classifier,
+    one layer up: never assume a role's assigned model won't think out loud.
+  - `splitWindow()`, `splitSections()`, `bullets()` and `extractDelimited()` are exported specifically
+    because they're the testable units here — the natural first targets for the test layer below.
+- **Claim-level provenance (§18–19)** — provenance could say *which documents were in play*, never where a
+  specific claim came from. Now:
+  - **Memory carries its origin.** New `memory.source_message_id` / `source_conversation_id`. The
+    "Remember in Project/globally" action records the exact message it was promoted from; an episode
+    closing records the conversation (no single message is the origin there). The Memory page shows each
+    item's date and a link straight back — and the system prompt now renders every memory bullet as
+    `- (2026-08-31, from "Conversation title") …` so the model can answer "where did that come from?"
+    from the prompt instead of guessing. Multi-line imported memory has its continuation lines indented
+    so the date doesn't appear to caption an unrelated wall of text.
+  - **Retrieved passages link to their source.** `sourceLinks.ts` turns an indexed item's `(kind, ref_id)`
+    into a URL and a human-readable place ("KRG · Refining opening speaker notes"), batched one query per
+    kind. Resolved when provenance is *written*, not at render time, because provenance is stored JSON
+    that outlives the turn. Messages get `#<message id>` fragments; documents and artifacts have no page
+    of their own, so they anchor to `#documents` / `#artifacts` on the Project dashboard. An unknown or
+    deleted ref resolves to `null` rather than a broken link.
+  - **Landing on a linked message.** ConversationView gives each message an `id`, and its
+    landing-scroll effect now checks the URL fragment first: a link from the Context panel or a memory
+    item scrolls to that message and marks it with an accent rule, instead of jumping to the tail.
+  - **A migration recovers old links.** Before these columns existed, origins were stuffed into the
+    free-text `source` field — a bare conversation id from the Remember action, `episode:<id>` from a
+    closing. Both are parsed back into real `source_conversation_id` values on startup, so existing items
+    get working links rather than displaying a raw id. Verified: all 5 episode-proposed items relinked,
+    zero raw ids left, the 26 imported items correctly showing just a date.
 - **§25–26 Cross-Project intelligence** — `search_archive` tool with a `scope: this_project | all` param
   gated by a Settings toggle (§25), and the standalone Connections feature for proactive discovery (§26).
 - **§27–31 Model independence** — provider abstraction (`ModelProvider` interface), two providers live,

@@ -1,0 +1,392 @@
+import { db, nowIso } from "@/lib/db";
+import { chunkText } from "@/lib/chunking";
+import { embedTexts } from "@/lib/models/openrouter";
+import { getEmbeddingModelId, getOpenRouterApiKey, getSetting, setSetting } from "@/lib/settings";
+import { packVector, unpackVector, cosineSimilarity } from "@/lib/vectors";
+// Type-only: searchIndex.ts imports this module's functions at runtime, so a
+// value import here would be a real cycle. Types are erased, this is not.
+import type { SearchKind } from "@/lib/searchIndex";
+
+// How many passages go into one embedding request. Chunks are ~1200
+// characters, so a batch of 16 is roughly 5k tokens — comfortably inside every
+// embedding model's input ceiling, and 16x fewer round trips than one apiece.
+const EMBED_BATCH = 16;
+// Deliberately generous: a passage is only useful if enough of it is in the
+// prompt to read, and 20 passages of ~1200 characters is still a fraction of
+// any modern context window.
+const DEFAULT_RETRIEVAL_LIMIT = 20;
+// One document must not be able to fill the whole retrieval budget just
+// because it is long. Past three passages the marginal value of another
+// paragraph of the same source is far below the first passage of a different
+// one — which is the entire point of retrieving across a Project's material.
+const MAX_PER_SOURCE = 3;
+// Reciprocal-rank-fusion constant. 60 is the value from the original RRF
+// paper and the usual default; it flattens the head of each list enough that
+// a strong result in one ranking isn't outvoted by a mediocre one in both.
+const RRF_K = 60;
+
+export interface RetrievedChunk {
+  chunkId: string;
+  kind: SearchKind;
+  refId: string;
+  projectId: string | null;
+  title: string;
+  chunkIndex: number;
+  content: string;
+  sourceDate: string;
+  // Present when this passage was found by embedding similarity; absent when
+  // it came from keyword matching alone, where there's no comparable number.
+  similarity?: number;
+  matchedBy: "meaning" | "keyword" | "both";
+}
+
+function chunkId(kind: SearchKind, refId: string, index: number) {
+  return `${kind}:${refId}:${index}`;
+}
+
+const deleteChunkRows = db.prepare(`DELETE FROM chunks WHERE kind = ? AND ref_id = ?`);
+const deleteChunkSearchRows = db.prepare(
+  `DELETE FROM chunk_search WHERE chunk_id IN (SELECT id FROM chunks WHERE kind = ? AND ref_id = ?)`
+);
+const insertChunk = db.prepare(
+  `INSERT INTO chunks (id, kind, ref_id, project_id, title, chunk_index, content, source_date, model, vector, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`
+);
+const insertChunkSearch = db.prepare(`INSERT INTO chunk_search (chunk_id, content) VALUES (?, ?)`);
+
+export function removeChunks(kind: SearchKind, refId: string) {
+  // FTS5 rows are deleted first — the subquery that finds them reads the
+  // chunks table, which the next statement empties.
+  deleteChunkSearchRows.run(kind, refId);
+  deleteChunkRows.run(kind, refId);
+}
+
+// Moves an item's passages to a different Project alongside the item itself
+// (see moveConversation in src/lib/repo/conversations.ts). Project scoping is
+// what keeps retrieval from leaking one Project's material into another's
+// turns, so this has to travel with every other project_id update.
+export function retargetChunks(kind: SearchKind, refIds: string[], projectId: string) {
+  if (!refIds.length) return;
+  const placeholders = refIds.map(() => "?").join(",");
+  db.prepare(`UPDATE chunks SET project_id = ? WHERE kind = ? AND ref_id IN (${placeholders})`).run(
+    projectId,
+    kind,
+    ...refIds
+  );
+}
+
+// Rebuilds the passage rows for one item. Called from indexUpsert() so every
+// write path in Magi maintains the passage index without having to know it
+// exists. The rows themselves are written synchronously (they're the keyword
+// half of retrieval and must be queryable immediately); vectors are filled in
+// afterwards by queueChunkEmbeddings, which never blocks and never throws.
+export function reindexChunks(opts: {
+  kind: SearchKind;
+  refId: string;
+  projectId: string | null;
+  title: string;
+  content: string;
+  sourceDate?: string;
+  skipEmbedding?: boolean;
+}) {
+  const chunks = chunkText(opts.content);
+  const ts = nowIso();
+  const sourceDate = opts.sourceDate ?? ts;
+
+  const write = db.transaction(() => {
+    removeChunks(opts.kind, opts.refId);
+    for (const chunk of chunks) {
+      const id = chunkId(opts.kind, opts.refId, chunk.index);
+      insertChunk.run(
+        id,
+        opts.kind,
+        opts.refId,
+        opts.projectId,
+        opts.title,
+        chunk.index,
+        chunk.content,
+        sourceDate,
+        ts
+      );
+      insertChunkSearch.run(id, chunk.content);
+    }
+  });
+  write();
+
+  if (!opts.skipEmbedding && chunks.length) queueChunkEmbeddings(opts.kind, opts.refId);
+}
+
+// Same fire-and-forget posture as queueEmbedding() in searchIndex.ts: a
+// missing key, an unset embedding model, or a flaky request degrades
+// retrieval to its keyword half rather than breaking the save that triggered
+// it. Whatever this misses is closed by the Settings "Build index" backfill.
+function queueChunkEmbeddings(kind: SearchKind, refId: string) {
+  const modelId = getEmbeddingModelId();
+  if (!modelId || !getOpenRouterApiKey()) return;
+  const rows = db
+    .prepare(`SELECT id, title, content FROM chunks WHERE kind = ? AND ref_id = ? ORDER BY chunk_index`)
+    .all(kind, refId) as Array<{ id: string; title: string; content: string }>;
+  embedChunkRows(rows, modelId).catch((err) => {
+    console.error(`[retrieval] chunk embedding failed for ${kind}:${refId}`, err instanceof Error ? err.message : err);
+  });
+}
+
+const setChunkVector = db.prepare(`UPDATE chunks SET model = ?, vector = ? WHERE id = ?`);
+
+// Embeds a set of passages in batches and stores the vectors. Shared by the
+// per-write path above and the Settings backfill, so both agree on batch size,
+// on prefixing the title (a bare paragraph often doesn't say what it's about),
+// and on what a partial failure leaves behind.
+export async function embedChunkRows(
+  rows: Array<{ id: string; title: string; content: string }>,
+  modelId: string,
+  onProgress?: (done: number) => void
+) {
+  let done = 0;
+  for (let i = 0; i < rows.length; i += EMBED_BATCH) {
+    const batch = rows.slice(i, i + EMBED_BATCH);
+    const vectors = await embedTexts(
+      modelId,
+      batch.map((r) => `${r.title}\n\n${r.content}`)
+    );
+    const store = db.transaction(() => {
+      batch.forEach((row, j) => setChunkVector.run(modelId, packVector(vectors[j]), row.id));
+    });
+    store();
+    done += batch.length;
+    onProgress?.(done);
+  }
+}
+
+const CHUNK_BACKFILL_KEY = "chunk_index_built";
+
+// Passages are built on write, which covers everything saved from here on but
+// nothing already in the database when this shipped. Chunking is pure local
+// work — no network, no API key — so rather than making retrieval depend on
+// the user knowing to press "Build index" in Settings, the first turn after
+// upgrading builds the missing passages itself. One pass, then a settings flag
+// makes it a no-op forever. Vectors are a separate, optional step (they need a
+// key) and are left to the backfill; keyword retrieval works without them.
+export function ensureChunkIndex() {
+  if (getSetting(CHUNK_BACKFILL_KEY) === "1") return;
+  try {
+    const covered = new Set(
+      (db.prepare(`SELECT DISTINCT kind, ref_id FROM chunks`).all() as Array<{ kind: string; ref_id: string }>).map(
+        (r) => `${r.kind}:${r.ref_id}`
+      )
+    );
+    const rows = db
+      .prepare(`SELECT kind, ref_id, project_id, title, content, created_at FROM search_index`)
+      .all() as Array<{
+      kind: SearchKind;
+      ref_id: string;
+      project_id: string | null;
+      title: string;
+      content: string;
+      created_at: string;
+    }>;
+    for (const row of rows) {
+      if (!row.content.trim() || covered.has(`${row.kind}:${row.ref_id}`)) continue;
+      reindexChunks({
+        kind: row.kind,
+        refId: row.ref_id,
+        projectId: row.project_id,
+        title: row.title,
+        content: row.content,
+        sourceDate: row.created_at,
+        skipEmbedding: true,
+      });
+    }
+    setSetting(CHUNK_BACKFILL_KEY, "1");
+  } catch (err) {
+    // Leaving the flag unset means the next turn tries again. Retrieval falls
+    // back to whatever passages did get built, and the context builder falls
+    // back to whole documents if that's nothing — never a failed turn.
+    console.error("[retrieval] chunk backfill failed", err instanceof Error ? err.message : err);
+  }
+}
+
+export function countChunks(): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM chunks`).get() as { n: number }).n;
+}
+
+export function listUnembeddedChunks(modelId: string): Array<{ id: string; title: string; content: string }> {
+  return db
+    .prepare(`SELECT id, title, content FROM chunks WHERE model IS NOT ? OR vector IS NULL`)
+    .all(modelId) as Array<{ id: string; title: string; content: string }>;
+}
+
+// FTS5 ANDs bare terms together, which is right for an explicit search box and
+// wrong for retrieval against a whole sentence the user typed — one unusual
+// word would zero out the result set. The lexical half of hybrid retrieval
+// therefore ORs its terms and lets bm25 do the ranking.
+function ftsOrQuery(query: string): string | null {
+  const terms = query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => t.length > 2)
+    .slice(0, 24);
+  if (!terms.length) return null;
+  return terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" OR ");
+}
+
+function projectClause(projectId: string | string[] | undefined, column: string): { sql: string; params: string[] } {
+  if (Array.isArray(projectId)) {
+    if (!projectId.length) return { sql: "", params: [] };
+    return { sql: ` AND ${column} IN (${projectId.map(() => "?").join(",")})`, params: projectId };
+  }
+  if (projectId) return { sql: ` AND ${column} = ?`, params: [projectId] };
+  return { sql: "", params: [] };
+}
+
+interface ChunkRow {
+  id: string;
+  kind: SearchKind;
+  ref_id: string;
+  project_id: string | null;
+  title: string;
+  chunk_index: number;
+  content: string;
+  source_date: string;
+}
+
+function keywordChunks(query: string, opts: RetrieveOptions, limit: number): ChunkRow[] {
+  const match = ftsOrQuery(query);
+  if (!match) return [];
+  const project = projectClause(opts.projectId, "c.project_id");
+  const kinds = opts.kinds?.length ? ` AND c.kind IN (${opts.kinds.map(() => "?").join(",")})` : "";
+  return db
+    .prepare(
+      `SELECT c.id, c.kind, c.ref_id, c.project_id, c.title, c.chunk_index, c.content, c.source_date
+       FROM chunk_search
+       JOIN chunks c ON c.id = chunk_search.chunk_id
+       WHERE chunk_search MATCH ?${project.sql}${kinds}
+       ORDER BY bm25(chunk_search)
+       LIMIT ?`
+    )
+    .all(match, ...project.params, ...(opts.kinds ?? []), limit) as ChunkRow[];
+}
+
+async function semanticChunks(
+  query: string,
+  opts: RetrieveOptions,
+  limit: number
+): Promise<Array<ChunkRow & { similarity: number }>> {
+  const modelId = getEmbeddingModelId();
+  if (!modelId || !getOpenRouterApiKey()) return [];
+
+  const project = projectClause(opts.projectId, "project_id");
+  const kinds = opts.kinds?.length ? ` AND kind IN (${opts.kinds.map(() => "?").join(",")})` : "";
+
+  const [queryVector] = await embedTexts(modelId, [query]);
+  const q = new Float32Array(queryVector);
+
+  // Iterated, not collected: a personal archive is already tens of thousands
+  // of passages, and materializing every vector (a few KB apiece) to sort them
+  // would mean a nine-figure allocation per turn on a cross-Project search.
+  // Scoring as rows arrive keeps peak memory at `limit` candidates instead.
+  const cursor = db
+    .prepare(
+      `SELECT id, kind, ref_id, project_id, title, chunk_index, content, source_date, vector
+       FROM chunks
+       WHERE model = ? AND vector IS NOT NULL${project.sql}${kinds}`
+    )
+    .iterate(modelId, ...project.params, ...(opts.kinds ?? [])) as IterableIterator<ChunkRow & { vector: Buffer }>;
+
+  const best: Array<ChunkRow & { similarity: number }> = [];
+  for (const row of cursor) {
+    const similarity = cosineSimilarity(q, unpackVector(row.vector));
+    if (best.length === limit && similarity <= best[best.length - 1].similarity) continue;
+    // Insertion sort into a list capped at `limit` — cheap, since after the
+    // first few hundred rows almost everything fails the test above. The
+    // vector itself is deliberately not carried forward; it has done its job.
+    let at = best.length;
+    while (at > 0 && best[at - 1].similarity < similarity) at--;
+    best.splice(at, 0, {
+      id: row.id,
+      kind: row.kind,
+      ref_id: row.ref_id,
+      project_id: row.project_id,
+      title: row.title,
+      chunk_index: row.chunk_index,
+      content: row.content,
+      source_date: row.source_date,
+      similarity,
+    });
+    if (best.length > limit) best.pop();
+  }
+  return best;
+}
+
+export interface RetrieveOptions {
+  projectId?: string | string[];
+  kinds?: SearchKind[];
+  limit?: number;
+}
+
+// Hybrid passage retrieval: embedding similarity for "said the same thing in
+// different words", keyword bm25 for names, identifiers, and exact phrasing,
+// fused by reciprocal rank so neither has to be trusted alone. Either half
+// alone still works — with no embedding model configured this degrades to
+// passage-level keyword search rather than to nothing.
+export async function retrieveChunks(query: string, opts: RetrieveOptions = {}): Promise<RetrievedChunk[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const limit = opts.limit ?? DEFAULT_RETRIEVAL_LIMIT;
+  // Over-fetch from each half: the per-source cap and the fusion below both
+  // discard candidates, and the shortfall has to come from somewhere.
+  const pool = limit * 4;
+
+  const semantic = await semanticChunks(trimmed, opts, pool).catch((err) => {
+    console.error("[retrieval] semantic half failed", err instanceof Error ? err.message : err);
+    return [] as Array<ChunkRow & { similarity: number }>;
+  });
+  const keyword = keywordChunks(trimmed, opts, pool);
+
+  const scores = new Map<string, { row: ChunkRow; score: number; similarity?: number; semantic: boolean; lexical: boolean }>();
+  const add = (row: ChunkRow, rank: number, half: "semantic" | "lexical", similarity?: number) => {
+    const existing = scores.get(row.id);
+    const contribution = 1 / (RRF_K + rank + 1);
+    if (existing) {
+      existing.score += contribution;
+      if (similarity !== undefined) existing.similarity = similarity;
+      if (half === "semantic") existing.semantic = true;
+      else existing.lexical = true;
+      return;
+    }
+    scores.set(row.id, {
+      row,
+      score: contribution,
+      similarity,
+      semantic: half === "semantic",
+      lexical: half === "lexical",
+    });
+  };
+  semantic.forEach((r, i) => add(r, i, "semantic", r.similarity));
+  keyword.forEach((r, i) => add(r, i, "lexical"));
+
+  const ranked = [...scores.values()].sort((a, b) => b.score - a.score);
+
+  const perSource = new Map<string, number>();
+  const out: RetrievedChunk[] = [];
+  for (const entry of ranked) {
+    if (out.length >= limit) break;
+    const sourceKey = `${entry.row.kind}:${entry.row.ref_id}`;
+    const used = perSource.get(sourceKey) ?? 0;
+    if (used >= MAX_PER_SOURCE) continue;
+    perSource.set(sourceKey, used + 1);
+    out.push({
+      chunkId: entry.row.id,
+      kind: entry.row.kind,
+      refId: entry.row.ref_id,
+      projectId: entry.row.project_id,
+      title: entry.row.title,
+      chunkIndex: entry.row.chunk_index,
+      content: entry.row.content,
+      sourceDate: entry.row.source_date,
+      similarity: entry.similarity,
+      matchedBy: entry.semantic && entry.lexical ? "both" : entry.semantic ? "meaning" : "keyword",
+    });
+  }
+  return out;
+}

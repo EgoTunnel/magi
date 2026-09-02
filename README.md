@@ -45,6 +45,16 @@ local server.
   provider means writing one adapter and registering it.
 - **Full-text search** (SQLite FTS5) over Projects, conversations, memory, documents, artifacts, and
   Skills, plus an "Ask my archive" mode that hands matching material to a model to synthesize.
+- **Conversation lifecycle** (`src/lib/conversationWindow.ts`, `src/lib/episodeClose.ts`) — long
+  conversations send a recent verbatim window plus a rolling summary of older turns rather than the whole
+  history every time. Closing one drafts a summary, the decisions it settled, the questions it left open,
+  and proposed memory — all of it inert until kept by hand, which is what the `suggested` memory status
+  is for.
+- **Retrieval-first context assembly** (`src/lib/retrieval.ts`) — everything in a Project is also
+  indexed as ~1200-character passages. Each turn retrieves the passages that bear on the message
+  actually being asked, fusing embedding similarity with keyword bm25, rather than injecting whichever
+  documents happen to come first until a character budget runs out. The Context panel shows exactly
+  which passages were used, where each came from, and when it was written.
 - **Tool layer** (`src/lib/tools/`) — the model requests a tool (`search_archive`, `calculator`);
   Magi's tool layer is what actually executes it, never the model itself. Cross-Project search is a
   user-controlled permission, not an assumption.

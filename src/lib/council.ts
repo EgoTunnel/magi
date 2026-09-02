@@ -1,15 +1,63 @@
 import { getModel, modelForRole, reasoningEffortForRole } from "@/lib/models/registry";
 import type { ModelRoleId, TokenUsage, ToolCallRecord } from "@/lib/models/types";
-import type { CouncilMode, CouncilRole, CouncilTranscriptEntry } from "@/lib/repo/councils";
+import type { CouncilMode, CouncilRole, CouncilTranscriptEntry, RunAttachment } from "@/lib/repo/councils";
 import { updateCouncilRun } from "@/lib/repo/councils";
 import { getProject } from "@/lib/repo/projects";
+import { listDocuments } from "@/lib/repo/documents";
 import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
+
+// Same budget contextBuilder.ts uses for Project documents in a normal chat
+// turn — keeps a Council role's system prompt from growing unbounded when a
+// Project has a lot of documents.
+const DOCUMENT_BUDGET = 12000;
+
+// Every Council member's only reliable path to "the material" used to be
+// search_archive — a keyword-FTS tool that ANDs every search term and
+// returns snippets, not full text — with no explanation of what it is or
+// that Project material might already be available. This is what actually
+// gives every role, every stage, the real thing to look at.
+function buildContextBlock(projectId: string | null | undefined, attachments: RunAttachment[]): string {
+  const parts: string[] = [];
+  const project = projectId ? getProject(projectId) : null;
+  if (project) {
+    parts.push(`\n\n## Project — "${project.name}"${project.purpose ? `: ${project.purpose}` : ""}`);
+    if (project.instructions) parts.push(`Project instructions: ${project.instructions}`);
+    const documents = listDocuments(project.id);
+    let budget = DOCUMENT_BUDGET;
+    const blocks: string[] = [];
+    for (const doc of documents) {
+      if (budget <= 0) break;
+      const slice = doc.content.slice(0, budget);
+      blocks.push(`### ${doc.title}\n${slice}${slice.length < doc.content.length ? "\n[…truncated…]" : ""}`);
+      budget -= slice.length;
+    }
+    if (blocks.length) parts.push(`\n## Project documents (already retrieved — read directly)\n${blocks.join("\n\n")}`);
+  }
+  if (attachments.length) {
+    parts.push(
+      `\n## Attached to this question (already retrieved — read directly)\n${attachments
+        .map((a) => `### ${a.filename}\n${a.extractedText}`)
+        .join("\n\n")}`
+    );
+  }
+  return parts.join("\n");
+}
+
+const COUNCIL_TOOL_GUIDANCE =
+  "You are one member of a Magi Council. Any Project documents or files attached to this question " +
+  "are already included below, in full — this is not a summary or a pointer to go look something up. " +
+  "Do NOT call search_archive for anything already given to you below; it is already complete and " +
+  "correct, and searching for it only wastes your limited tool calls. search_archive exists only for " +
+  "material NOT included below — prior conversations, established memory, or documents in other " +
+  "Projects. Ground your answer in the material actually given to you or actually returned by a tool " +
+  "call — say plainly when something is uncertain or unsupported rather than filling the gap with a " +
+  "plausible-sounding guess.";
 
 async function completeAs(
   role: CouncilRole,
   prompt: string,
-  opts: { withTools?: boolean; projectId?: string | null; runId: string }
+  opts: { withTools?: boolean; projectId?: string | null; runId: string; contextBlock: string }
 ): Promise<{ content: string; modelId: string; toolCalls: ToolCallRecord[] }> {
   const roleId = (role.modelRole as ModelRoleId) ?? "default";
   const modelId = modelForRole(roleId);
@@ -19,11 +67,11 @@ async function completeAs(
   }
   const toolLog: ToolCallRecord[] = [];
   const usage: TokenUsage[] = [];
-  const tools = opts.withTools ? resolveTools() : undefined;
+  const tools = opts.withTools ? resolveTools({ allowedNames: role.allowedTools }) : undefined;
   const allowedToolNames = tools ? new Set(tools.map((t) => t.name)) : undefined;
   const content = await resolved.provider.complete({
     model: modelId,
-    system: role.systemPrompt,
+    system: `${role.systemPrompt}\n\n${COUNCIL_TOOL_GUIDANCE}${opts.contextBlock}`,
     messages: [{ role: "user", content: prompt }],
     maxTokens: 3000,
     tools,
@@ -67,20 +115,21 @@ interface PipelineOpts {
   question: string;
   roles: CouncilRole[];
   projectId?: string | null;
-  projectContext: string;
+  contextBlock: string;
 }
 
 async function runIndependentAnalysis(opts: PipelineOpts) {
   const transcript: CouncilTranscriptEntry[] = [];
 
   // Stage 1: independent analysis, in parallel — each role has not seen the others yet.
-  const analysisPrompt = `Question put to the Magi Council:\n\n${opts.question}${opts.projectContext}\n\nGive your independent analysis. Be concise but substantive.`;
+  const analysisPrompt = `Question put to the Magi Council:\n\n${opts.question}\n\nGive your independent analysis. Be concise but substantive.`;
   const analyses = await Promise.all(
     opts.roles.map(async (role) => {
       const { content, modelId, toolCalls } = await completeAs(role, analysisPrompt, {
         withTools: true,
         projectId: opts.projectId,
         runId: opts.runId,
+        contextBlock: opts.contextBlock,
       });
       return { role, modelId, content, toolCalls };
     })
@@ -110,6 +159,7 @@ async function runIndependentAnalysis(opts: PipelineOpts) {
       const { content, modelId } = await completeAs(a.role, critiquePrompt(a), {
         projectId: opts.projectId,
         runId: opts.runId,
+        contextBlock: opts.contextBlock,
       });
       return { role: a.role, modelId, content };
     })
@@ -127,10 +177,11 @@ async function runIndependentAnalysis(opts: PipelineOpts) {
       "You are the Synthesizer for a Magi Council. Reconcile the Council's analyses and critiques into a final answer. Do not silently resolve genuine disagreement — surface it. Structure your response with exactly these labeled sections: 'Consensus: <Strong|Moderate|Weak|None>', 'Key disagreement: <one paragraph, or \"None\" if the Council agreed>', and 'Synthesis: <the final answer>'.",
   };
   const allWork = [...analyses.map((a) => `${a.role.name} (analysis):\n${a.content}`), ...critiques.map((c) => `${c.role.name} (critique):\n${c.content}`)].join("\n\n");
-  const synthesisPrompt = `Question: ${opts.question}${opts.projectContext}\n\nFull Council record:\n\n${allWork}`;
+  const synthesisPrompt = `Question: ${opts.question}\n\nFull Council record:\n\n${allWork}`;
   const { content: synthesisRaw, modelId: synthModel } = await completeAs(synthesisRole, synthesisPrompt, {
     projectId: opts.projectId,
     runId: opts.runId,
+    contextBlock: opts.contextBlock,
   });
   transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
 
@@ -150,10 +201,10 @@ async function runDebate(opts: PipelineOpts) {
 
   // Round 1: opening — both sides state their position independently.
   const openingPrompt = (own: CouncilRole) =>
-    `Question put to the Magi Council, in Debate mode:\n\n${opts.question}${opts.projectContext}\n\nYou are arguing one side of this question as ${own.name}. State your position clearly and make your strongest case. Be concise but substantive.`;
+    `Question put to the Magi Council, in Debate mode:\n\n${opts.question}\n\nYou are arguing one side of this question as ${own.name}. State your position clearly and make your strongest case. Be concise but substantive.`;
   const [openingA, openingB] = await Promise.all([
-    completeAs(sideA, openingPrompt(sideA), { withTools: true, projectId: opts.projectId, runId: opts.runId }),
-    completeAs(sideB, openingPrompt(sideB), { withTools: true, projectId: opts.projectId, runId: opts.runId }),
+    completeAs(sideA, openingPrompt(sideA), { withTools: true, projectId: opts.projectId, runId: opts.runId, contextBlock: opts.contextBlock }),
+    completeAs(sideB, openingPrompt(sideB), { withTools: true, projectId: opts.projectId, runId: opts.runId, contextBlock: opts.contextBlock }),
   ]);
   transcript.push(
     { role: sideA.name, modelRole: sideA.modelRole, modelId: openingA.modelId, stage: "opening", content: openingA.content, toolCalls: openingA.toolCalls },
@@ -167,8 +218,8 @@ async function runDebate(opts: PipelineOpts) {
   const rebuttalPrompt = (own: CouncilRole, ownOpening: string, opponent: CouncilRole, opponentOpening: string) =>
     `Question: ${opts.question}\n\nYour opening position:\n${ownOpening}\n\n${opponent.name}'s opening position:\n${opponentOpening}\n\nRespond directly to ${opponent.name}'s argument. Defend your position and challenge theirs where it's weak. Engage with what they actually said, not a generic restatement.`;
   const [rebuttalA, rebuttalB] = await Promise.all([
-    completeAs(sideA, rebuttalPrompt(sideA, openingA.content, sideB, openingB.content), { projectId: opts.projectId, runId: opts.runId }),
-    completeAs(sideB, rebuttalPrompt(sideB, openingB.content, sideA, openingA.content), { projectId: opts.projectId, runId: opts.runId }),
+    completeAs(sideA, rebuttalPrompt(sideA, openingA.content, sideB, openingB.content), { projectId: opts.projectId, runId: opts.runId, contextBlock: opts.contextBlock }),
+    completeAs(sideB, rebuttalPrompt(sideB, openingB.content, sideA, openingA.content), { projectId: opts.projectId, runId: opts.runId, contextBlock: opts.contextBlock }),
   ]);
   transcript.push(
     { role: sideA.name, modelRole: sideA.modelRole, modelId: rebuttalA.modelId, stage: "rebuttal", content: rebuttalA.content },
@@ -191,10 +242,11 @@ async function runDebate(opts: PipelineOpts) {
     `${sideA.name} (rebuttal):\n${rebuttalA.content}`,
     `${sideB.name} (rebuttal):\n${rebuttalB.content}`,
   ].join("\n\n");
-  const synthesisPrompt = `Question: ${opts.question}${opts.projectContext}\n\nFull debate record:\n\n${record}`;
+  const synthesisPrompt = `Question: ${opts.question}\n\nFull debate record:\n\n${record}`;
   const { content: synthesisRaw, modelId: synthModel } = await completeAs(synthesisRole, synthesisPrompt, {
     projectId: opts.projectId,
     runId: opts.runId,
+    contextBlock: opts.contextBlock,
   });
   transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
 
@@ -211,8 +263,8 @@ async function runRedTeam(opts: PipelineOpts) {
   const transcript: CouncilTranscriptEntry[] = [];
 
   // Stage 1: proposal.
-  const proposalPrompt = `Question put to the Magi Council:\n\n${opts.question}${opts.projectContext}\n\nGive your answer. Be concise but substantive — this will be attacked, so make your actual best case, not a hedge.`;
-  const proposal = await completeAs(proposer, proposalPrompt, { withTools: true, projectId: opts.projectId, runId: opts.runId });
+  const proposalPrompt = `Question put to the Magi Council:\n\n${opts.question}\n\nGive your answer. Be concise but substantive — this will be attacked, so make your actual best case, not a hedge.`;
+  const proposal = await completeAs(proposer, proposalPrompt, { withTools: true, projectId: opts.projectId, runId: opts.runId, contextBlock: opts.contextBlock });
   transcript.push({ role: proposer.name, modelRole: proposer.modelRole, modelId: proposal.modelId, stage: "proposal", content: proposal.content, toolCalls: proposal.toolCalls });
   updateCouncilRun(opts.runId, { transcript, status: "running" });
 
@@ -225,6 +277,7 @@ async function runRedTeam(opts: PipelineOpts) {
         withTools: true,
         projectId: opts.projectId,
         runId: opts.runId,
+        contextBlock: opts.contextBlock,
       });
       return { role, modelId, content, toolCalls };
     })
@@ -237,7 +290,7 @@ async function runRedTeam(opts: PipelineOpts) {
   // Stage 3: defense — the proposer responds to the consolidated attacks.
   const attacksText = attacks.map((a) => `${a.role.name}:\n${a.content}`).join("\n\n");
   const defensePrompt = `Question: ${opts.question}\n\nYour original proposal:\n${proposal.content}\n\nRed Team attacks:\n\n${attacksText}\n\nRespond to these attacks directly. Concede points that land, defend where the attacks miss, and revise your position where warranted. Be honest, not defensive for its own sake.`;
-  const defense = await completeAs(proposer, defensePrompt, { projectId: opts.projectId, runId: opts.runId });
+  const defense = await completeAs(proposer, defensePrompt, { projectId: opts.projectId, runId: opts.runId, contextBlock: opts.contextBlock });
   transcript.push({ role: proposer.name, modelRole: proposer.modelRole, modelId: defense.modelId, stage: "defense", content: defense.content });
   updateCouncilRun(opts.runId, { transcript, status: "running" });
 
@@ -254,10 +307,11 @@ async function runRedTeam(opts: PipelineOpts) {
     ...attacks.map((a) => `${a.role.name} (attack):\n${a.content}`),
     `${proposer.name} (defense):\n${defense.content}`,
   ].join("\n\n");
-  const synthesisPrompt = `Question: ${opts.question}${opts.projectContext}\n\nFull Red Team record:\n\n${fullRecord}`;
+  const synthesisPrompt = `Question: ${opts.question}\n\nFull Red Team record:\n\n${fullRecord}`;
   const { content: synthesisRaw, modelId: synthModel } = await completeAs(synthesisRole, synthesisPrompt, {
     projectId: opts.projectId,
     runId: opts.runId,
+    contextBlock: opts.contextBlock,
   });
   transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
 
@@ -271,14 +325,10 @@ export async function runCouncilDeliberation(opts: {
   roles: CouncilRole[];
   projectId?: string | null;
   mode?: CouncilMode;
+  attachments?: RunAttachment[];
 }) {
-  const project = opts.projectId ? getProject(opts.projectId) : null;
-  const projectContext = project
-    ? `\n\nProject context — "${project.name}"${project.purpose ? `: ${project.purpose}` : ""}${
-        project.instructions ? `\nProject instructions: ${project.instructions}` : ""
-      }`
-    : "";
-  const pipelineOpts: PipelineOpts = { ...opts, projectContext };
+  const contextBlock = buildContextBlock(opts.projectId, opts.attachments ?? []);
+  const pipelineOpts: PipelineOpts = { ...opts, contextBlock };
 
   try {
     const mode = opts.mode ?? "independent";

@@ -70,19 +70,41 @@ export async function resolveTurnModel(
 // system prompt, streaming, and persisting the result lives here so the two
 // callers can't drift. Model selection itself already happened in
 // resolveTurnModel() above.
-export function runChatTurn(opts: {
+export async function runChatTurn(opts: {
   conversationId: string;
   projectId: string;
   history: ModelMessage[];
   skillId: string | null;
   turnModel: ResolvedTurnModel;
   signal: AbortSignal;
-}): Response {
+  // What this turn is answering, used to retrieve the Project material that
+  // actually bears on it. Defaults to the last user message in history, which
+  // is the right answer for both callers (chat and regenerate).
+  query?: string;
+  // The rolling summary standing in for turns no longer in `history`, produced
+  // by buildHistoryWindow() in the caller — which is where the raw Message
+  // rows, and so the message ids that fold tracks, are available.
+  conversationSummary?: { text: string; messageCount: number } | null;
+  // Spend from generating that summary, recorded alongside this turn's own.
+  summaryUsage?: { usage: TokenUsage[]; modelId: string | null; providerId: "anthropic" | "openrouter" | null };
+}): Promise<Response> {
   const { conversationId, projectId, turnModel } = opts;
   const { modelRole, modelId, resolved, autoSelectedRole, classifierUsage, classifierModelId, classifierProviderId } =
     turnModel;
 
-  const { system, provenance } = buildSystemPrompt({ projectId, skillId: opts.skillId });
+  const lastUser = [...opts.history].reverse().find((m) => m.role === "user");
+  const query =
+    opts.query ??
+    (typeof lastUser?.content === "string"
+      ? lastUser.content
+      : (lastUser?.content?.find((p) => p.type === "text")?.text ?? ""));
+
+  const { system, provenance } = await buildSystemPrompt({
+    projectId,
+    skillId: opts.skillId,
+    query,
+    conversationSummary: opts.conversationSummary,
+  });
 
   const encoder = new TextEncoder();
   let full = "";
@@ -100,6 +122,18 @@ export function runChatTurn(opts: {
       model: classifierModelId,
       role: "classifier",
       usage: classifierUsage,
+    });
+  }
+
+  if (opts.summaryUsage?.usage.length && opts.summaryUsage.modelId && opts.summaryUsage.providerId) {
+    recordUsage({
+      projectId,
+      source: "conversation",
+      sourceId: conversationId,
+      provider: opts.summaryUsage.providerId,
+      model: opts.summaryUsage.modelId,
+      role: "summarizer",
+      usage: opts.summaryUsage.usage,
     });
   }
 

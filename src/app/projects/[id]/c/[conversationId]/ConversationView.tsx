@@ -11,6 +11,7 @@ import { arrayBufferToBase64 } from "@/lib/clientFiles";
 import { ArtifactViewerButton } from "@/components/ArtifactHistory";
 import { MagiSpinner } from "@/components/MagiSpinner";
 import { MoveConversationControl } from "@/components/MoveConversationControl";
+import { EpisodeClosePanel, type ClosureDraft } from "@/components/EpisodeClosePanel";
 
 interface Message {
   id: string;
@@ -63,6 +64,13 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [artifactFiles, setArtifactFiles] = useState<ArtifactFile[]>([]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [closureDraft, setClosureDraft] = useState<ClosureDraft | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [closeError, setCloseError] = useState<string | null>(null);
+  // Set when this page was opened by a link to a specific message — from the
+  // Context panel's retrieved passages, or from a memory item's source.
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastMessageRef = useRef<HTMLDivElement>(null);
   const attachFileInputRef = useRef<HTMLInputElement>(null);
@@ -92,18 +100,48 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     setProjectName(projData.project?.name ?? "");
   }
 
+  // An existing draft is fetched, never re-drafted: reopening a conversation
+  // must not silently spend on a fresh pass over it.
+  async function loadClosure() {
+    const res = await fetch(`/api/conversations/${conversationId}/close`);
+    setClosureDraft((await res.json()).draft ?? null);
+  }
+
+  async function draftClosure() {
+    setDrafting(true);
+    setCloseError(null);
+    const res = await fetch(`/api/conversations/${conversationId}/close`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) setCloseError(data.message ?? data.error ?? "Could not close this episode.");
+    else setClosureDraft(data.draft);
+    setDrafting(false);
+  }
+
+  async function openClose() {
+    setCloseOpen(true);
+    await loadClosure();
+  }
+
   useEffect(() => {
     initialScrollDoneRef.current = false;
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  // Landing on a conversation: jump straight to its latest messages, once.
+  // Landing on a conversation: jump straight to its latest messages, once —
+  // unless the URL names a specific message, in which case go there instead
+  // and mark it, so a link from the Context panel or a memory item's source
+  // lands on the thing it was pointing at rather than on the tail.
   useEffect(() => {
-    if (!initialScrollDoneRef.current && messages.length > 0 && scrollRef.current) {
+    if (initialScrollDoneRef.current || messages.length === 0 || !scrollRef.current) return;
+    const target = window.location.hash.slice(1);
+    if (target && messages.some((m) => m.id === target)) {
+      document.getElementById(target)?.scrollIntoView({ block: "center" });
+      setHighlightedMessageId(target);
+    } else {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight });
-      initialScrollDoneRef.current = true;
     }
+    initialScrollDoneRef.current = true;
   }, [messages]);
 
   // A new turn starting: scroll so the message that was just sent lands at
@@ -298,11 +336,20 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     }
   }
 
-  async function rememberMessage(content: string, scope: "global" | "project") {
+  async function rememberMessage(content: string, scope: "global" | "project", messageId: string) {
     await fetch("/api/memory", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope, projectId: scope === "project" ? projectId : undefined, content, source: conversationId }),
+      body: JSON.stringify({
+        scope,
+        projectId: scope === "project" ? projectId : undefined,
+        content,
+        source: "conversation",
+        // Claim-level provenance: the exact message this was promoted from, so
+        // the Memory page can link straight back to it.
+        sourceMessageId: messageId,
+        sourceConversationId: conversationId,
+      }),
     });
   }
 
@@ -349,6 +396,13 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
             onMoved={(newProjectId) => router.push(`/projects/${newProjectId}/c/${conversationId}`)}
           />
           <button
+            onClick={() => (closeOpen ? setCloseOpen(false) : openClose())}
+            disabled={messages.length === 0}
+            className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors disabled:opacity-40"
+          >
+            Close episode
+          </button>
+          <button
             onClick={() => setContextOpen((v) => !v)}
             className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors"
           >
@@ -367,7 +421,18 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                 </p>
               )}
               {messages.map((m, i) => (
-                <div key={m.id} ref={i === messages.length - 1 ? lastMessageRef : undefined}>
+                <div
+                  key={m.id}
+                  id={m.id}
+                  ref={i === messages.length - 1 ? lastMessageRef : undefined}
+                  // The scroll-margin keeps a message linked to by fragment
+                  // from landing flush against the top edge of the pane.
+                  className={`scroll-mt-6 ${
+                    highlightedMessageId === m.id
+                      ? "-mx-3 rounded-[4px] border-l-2 border-[var(--color-accent)] bg-[var(--color-surface)] px-3 py-2"
+                      : ""
+                  }`}
+                >
                   <MessageBlock
                     message={m}
                     files={artifactFiles.filter((a) => a.message_id === m.id)}
@@ -401,6 +466,16 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                     </Link>
                   ) : null}
                 </div>
+              )}
+              {closeOpen && (
+                <EpisodeClosePanel
+                  draft={closureDraft}
+                  drafting={drafting}
+                  error={closeError}
+                  onDraft={draftClosure}
+                  onChanged={loadClosure}
+                  onDismiss={() => setCloseOpen(false)}
+                />
               )}
             </div>
           </div>
@@ -438,9 +513,57 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                 <div>{provenance.usedBrandGuide ? "Brand Guide applied" : "No Brand Guide set"}</div>
                 <div>{provenance.globalMemoryCount} global memory item(s)</div>
                 <div>{provenance.projectMemoryCount} Project memory item(s)</div>
+                {provenance.summarizedMessages ? (
+                  <div>
+                    <div className="text-[var(--color-text-faint)]">Conversation history</div>
+                    <div>
+                      Earliest {provenance.summarizedMessages} message(s) sent as a rolling summary; the rest
+                      verbatim.
+                    </div>
+                  </div>
+                ) : null}
+                {provenance.retrieved && provenance.retrieved.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-[var(--color-text-faint)]">
+                      Retrieved for this message ({provenance.retrieved.length})
+                    </div>
+                    <ul className="flex flex-col gap-2">
+                      {provenance.retrieved.map((p, i) => (
+                        <li key={p.chunkId}>
+                          <div className="text-[var(--color-text)]">
+                            <span className="font-technical text-[11px] text-[var(--color-text-faint)]">[P{i + 1}]</span>{" "}
+                            {p.href ? (
+                              <Link
+                                href={p.href}
+                                className="underline decoration-[var(--color-border-strong)] underline-offset-2 transition-colors hover:text-[var(--color-accent)] hover:decoration-[var(--color-accent)]"
+                              >
+                                {p.title}
+                              </Link>
+                            ) : (
+                              p.title
+                            )}
+                          </div>
+                          <div className="font-technical text-[10.5px] uppercase tracking-[0.08em] text-[var(--color-text-faint)]">
+                            {p.kind.replace("_", " ")} · {p.sourceDate.slice(0, 10)} · {p.matchedBy}
+                            {p.similarity !== undefined ? ` · ${p.similarity.toFixed(2)}` : ""}
+                            {p.fromAnotherProject ? " · related Project" : ""}
+                          </div>
+                          {p.sourceContext && (
+                            <div className="text-[11px] text-[var(--color-text-faint)]">in {p.sourceContext}</div>
+                          )}
+                          <div className="mt-0.5 text-[11.5px] leading-snug text-[var(--color-text-faint)]">
+                            {p.preview}…
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {provenance.documentsUsed.length > 0 && (
                   <div>
-                    <div className="mb-1 text-[var(--color-text-faint)]">Documents</div>
+                    <div className="mb-1 text-[var(--color-text-faint)]">
+                      Documents <span className="text-[11px]">(in list order — nothing indexed to retrieve from yet)</span>
+                    </div>
                     <ul className="flex flex-col gap-1">
                       {provenance.documentsUsed.map((d) => (
                         <li key={d.id}>
@@ -601,7 +724,7 @@ function MessageBlock({
   streaming?: boolean;
   toolStatus?: string | null;
   files?: ArtifactFile[];
-  onRemember?: (content: string, scope: "global" | "project") => void;
+  onRemember?: (content: string, scope: "global" | "project", messageId: string) => void;
   onStartSaveArtifact?: (messageId: string) => void;
   savingArtifact?: boolean;
   artifactTitleDraft?: string;
@@ -666,13 +789,13 @@ function MessageBlock({
       {!isUser && !streaming && onRemember && (
         <div className="mt-2 flex gap-3 opacity-0 transition-opacity group-hover:opacity-100">
           <button
-            onClick={() => onRemember(message.content, "project")}
+            onClick={() => onRemember(message.content, "project", message.id)}
             className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
           >
             Remember in Project
           </button>
           <button
-            onClick={() => onRemember(message.content, "global")}
+            onClick={() => onRemember(message.content, "global", message.id)}
             className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
           >
             Remember globally

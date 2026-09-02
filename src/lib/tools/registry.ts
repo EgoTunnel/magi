@@ -1,5 +1,6 @@
 import type { ToolSpec } from "@/lib/models/types";
 import { search, semanticSearch, type SearchResult } from "@/lib/searchIndex";
+import { ensureChunkIndex, retrieveChunks } from "@/lib/retrieval";
 import { getCrossProjectSearchEnabled, getDisabledTools, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
 import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
@@ -28,7 +29,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "search_archive",
     description:
-      "Search Magi's archive of past conversations, Projects, memory, documents, and artifacts by keyword. Use this before claiming you don't know something the user may have already told Magi, or to find prior work relevant to the current question. Defaults to the current Project ONLY. If the question or objective names a different Project, references work that plausibly lives elsewhere, or asks you to search \"across Projects\" — set scope to \"all\" immediately; don't assume the current Project's own results are all there is just because a same-scoped search came back empty or thin. Say so when you use cross-Project scope.",
+      "Search Magi's archive of past conversations, Projects, memory, documents, and artifacts. Matches on meaning as well as exact wording, and returns real passages of the matching material, not one-line snippets — so a natural-language question works better here than a bag of keywords. Use this before claiming you don't know something the user may have already told Magi, or to find prior work relevant to the current question. Defaults to the current Project ONLY. If the question or objective names a different Project, references work that plausibly lives elsewhere, or asks you to search \"across Projects\" — set scope to \"all\" immediately; don't assume the current Project's own results are all there is just because a same-scoped search came back empty or thin. Say so when you use cross-Project scope.",
     inputSchema: {
       type: "object",
       properties: {
@@ -204,13 +205,28 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
       // every ancestor it inherits context from, and every descendant a
       // meta-project's members live in — not just the one row's own id.
       const scopeProjectId = crossProjectAllowed ? undefined : ctx.projectId ? familyProjectIds(ctx.projectId) : undefined;
+
+      // Passage retrieval: real extracts of the matching material rather than
+      // a 24-token keyword window around the hit, and hybrid, so a question
+      // phrased differently than the archive's own wording still lands. This
+      // is the same machinery context assembly uses (src/lib/retrieval.ts).
+      ensureChunkIndex();
+      const passages = await retrieveChunks(query, { projectId: scopeProjectId, limit: 8 }).catch(() => []);
+      if (passages.length) {
+        return passages
+          .map((p, i) => {
+            const elsewhere = p.projectId && p.projectId !== ctx.projectId ? ", from another Project" : "";
+            const kind = p.kind === "style_guide" ? "style guide" : p.kind;
+            return `[${i + 1}] (${kind}${elsewhere}, ${p.sourceDate.slice(0, 10)}) ${p.title}\n${p.content}`;
+          })
+          .join("\n\n");
+      }
+
+      // Nothing in the passage index matched — fall back to the whole-item
+      // keyword index, which still covers rows too short to have produced a
+      // passage (a conversation title, a one-line memory item).
       let results: SearchResult[] = search(query, { projectId: scopeProjectId, limit: 10 });
       let matchedByMeaning = false;
-      // Keyword FTS ANDs every term of the query together — one word phrased
-      // differently than the archive's own wording zeroes out the whole
-      // result set. Fall back to embedding similarity (if an embedding model
-      // is configured) before reporting a dead end, since a paraphrased
-      // query is exactly the case this catches and keyword search can't.
       if (results.length === 0 && getEmbeddingModelId() && getOpenRouterApiKey()) {
         try {
           const semanticResults = await semanticSearch(query, { projectId: scopeProjectId, limit: 10 });

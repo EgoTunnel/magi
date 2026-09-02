@@ -1,6 +1,7 @@
 import { db, nowIso } from "@/lib/db";
 import { getSetting, setSetting, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
 import { storeEmbedding, type SearchKind } from "@/lib/searchIndex";
+import { embedChunkRows, ensureChunkIndex, listUnembeddedChunks } from "@/lib/retrieval";
 
 const STATUS_KEY = "embedding_backfill_status";
 const BATCH_SIZE = 5;
@@ -40,6 +41,11 @@ export async function runEmbeddingBackfill() {
   }
   if (getBackfillStatus().status === "running") return;
 
+  // Passage rows first, and locally — they need no API key, and everything
+  // below embeds them. This is normally already done (the context builder
+  // calls it on the first turn after upgrading), in which case it's a no-op.
+  ensureChunkIndex();
+
   // search_index is already a complete, denormalized mirror of every
   // indexable entity's kind/ref_id/project_id/title/content — reusing it
   // here avoids re-querying nine separate repo tables.
@@ -54,7 +60,14 @@ export async function runEmbeddingBackfill() {
   );
   const pending = rows.filter((r) => !already.has(`${r.kind}:${r.ref_id}`));
 
-  setBackfillStatus({ status: "running", processed: 0, total: pending.length, model: modelId, updatedAt: nowIso() });
+  // Passages are the second half of the job — the one retrieval-first context
+  // assembly actually reads (src/lib/retrieval.ts). Both halves are counted
+  // into one total so the Settings progress bar means "how much of the index
+  // is built", not "how far through the first of two invisible phases."
+  const pendingChunks = listUnembeddedChunks(modelId);
+  const total = pending.length + pendingChunks.length;
+
+  setBackfillStatus({ status: "running", processed: 0, total, model: modelId, updatedAt: nowIso() });
 
   let processed = 0;
   try {
@@ -73,14 +86,22 @@ export async function runEmbeddingBackfill() {
         )
       );
       processed += batch.length;
-      setBackfillStatus({ status: "running", processed, total: pending.length, model: modelId, updatedAt: nowIso() });
+      setBackfillStatus({ status: "running", processed, total, model: modelId, updatedAt: nowIso() });
     }
-    setBackfillStatus({ status: "complete", processed, total: pending.length, model: modelId, updatedAt: nowIso() });
+
+    const itemsDone = processed;
+    await embedChunkRows(pendingChunks, modelId, (done) => {
+      processed = itemsDone + done;
+      setBackfillStatus({ status: "running", processed, total, model: modelId, updatedAt: nowIso() });
+    });
+    processed = total;
+
+    setBackfillStatus({ status: "complete", processed, total, model: modelId, updatedAt: nowIso() });
   } catch (err) {
     setBackfillStatus({
       status: "error",
       processed,
-      total: pending.length,
+      total,
       model: modelId,
       error: err instanceof Error ? err.message : "Backfill failed",
       updatedAt: nowIso(),

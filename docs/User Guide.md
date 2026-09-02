@@ -99,13 +99,44 @@ Open one from inside a Project. Two dropdowns sit above the message box:
 
 Type and send. Responses stream in. The model can search your archive or do arithmetic mid-answer —
 click **Context** in the top right to see exactly what a given reply drew on: which Project
-instructions applied, how much memory and which documents were in play, which tools it actually
-called, and — on an Auto turn — which role got picked.
+instructions applied, how much memory was in play, which tools it actually called, and — on an Auto
+turn — which role got picked.
+
+The **Retrieved for this message** list is the important part. Magi doesn't hand the model the front
+of every document and hope the answer is in there; it indexes everything in the Project as passages
+and, for each message you send, pulls the passages that actually bear on what you asked — from
+documents, past conversations, artifacts, and memory alike. Each one shows its source, its date, and
+whether it matched on meaning, on wording, or both, and the reply cites them as [P1], [P2]. A Project
+with a million characters of material can therefore answer from the relevant thousand, rather than
+from whichever document you happened to add first.
+
+Every passage title there is a link. Click one and you land on the exact message, document, or artifact
+it was taken from — the message it points at is marked when you arrive. "Where did that come from?" has
+an answer you can follow.
+
+Meaning-matching needs an embedding model (Settings → Search index). Without one, retrieval still
+works on wording alone — it just won't catch a question phrased differently than your notes were.
+
+**Long conversations.** Past a certain length Magi stops sending every message every turn. The most recent
+turns go as they are; everything older is replaced by a rolling summary it keeps up to date as you go. The
+Context panel says when this is happening and how many messages it covers. Short conversations are
+unaffected, and nothing is deleted — the full transcript stays on the page and in your archive.
+
+**Closing an episode.** A conversation is an episode, and episodes end. **Close episode** in the top right
+reads the whole thing and drafts four things: a summary, the decisions it settled, the questions it left
+open, and what might be worth remembering — separated into facts about this Project and facts about you.
+
+Nothing it proposes is in effect. Suggested memory is never used in a reply, and proposed decisions and
+questions don't reach the Project, until you press **Keep** on them. Discard the rest with the bin icon.
+Whatever you don't get to stays where it is — suggestions collect on the Memory page under **Suggested**,
+so nothing is lost by closing the panel. You can draft again at any point; redrafting replaces what you
+haven't kept and leaves what you have.
 
 Hover an assistant message for three actions:
 
 - **Remember in Project** / **Remember globally** — promotes that message into memory. Nothing
-  becomes memory on its own; you decide.
+  becomes memory on its own; you decide. Magi records which message it came from, so the Memory page can
+  link you back to it later.
 - **Save as artifact** — keeps the message as a standalone, versionable artifact.
 
 ---

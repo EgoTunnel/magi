@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteMessage, getConversation, listMessages } from "@/lib/repo/conversations";
 import { resolveTurnModel, runChatTurn } from "@/lib/chatTurn";
+import { buildHistoryWindow } from "@/lib/conversationWindow";
 import type { ModelMessage, ModelRoleId } from "@/lib/models/types";
 
 function textOf(content: ModelMessage["content"]): string {
@@ -29,10 +30,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     );
   }
 
-  const history: ModelMessage[] = messages
-    .slice(0, -1)
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m): ModelMessage => ({ role: m.role as "user" | "assistant", content: m.content }));
+  const windowed = await buildHistoryWindow(id, messages.slice(0, -1));
+  const history = windowed.history;
 
   const lastUser = [...history].reverse().find((m) => m.role === "user");
   const turnModel = await resolveTurnModel(requestedRole, lastUser ? textOf(lastUser.content) : "");
@@ -47,5 +46,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     skillId,
     turnModel: turnModel.value,
     signal: req.signal,
+    conversationSummary: windowed.summary
+      ? { text: windowed.summary, messageCount: windowed.summarizedCount }
+      : null,
+    summaryUsage: windowed,
   });
 }

@@ -225,6 +225,60 @@ CREATE TABLE IF NOT EXISTS embeddings (
   PRIMARY KEY (kind, ref_id)
 );
 
+-- One drafted close-out of a conversation-as-episode. The draft itself is only
+-- a summary plus a pointer to how far it read; the things it *proposes* live as
+-- ordinary memory rows (status 'suggested') and project_notes rows (status
+-- 'proposed'), so a proposal is never trapped inside a dialog the user closed.
+CREATE TABLE IF NOT EXISTS episode_closures (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL DEFAULT '',
+  message_count INTEGER NOT NULL DEFAULT 0,
+  through_message_id TEXT,
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- What a Project has settled and what it still hasn't. Fed by episode closings
+-- and reviewed by hand: 'proposed' is a draft nothing acts on, 'open' and
+-- 'settled' are the states a human put it in.
+CREATE TABLE IF NOT EXISTS project_notes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  conversation_id TEXT,
+  closure_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Passage-level index over the same material search_index mirrors at whole-item
+-- granularity. This is what retrieval-first context assembly reads from: one
+-- row per ~1200-character passage, with its own vector, so a turn can be given
+-- the relevant paragraphs of a 200KB document instead of the document's first
+-- 12KB. vector/model stay NULL until the passage is embedded (embedding is
+-- optional — chunk_search below still gives keyword retrieval at passage
+-- granularity without any embedding model configured).
+CREATE TABLE IF NOT EXISTS chunks (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  ref_id TEXT NOT NULL,
+  project_id TEXT,
+  title TEXT NOT NULL,
+  chunk_index INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  source_date TEXT NOT NULL,
+  model TEXT,
+  vector BLOB,
+  updated_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search USING fts5(chunk_id, content);
+
 CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_memory_project ON memory(project_id);
@@ -242,6 +296,11 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_project ON usage_events(project_id);
 CREATE INDEX IF NOT EXISTS idx_usage_events_created ON usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_embeddings_project ON embeddings(project_id);
 CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
+CREATE INDEX IF NOT EXISTS idx_chunks_ref ON chunks(kind, ref_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_model ON chunks(model);
+CREATE INDEX IF NOT EXISTS idx_episode_closures_conversation ON episode_closures(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_project_notes_project ON project_notes(project_id);
 `;
 
 db.exec(SCHEMA);
@@ -279,6 +338,35 @@ addColumnIfMissing("projects", "parent_project_id", "TEXT REFERENCES projects(id
 addColumnIfMissing("projects", "pinned", "INTEGER NOT NULL DEFAULT 0");
 db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_project_id)`);
 addColumnIfMissing("images", "source", "TEXT NOT NULL DEFAULT 'generated'");
+addColumnIfMissing("council_runs", "attachments", "TEXT NOT NULL DEFAULT '[]'");
+// Rolling summary of the turns that have aged out of a conversation's live
+// window — see src/lib/conversationWindow.ts. through_id is how the fold stays
+// incremental: only messages after it need summarizing again.
+addColumnIfMissing("conversations", "summary", "TEXT");
+addColumnIfMissing("conversations", "summary_through_id", "TEXT");
+addColumnIfMissing("conversations", "summary_message_count", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("conversations", "summary_updated_at", "TEXT");
+// Which episode closing proposed this memory item, so the review UI can find
+// the proposals belonging to one draft.
+addColumnIfMissing("memory", "closure_id", "TEXT");
+// Claim-level provenance: which message, in which conversation, a remembered
+// fact actually came from — so "where did that come from?" resolves to a place
+// in the app rather than to a free-text `source` label.
+addColumnIfMissing("memory", "source_message_id", "TEXT");
+addColumnIfMissing("memory", "source_conversation_id", "TEXT");
+// Before those columns existed, the origin of a conversation-sourced memory
+// item was stuffed into the free-text `source` field — as a bare conversation
+// id by the "Remember" action, and as "episode:<id>" by an episode closing.
+// Both are recoverable, so existing items get real links rather than being
+// stuck displaying an id.
+db.exec(
+  `UPDATE memory SET source_conversation_id = substr(source, 9)
+   WHERE source_conversation_id IS NULL AND source LIKE 'episode:conv\\_%' ESCAPE '\\'`
+);
+db.exec(
+  `UPDATE memory SET source_conversation_id = source
+   WHERE source_conversation_id IS NULL AND source LIKE 'conv\\_%' ESCAPE '\\'`
+);
 
 export function nowIso() {
   return new Date().toISOString();

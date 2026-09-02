@@ -635,8 +635,9 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
             )}
           </section>
 
-          {/* Documents */}
-          <section>
+          {/* Documents — anchored: retrieved-passage links from a
+              conversation's Context panel land here (see sourceLinks.ts). */}
+          <section id="documents" className="scroll-mt-6">
             <div className="mb-2.5 flex items-center justify-between">
               <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
                 Documents
@@ -699,7 +700,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
 
           {/* Artifacts */}
           {artifacts.length > 0 && (
-            <section>
+            <section id="artifacts" className="scroll-mt-6">
               <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
                 Artifacts
               </h2>

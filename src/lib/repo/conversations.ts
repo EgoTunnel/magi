@@ -1,5 +1,6 @@
 import { db, newId, nowIso } from "@/lib/db";
-import { indexRemove, indexUpsert } from "@/lib/searchIndex";
+import { indexRemove, indexUpsert, type SearchKind } from "@/lib/searchIndex";
+import { retargetChunks } from "@/lib/retrieval";
 
 export interface Conversation {
   id: string;
@@ -103,7 +104,7 @@ export function moveConversation(id: string, newProjectId: string): Conversation
     db.prepare(`UPDATE artifacts SET project_id = ? WHERE conversation_id = ?`).run(newProjectId, id);
   }
 
-  const retarget = (kind: string, refIds: string[]) => {
+  const retarget = (kind: SearchKind, refIds: string[]) => {
     if (!refIds.length) return;
     const placeholders = refIds.map(() => "?").join(",");
     db.prepare(`UPDATE search_index SET project_id = ? WHERE kind = ? AND ref_id IN (${placeholders})`).run(
@@ -116,6 +117,7 @@ export function moveConversation(id: string, newProjectId: string): Conversation
       kind,
       ...refIds
     );
+    retargetChunks(kind, refIds, newProjectId);
   };
   retarget("conversation", [id]);
   retarget("message", messageIds);
@@ -181,6 +183,7 @@ export function addMessage(input: {
       projectId: convo.project_id,
       title: `${input.role} message in ${convo.title}`,
       content: input.content,
+      sourceDate: ts,
     });
     // Auto-title fresh conversations from the first user message.
     if (convo.title === "Untitled conversation" && input.role === "user") {

@@ -122,16 +122,18 @@ export function importProject(bundle: ExportBundle): { id: string } {
 
       for (const m of conv.messages ?? []) {
         const msgId = newId("msg");
+        const msgTs = m.createdAt || ts;
         db.prepare(
           `INSERT INTO messages (id, conversation_id, role, content, model, provenance, created_at)
            VALUES (?, ?, ?, ?, ?, NULL, ?)`
-        ).run(msgId, convId, m.role, m.content, m.model, m.createdAt || ts);
+        ).run(msgId, convId, m.role, m.content, m.model, msgTs);
         indexUpsert({
           kind: "message",
           refId: msgId,
           projectId: project.id,
           title: `${m.role} message in ${conv.title}`,
           content: m.content,
+          sourceDate: msgTs,
           skipEmbedding: true,
         });
       }
@@ -152,7 +154,7 @@ export function importProject(bundle: ExportBundle): { id: string } {
       db.prepare(
         `INSERT INTO documents (id, project_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`
       ).run(id, project.id, doc.title, doc.content, ts, ts);
-      indexUpsert({ kind: "document", refId: id, projectId: project.id, title: doc.title, content: doc.content, skipEmbedding: true });
+      indexUpsert({ kind: "document", refId: id, projectId: project.id, title: doc.title, content: doc.content, sourceDate: ts, skipEmbedding: true });
     }
 
     for (const art of bundle.artifacts ?? []) {

@@ -2,8 +2,9 @@ import fs from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
 import { addMessage, getConversation, listMessages } from "@/lib/repo/conversations";
 import { getAttachment, attachToMessage, type Attachment } from "@/lib/repo/attachments";
-import type { ContentPart, ModelMessage, ModelRoleId } from "@/lib/models/types";
+import type { ContentPart, ModelRoleId } from "@/lib/models/types";
 import { resolveTurnModel, runChatTurn } from "@/lib/chatTurn";
+import { buildHistoryWindow } from "@/lib/conversationWindow";
 
 // Per-attachment and combined caps on how much extracted text gets baked into
 // a single turn — same truncate-with-note posture as DOCUMENT_BUDGET in
@@ -58,9 +59,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const userMessage = addMessage({ conversationId: id, role: "user", content: finalContent });
   if (attachments.length) attachToMessage(attachments.map((a) => a.id), userMessage.id);
 
-  const history = listMessages(id)
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m): ModelMessage => ({ role: m.role as "user" | "assistant", content: m.content }));
+  // Long conversations send a rolling summary of their older turns plus a
+  // recent window, rather than every message every time — see
+  // src/lib/conversationWindow.ts. Short ones are unaffected.
+  const windowed = await buildHistoryWindow(id, listMessages(id));
+  const history = windowed.history;
 
   // Real image data is only ever sent for the live turn it was attached to —
   // history keeps the plain "[Image attached: …]" placeholder baked into
@@ -88,5 +91,12 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     skillId,
     turnModel: turnModel.value,
     signal: req.signal,
+    // The message just sent — not derived from history, which may have had its
+    // last entry swapped for a multimodal version above.
+    query: content,
+    conversationSummary: windowed.summary
+      ? { text: windowed.summary, messageCount: windowed.summarizedCount }
+      : null,
+    summaryUsage: windowed,
   });
 }

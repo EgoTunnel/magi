@@ -278,6 +278,7 @@ export function importClaudeAccountExport(input: ClaudeAccountImportInput): Clau
               projectId: bucket.id,
               title: `${role} message in ${title}`,
               content: text,
+              sourceDate: msgTs,
               skipEmbedding: true,
             });
           }

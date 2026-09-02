@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, EmptyState, Input, Label, Panel, Tag, Textarea } from "@/components/ui";
@@ -11,6 +11,7 @@ interface CouncilRole {
   name: string;
   systemPrompt: string;
   modelRole: string;
+  allowedTools?: string[] | null;
 }
 interface Council {
   id: string;
@@ -33,24 +34,52 @@ interface RoleInfo {
   id: string;
   label: string;
 }
+interface ToolInfo {
+  name: string;
+  description: string;
+}
+interface PendingAttachment {
+  filename: string;
+  mimeType: string;
+  dataBase64: string;
+}
 
 type CouncilMode = "independent" | "debate" | "redTeam";
+
+// "Historian → research tools" (Product Vision §45) — the Researcher's job is
+// to go find things, so it gets search + web.
+const RESEARCH_TOOLS = ["search_archive", "web_search", "web_fetch"];
+// "Skeptic → web + archive" (Product Vision §45).
+const SKEPTIC_TOOLS = ["search_archive", "web_search", "web_fetch"];
+// The Reasoner/Advocate/Proposer's job is to work through the material
+// already given to it (Project documents, attachments, the question itself),
+// not go hunting for more — verified live: with search_archive available,
+// a reasoning-heavy model reliably burned its whole tool budget re-querying
+// for a document already sitting in its own context, and returned no answer
+// at all, while the Critic and Researcher roles (which have an actual reason
+// to look things up) used the same material directly and correctly. An empty
+// array — not null — means no tools at all, not "whatever's globally
+// enabled."
+const NO_TOOLS: string[] = [];
 
 const DEFAULT_ROLES: CouncilRole[] = [
   {
     name: "Reasoner",
     modelRole: "reasoner",
     systemPrompt: "You are the Reasoner on a Magi Council. Work through the question carefully and rigorously, step by step. State your conclusion plainly.",
+    allowedTools: NO_TOOLS,
   },
   {
     name: "Critic",
     modelRole: "critic",
     systemPrompt: "You are the Critic on a Magi Council. Be skeptical. Look for weak assumptions, missing evidence, and overreach. Argue against easy conclusions.",
+    allowedTools: SKEPTIC_TOOLS,
   },
   {
     name: "Researcher",
     modelRole: "researcher",
     systemPrompt: "You are the Researcher on a Magi Council. Bring relevant context, precedent, and grounded detail to the question.",
+    allowedTools: RESEARCH_TOOLS,
   },
 ];
 
@@ -61,11 +90,13 @@ const DEBATE_DEFAULT_ROLES: CouncilRole[] = [
     name: "Advocate",
     modelRole: "reasoner",
     systemPrompt: "You are the Advocate on a Magi Council Debate. Argue for the strongest, most defensible position on the question — make the best possible case for it.",
+    allowedTools: NO_TOOLS,
   },
   {
     name: "Skeptic",
     modelRole: "critic",
     systemPrompt: "You are the Skeptic on a Magi Council Debate. Argue against that position, or for a genuinely different one. Raise the strongest doubts and counter-considerations you can.",
+    allowedTools: SKEPTIC_TOOLS,
   },
 ];
 
@@ -74,11 +105,13 @@ const RED_TEAM_DEFAULT_ROLES: CouncilRole[] = [
     name: "Proposer",
     modelRole: "reasoner",
     systemPrompt: "You are the Proposer on a Magi Council Red Team exercise. Answer the question directly and substantively — this will be attacked, so give your real best answer, not a hedge.",
+    allowedTools: NO_TOOLS,
   },
   {
     name: "Red Team",
     modelRole: "critic",
     systemPrompt: "You are the Red Team on a Magi Council. Attack the Proposer's answer aggressively — find every weakness, edge case, and flaw you can. Do not be diplomatic about it.",
+    allowedTools: SKEPTIC_TOOLS,
   },
 ];
 
@@ -109,6 +142,7 @@ export function CouncilsClient() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [roleInfos, setRoleInfos] = useState<RoleInfo[]>([]);
+  const [tools, setTools] = useState<ToolInfo[]>([]);
 
   const [question, setQuestion] = useState("");
   const [projectId, setProjectId] = useState("");
@@ -116,34 +150,64 @@ export function CouncilsClient() {
   const [mode, setMode] = useState<CouncilMode>("independent");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [formOpen, setFormOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [roles, setRoles] = useState<CouncilRole[]>([{ name: "", systemPrompt: "", modelRole: "default" }]);
+  const [roles, setRoles] = useState<CouncilRole[]>([{ name: "", systemPrompt: "", modelRole: "default", allowedTools: null }]);
 
   async function load() {
-    const [councilsRes, runsRes, projRes, modelsRes] = await Promise.all([
+    const [councilsRes, runsRes, projRes, modelsRes, settingsRes] = await Promise.all([
       fetch("/api/councils"),
       fetch("/api/councils/runs"),
       fetch("/api/projects"),
       fetch("/api/models"),
+      fetch("/api/settings"),
     ]);
     setCouncils((await councilsRes.json()).councils);
     setRuns((await runsRes.json()).runs);
     setProjects((await projRes.json()).projects);
     setRoleInfos((await modelsRes.json()).roles);
+    setTools((await settingsRes.json()).tools ?? []);
   }
 
   useEffect(() => {
     load();
   }, []);
 
+  function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(",")[1] ?? "");
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function addFiles(files: FileList | null) {
+    if (!files || !files.length) return;
+    const added = await Promise.all(
+      Array.from(files).map(async (file) => ({
+        filename: file.name,
+        mimeType: file.type || "application/octet-stream",
+        dataBase64: await fileToBase64(file),
+      }))
+    );
+    setAttachments((prev) => [...prev, ...added]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removeAttachment(filename: string) {
+    setAttachments((prev) => prev.filter((a) => a.filename !== filename));
+  }
+
   async function runCouncil() {
     if (!question.trim()) return;
     setRunning(true);
     setError(null);
-    const payload: Record<string, unknown> = { question, projectId: projectId || undefined, mode };
+    const payload: Record<string, unknown> = { question, projectId: projectId || undefined, mode, attachments };
     if (selectedCouncilId === "__default") {
       payload.roles = defaultRolesForMode(mode);
     } else {
@@ -171,6 +235,19 @@ export function CouncilsClient() {
     setRoles((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
 
+  function toggleRoleTool(i: number, toolName: string) {
+    setRoles((rs) =>
+      rs.map((r, idx) => {
+        if (idx !== i) return r;
+        // null means "no restriction" — start narrowing from the full set on
+        // the first checkbox interaction rather than from empty.
+        const base = r.allowedTools ?? tools.map((t) => t.name);
+        const next = base.includes(toolName) ? base.filter((t) => t !== toolName) : [...base, toolName];
+        return { ...r, allowedTools: next };
+      })
+    );
+  }
+
   async function createCouncil() {
     if (!name.trim() || roles.some((r) => !r.name.trim() || !r.systemPrompt.trim())) return;
     await fetch("/api/councils", {
@@ -180,7 +257,7 @@ export function CouncilsClient() {
     });
     setName("");
     setDescription("");
-    setRoles([{ name: "", systemPrompt: "", modelRole: "default" }]);
+    setRoles([{ name: "", systemPrompt: "", modelRole: "default", allowedTools: null }]);
     setFormOpen(false);
     load();
   }
@@ -204,7 +281,34 @@ export function CouncilsClient() {
         </h2>
         <Panel className="px-5 py-5">
           <Label>Question</Label>
-          <Textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3} placeholder="Put a substantial question to the Council…" className="mb-3" />
+          <Textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3} placeholder="Put a substantial question to the Council…" className="mb-2" />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".txt,.md,.csv,.json,.pdf,.docx,.pptx"
+            className="hidden"
+            onChange={(e) => addFiles(e.target.files)}
+          />
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="focus-ring flex items-center gap-1 rounded-[3px] border border-dashed border-[var(--color-border-strong)] px-2 py-1 text-[12px] text-[var(--color-text-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+            >
+              <IconPlus /> Attach file
+            </button>
+            {attachments.map((a) => (
+              <span
+                key={a.filename}
+                className="inline-flex items-center gap-1 rounded-[3px] border border-[var(--color-border)] px-1.5 py-0.5 text-[12px] text-[var(--color-text-muted)]"
+              >
+                {a.filename}
+                <button onClick={() => removeAttachment(a.filename)} className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]" aria-label={`Remove ${a.filename}`}>
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
           <div className="mb-3 flex flex-wrap gap-2">
             <select
               value={mode}
@@ -309,10 +413,33 @@ export function CouncilsClient() {
                     onChange={(e) => updateRole(i, { systemPrompt: e.target.value })}
                     rows={2}
                     placeholder="What this role should do"
+                    className="mb-2"
                   />
+                  {tools.length > 0 && (
+                    <div>
+                      <div className="flex flex-wrap gap-2.5">
+                        {tools.map((t) => (
+                          <label key={t.name} className="flex items-center gap-1.5 text-[11.5px] text-[var(--color-text-muted)] font-technical">
+                            <input
+                              type="checkbox"
+                              checked={r.allowedTools == null || r.allowedTools.includes(t.name)}
+                              onChange={() => toggleRoleTool(i, t.name)}
+                            />
+                            {t.name}
+                          </label>
+                        ))}
+                      </div>
+                      <p className="mt-1 text-[11px] text-[var(--color-text-faint)]">
+                        Leave everything checked for no restriction — this role gets whatever&apos;s globally enabled in Settings.
+                      </p>
+                    </div>
+                  )}
                 </div>
               ))}
-              <Button variant="ghost" onClick={() => setRoles((rs) => [...rs, { name: "", systemPrompt: "", modelRole: "default" }])}>
+              <Button
+                variant="ghost"
+                onClick={() => setRoles((rs) => [...rs, { name: "", systemPrompt: "", modelRole: "default", allowedTools: null }])}
+              >
                 <IconPlus /> Add role
               </Button>
             </div>

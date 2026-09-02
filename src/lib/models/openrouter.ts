@@ -194,11 +194,27 @@ export function getCachedOpenRouterEmbeddingModels(): { models: EmbeddingModelIn
 // Standard OpenAI-compatible shape, unlike image generation — the typed SDK
 // client already covers this, no raw fetch needed.
 export async function embedText(model: string, text: string): Promise<number[]> {
+  const [vector] = await embedTexts(model, [text]);
+  return vector;
+}
+
+// The array form of the same endpoint. Passage-level indexing turns one
+// document into dozens of chunks, and sending them one request apiece would
+// mean dozens of round trips per save; the embeddings API takes a batch
+// natively and returns the vectors in input order.
+export async function embedTexts(model: string, texts: string[]): Promise<number[][]> {
+  if (!texts.length) return [];
   const c = client();
-  const res = await c.embeddings.create({ model, input: text });
-  const embedding = res.data[0]?.embedding;
-  if (!embedding) throw new Error("Embedding request returned no vector.");
-  return embedding as number[];
+  const res = await c.embeddings.create({ model, input: texts });
+  if (res.data.length !== texts.length) {
+    throw new Error(`Embedding request returned ${res.data.length} vectors for ${texts.length} inputs.`);
+  }
+  // Providers are not required to return the data array in input order — the
+  // per-item index is authoritative, so re-sort rather than trusting position.
+  return res.data
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map((d) => d.embedding as number[]);
 }
 
 export interface GeneratedImagePart {

@@ -17,10 +17,15 @@ interface CouncilTranscriptEntry {
   content: string;
   toolCalls?: ToolCall[];
 }
+interface RunAttachment {
+  filename: string;
+  extractedText: string;
+}
 interface CouncilRun {
   id: string;
   question: string;
   status: "running" | "complete" | "error";
+  attachments: RunAttachment[];
   transcript: CouncilTranscriptEntry[];
   consensus: string | null;
   disagreement: string | null;
@@ -79,11 +84,27 @@ export function CouncilRunView({ runId }: { runId: string }) {
 
   return (
     <div className="mx-auto max-w-2xl px-8 py-8">
-      <div className="mb-6 flex items-center gap-2">
+      <div className="mb-3 flex items-center gap-2">
         <Tag tone={isRunning ? "accent" : "default"}>
           {isRunning && <CouncilSpinner className="mr-1" />}
           {STATUS_LABEL[run.status]}
         </Tag>
+      </div>
+
+      <div className="mb-6">
+        <p className="text-[15px] leading-relaxed text-[var(--color-text)]">{run.question}</p>
+        {run.attachments && run.attachments.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {run.attachments.map((a) => (
+              <span
+                key={a.filename}
+                className="inline-flex items-center rounded-[3px] border border-[var(--color-border)] px-1.5 py-0.5 text-[11.5px] text-[var(--color-text-faint)] font-technical"
+              >
+                {a.filename}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {run.status === "error" && (
@@ -129,12 +150,17 @@ export function CouncilRunView({ runId }: { runId: string }) {
                   {e.toolCalls && e.toolCalls.length > 0 && (
                     <div className="mt-3 flex flex-col gap-1 border-t border-[var(--color-border)] pt-3">
                       {e.toolCalls.map((t, k) => (
-                        <div key={k} className="text-[11.5px] text-[var(--color-text-faint)] font-technical">
-                          used {t.name}
-                          {t.name === "search_archive" && typeof t.input === "object" && t.input && "query" in t.input
-                            ? ` — "${(t.input as { query: string }).query}"`
-                            : ""}
-                        </div>
+                        <details key={k} className="text-[11.5px] text-[var(--color-text-faint)] font-technical">
+                          <summary className="cursor-pointer select-none hover:text-[var(--color-text-muted)]">
+                            used {t.name}
+                            {t.name === "search_archive" && typeof t.input === "object" && t.input && "query" in t.input
+                              ? ` — "${(t.input as { query: string }).query}"`
+                              : ""}
+                          </summary>
+                          <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-[3px] bg-[var(--color-bg-raised)] p-2 text-[11.5px] text-[var(--color-text-muted)]">
+                            {t.result}
+                          </pre>
+                        </details>
                       ))}
                     </div>
                   )}

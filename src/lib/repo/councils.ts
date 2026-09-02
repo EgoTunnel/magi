@@ -4,6 +4,16 @@ export interface CouncilRole {
   name: string;
   systemPrompt: string;
   modelRole: string; // references a MODEL_ROLES id, e.g. "reasoner", "critic"
+  // Which tools this role may be offered, narrowing past whatever's globally
+  // enabled in Settings — same convention as Skill.allowed_tools and Agent
+  // run allowedTools (see resolveTools() in src/lib/tools/registry.ts).
+  // null/absent means no restriction.
+  allowedTools?: string[] | null;
+}
+
+export interface RunAttachment {
+  filename: string;
+  extractedText: string;
 }
 
 export interface Council {
@@ -89,6 +99,7 @@ export interface CouncilRun {
   project_id: string | null;
   question: string;
   mode: CouncilMode;
+  attachments: RunAttachment[];
   transcript: CouncilTranscriptEntry[];
   consensus: string | null;
   disagreement: string | null;
@@ -103,6 +114,7 @@ interface CouncilRunRow {
   project_id: string | null;
   question: string;
   mode: CouncilMode;
+  attachments: string;
   transcript: string;
   consensus: string | null;
   disagreement: string | null;
@@ -112,7 +124,11 @@ interface CouncilRunRow {
 }
 
 function parseRun(row: CouncilRunRow): CouncilRun {
-  return { ...row, transcript: JSON.parse(row.transcript) as CouncilTranscriptEntry[] };
+  return {
+    ...row,
+    attachments: JSON.parse(row.attachments) as RunAttachment[],
+    transcript: JSON.parse(row.transcript) as CouncilTranscriptEntry[],
+  };
 }
 
 export function createCouncilRun(input: {
@@ -120,13 +136,22 @@ export function createCouncilRun(input: {
   projectId?: string;
   question: string;
   mode?: CouncilMode;
+  attachments?: RunAttachment[];
 }): CouncilRun {
   const id = newId("run");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO council_runs (id, council_id, project_id, question, mode, transcript, status, created_at)
-     VALUES (?, ?, ?, ?, ?, '[]', 'running', ?)`
-  ).run(id, input.councilId ?? null, input.projectId ?? null, input.question, input.mode ?? "independent", ts);
+    `INSERT INTO council_runs (id, council_id, project_id, question, mode, attachments, transcript, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, '[]', 'running', ?)`
+  ).run(
+    id,
+    input.councilId ?? null,
+    input.projectId ?? null,
+    input.question,
+    input.mode ?? "independent",
+    JSON.stringify(input.attachments ?? []),
+    ts
+  );
   return getCouncilRun(id)!;
 }
 

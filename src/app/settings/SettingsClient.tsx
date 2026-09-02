@@ -595,7 +595,7 @@ export function SettingsClient() {
               )}
               {backfillStatus?.status === "complete" && (
                 <div className="text-[12.5px] text-[var(--color-text-muted)]">
-                  Up to date — {backfillStatus.processed} item(s) indexed for the current model.
+                  Up to date — {backfillStatus.processed} item(s) and passage(s) indexed for the current model.
                 </div>
               )}
               {backfillStatus?.status === "error" && (
@@ -607,7 +607,9 @@ export function SettingsClient() {
               )}
               <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
                 New and edited content is embedded automatically going forward. Build the index once to
-                cover everything that already existed, or after switching models.
+                cover everything that already existed, or after switching models. This embeds both whole
+                items (for Meaning search on the Archive page) and the individual passages a conversation
+                retrieves from — until it finishes, retrieval matches on wording alone.
               </p>
             </div>
           </Panel>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button, EmptyState, Label, Panel, Tag, Textarea } from "@/components/ui";
 import { IconPlus, IconTrash } from "@/components/icons";
 
@@ -10,6 +11,11 @@ interface MemoryItem {
   project_id: string | null;
   content: string;
   source: string | null;
+  status: "established" | "suggested";
+  source_message_id: string | null;
+  source_conversation_id: string | null;
+  // Resolved server-side (see /api/memory) — where this claim came from.
+  sourceLink: { href: string; context: string } | null;
   created_at: string;
 }
 interface Project {
@@ -56,6 +62,15 @@ export function MemoryClient() {
     load();
   }
 
+  async function establish(id: string) {
+    await fetch(`/api/memory/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "established" }),
+    });
+    load();
+  }
+
   async function saveEdit(id: string) {
     await fetch(`/api/memory/${id}`, {
       method: "PATCH",
@@ -66,8 +81,13 @@ export function MemoryClient() {
     load();
   }
 
-  const globalItems = items.filter((i) => i.scope === "global");
-  const projectItems = items.filter((i) => i.scope === "project");
+  // Suggestions are separated out rather than mixed in: they are not memory
+  // yet. Nothing reads them when building a prompt (see buildSystemPrompt,
+  // which filters to established), and they only become memory when kept here.
+  const suggested = items.filter((i) => i.status === "suggested");
+  const established = items.filter((i) => i.status !== "suggested");
+  const globalItems = established.filter((i) => i.scope === "global");
+  const projectItems = established.filter((i) => i.scope === "project");
   const projectName = (id: string | null) => projects.find((p) => p.id === id)?.name ?? "Unknown Project";
 
   return (
@@ -115,6 +135,42 @@ export function MemoryClient() {
             </Button>
           </div>
         </Panel>
+      )}
+
+      {suggested.length > 0 && (
+        <section className="mb-8">
+          <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+            Suggested
+          </h2>
+          <p className="mb-2.5 text-[12.5px] text-[var(--color-text-muted)]">
+            Proposed by closing a conversation. None of these are used in a reply until you keep one.
+          </p>
+          <div className="flex flex-col gap-1.5">
+            {suggested.map((item) => (
+              <Panel key={item.id} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-[13px] leading-relaxed text-[var(--color-text-muted)]">{item.content}</span>
+                    <MemoryOrigin item={item} />
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Tag>{item.scope === "global" ? "Global" : projectName(item.project_id)}</Tag>
+                    <Button variant="ghost" onClick={() => establish(item.id)}>
+                      Keep
+                    </Button>
+                    <button
+                      onClick={() => remove(item.id)}
+                      aria-label="Discard"
+                      className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                </div>
+              </Panel>
+            ))}
+          </div>
+        </section>
       )}
 
       <section className="mb-8">
@@ -177,6 +233,31 @@ export function MemoryClient() {
   );
 }
 
+// When a fact was retained, and — when it came from a conversation — a link
+// back to the exact message it was promoted from. "Where did that come from?"
+// with an answer you can click.
+function MemoryOrigin({ item }: { item: MemoryItem }) {
+  const date = item.created_at.slice(0, 10);
+  return (
+    <div className="mt-1 text-[11px] text-[var(--color-text-faint)] font-technical">
+      {date}
+      {item.sourceLink ? (
+        <>
+          {" · "}
+          <Link
+            href={item.sourceLink.href}
+            className="underline decoration-[var(--color-border-strong)] underline-offset-2 transition-colors hover:text-[var(--color-accent)] hover:decoration-[var(--color-accent)]"
+          >
+            {item.source_message_id ? "from this message" : "from this conversation"} in {item.sourceLink.context}
+          </Link>
+        </>
+      ) : item.source === "import" ? (
+        <> · imported</>
+      ) : null}
+    </div>
+  );
+}
+
 function MemoryRow({
   item,
   label,
@@ -214,9 +295,12 @@ function MemoryRow({
         </div>
       ) : (
         <div className="flex items-start justify-between gap-3">
-          <button onClick={onEditStart} className="text-left text-[13px] leading-relaxed text-[var(--color-text)] hover:text-[var(--color-accent)] transition-colors">
-            {item.content}
-          </button>
+          <div className="min-w-0">
+            <button onClick={onEditStart} className="text-left text-[13px] leading-relaxed text-[var(--color-text)] hover:text-[var(--color-accent)] transition-colors">
+              {item.content}
+            </button>
+            <MemoryOrigin item={item} />
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             {label && <Tag>{label}</Tag>}
             <button onClick={onRemove} className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]">
