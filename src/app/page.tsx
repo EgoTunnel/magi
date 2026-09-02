@@ -21,7 +21,7 @@ export default function HomePage() {
         Welcome back.
       </h1>
       <p className="mt-2 max-w-xl text-[14px] leading-relaxed text-[var(--color-text-muted)]">
-        Magi holds onto your Projects, memory, and archive no matter which AI model you're using today.
+        Magi holds onto your Projects, memory, and archive no matter which AI model you&rsquo;re using today.
         Switch models whenever you like — the work underneath stays exactly where you left it.
       </p>
 

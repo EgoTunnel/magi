@@ -10,8 +10,8 @@ import type { SearchKind } from "@/lib/searchIndex";
 // now stays meaningful even if the item is later renamed.
 export interface SourceLink {
   href: string;
-  // Where this lives, in the user's terms — "KRG · Refining opening speaker
-  // notes", not an id.
+  // Where this lives, in the user's terms — "Field Notes · Refining the
+  // opening", not an id.
   context: string;
 }
 

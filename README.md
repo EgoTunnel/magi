@@ -9,6 +9,7 @@ you happen to be using. Projects, memory, and archive live here; models are repl
 passing through. See [`docs/Product Vision.txt`](docs/Product%20Vision.txt) for the full vision this
 build is working toward, [`docs/User Guide.md`](docs/User%20Guide.md) for how to actually use it, and
 [`docs/Handoff.md`](docs/Handoff.md) if you're picking up development on this codebase.
+[`docs/People-Plan.md`](docs/People-Plan.md) is the brief for the next feature, not yet built.
 
 This repository is a working subset of that vision: Projects with persistent instructions, streaming
 conversations with tool use, deliberate memory (global and per-Project), full-text archive search, an
@@ -32,6 +33,21 @@ integration; OpenRouter is a one-stop shop for most other providers' models, wit
 live from OpenRouter's own API rather than hardcoded. Keys are stored locally in Magi's own SQLite
 database (`data/magi.db`, gitignored) and used only to call that provider's API directly from your
 local server.
+
+Magi calls whichever models you assign to its roles, and those calls cost money on your own account.
+Settings → **Usage & cost** shows what has been spent, per model and per day.
+
+## Run it on your own machine only
+
+**Magi has no authentication, and it is not meant to be deployed.** It is a single-user instrument:
+the SQLite file next to it holds your API keys, your entire archive, and everything you have ever
+told it. On `localhost` that is exactly right. On a public host it means anyone who finds the URL can
+read your archive and spend your money.
+
+Because it is a Next.js app and deploying those is a reflex, Magi refuses any request that did not
+arrive on a loopback address (`src/middleware.ts`). If you genuinely want to run it on a home server
+behind your own authentication, set `MAGI_ALLOW_REMOTE=1` — but that is a deliberate decision to make
+yourself, not a default.
 
 ## Tests
 
@@ -95,3 +111,20 @@ quickly, and silent regression is the likeliest way it gets hurt.
   the model checks rather than guesses, and is explicitly instructed to report "nothing substantive"
   rather than manufacture a connection. A finding can be promoted into the source Project's memory,
   with its origin recorded. The Projects never merge — only the connection becomes visible.
+
+## About this repository
+
+Magi is a personal instrument. I built it for my own work and use it daily; it is published because
+the ideas in [`docs/Product Vision.txt`](docs/Product%20Vision.txt) seem worth sharing and because
+some of it may be useful to other people building in this space.
+
+It is not a product and there is no support. Issues and pull requests are welcome and I'll read them,
+but I make no promises about response times, backwards compatibility, or a roadmap. If you want to
+take it somewhere I'm not going, fork it — that's what the licence is for.
+
+Two things worth knowing before you run it: the security note above is not boilerplate, and Magi's
+schema evolves in place, so expect the database to be migrated under you between commits.
+
+## Licence
+
+[MIT](LICENSE).

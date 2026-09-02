@@ -214,7 +214,7 @@ src/
     from the prompt instead of guessing. Multi-line imported memory has its continuation lines indented
     so the date doesn't appear to caption an unrelated wall of text.
   - **Retrieved passages link to their source.** `sourceLinks.ts` turns an indexed item's `(kind, ref_id)`
-    into a URL and a human-readable place ("KRG · Refining opening speaker notes"), batched one query per
+    into a URL and a human-readable place ("Field Notes · Refining the opening"), batched one query per
     kind. Resolved when provenance is *written*, not at render time, because provenance is stored JSON
     that outlives the turn. Messages get `#<message id>` fragments; documents and artifacts have no page
     of their own, so they anchor to `#documents` / `#artifacts` on the Project dashboard. An unknown or
@@ -240,8 +240,8 @@ src/
     Agent runs, Council runs, Connections, episode closings, and images. Titles are truncated in SQL so a
     200KB artifact body never crosses the process boundary just to be cut to a line.
   - **A real flaw caught by running it against the live database:** a strictly chronological strip is
-    useless, because whichever kind was busiest most recently monopolizes it — KRG's first render was
-    seven near-identical image generations and nothing else. Fixed the same way retrieval caps passages
+    useless, because whichever kind was busiest most recently monopolizes it — the first render on a real
+    Project was seven near-identical image generations and nothing else. Fixed the same way retrieval caps passages
     per source: dedupe repeated `(kind, title)` pairs, then allow `MAX_PER_KIND = 3` on a first pass and
     top up chronologically from the overflow. A Project that genuinely only contains documents still
     fills its strip with documents; one with a burst of images shows the burst *and* the conversations.
