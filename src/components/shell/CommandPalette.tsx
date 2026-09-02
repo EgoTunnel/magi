@@ -11,6 +11,7 @@ const STATIC_COMMANDS = [
   { title: "New Project", href: "/projects?new=1", hint: "Create" },
   { title: "Archive", href: "/archive", hint: "Workspace" },
   { title: "Memory", href: "/memory", hint: "Workspace" },
+  { title: "People", href: "/people", hint: "Workspace" },
   { title: "Image Lab", href: "/image-lab", hint: "Workspace" },
   { title: "Councils", href: "/councils", hint: "Workspace" },
   { title: "Skills", href: "/skills", hint: "Workspace" },
@@ -27,6 +28,7 @@ const KIND_LABEL: Record<string, string> = {
   skill: "Skill",
   style_guide: "Style Guide",
   character: "Character",
+  person: "Person",
 };
 
 function hrefFor(r: SearchResult): string {
@@ -45,6 +47,8 @@ function hrefFor(r: SearchResult): string {
       return `/projects/${r.projectId}`;
     case "skill":
       return `/skills`;
+    case "person":
+      return `/people/${r.refId}`;
     case "style_guide":
     case "character":
       return `/image-lab?project=${r.projectId}`;

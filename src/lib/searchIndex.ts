@@ -45,16 +45,23 @@ function queueEmbedding(opts: { kind: SearchKind; refId: string; projectId: stri
   });
 }
 
-export type SearchKind =
-  | "project"
-  | "conversation"
-  | "message"
-  | "memory"
-  | "document"
-  | "artifact"
-  | "skill"
-  | "style_guide"
-  | "character";
+// An array rather than a bare union, so callers that need "every kind except
+// one" can derive it and automatically pick up any kind added later, instead of
+// silently excluding it.
+export const SEARCH_KINDS = [
+  "project",
+  "conversation",
+  "message",
+  "memory",
+  "document",
+  "artifact",
+  "skill",
+  "style_guide",
+  "character",
+  "person",
+] as const;
+
+export type SearchKind = (typeof SEARCH_KINDS)[number];
 
 export function indexUpsert(opts: {
   kind: SearchKind;

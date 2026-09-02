@@ -2,7 +2,15 @@ import { db, newId, nowIso } from "@/lib/db";
 import { estimateCost } from "@/lib/models/pricing";
 import type { TokenUsage } from "@/lib/models/types";
 
-export type UsageSource = "conversation" | "agent" | "council" | "connection" | "archive_ask";
+export type UsageSource =
+  | "conversation"
+  | "agent"
+  | "council"
+  | "connection"
+  | "archive_ask"
+  // "Who might be interested in this?" — one model call per person, so it is
+  // worth being able to see its cost separately from cross-Project Connections.
+  | "people_interest";
 
 export interface UsageEvent {
   id: string;

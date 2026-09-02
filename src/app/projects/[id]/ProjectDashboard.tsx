@@ -105,6 +105,12 @@ interface ConnectionRun {
   status: "running" | "complete" | "error";
   created_at: string;
 }
+interface InterestRun {
+  id: string;
+  status: "running" | "complete" | "error";
+  findings: { relevance: string }[];
+  created_at: string;
+}
 interface ToolInfo {
   name: string;
   description: string;
@@ -170,6 +176,9 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [connectionTargetId, setConnectionTargetId] = useState("");
   const [launchingConnection, setLaunchingConnection] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [interestRuns, setInterestRuns] = useState<InterestRun[]>([]);
+  const [launchingInterest, setLaunchingInterest] = useState(false);
+  const [interestError, setInterestError] = useState<string | null>(null);
 
   async function load() {
     const res = await fetch(`/api/projects/${projectId}`);
@@ -192,17 +201,19 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     setBrandSecondaryAccentColorDraft(data.project.brand_secondary_accent_color ?? "");
     setParentDraft(data.project.parent_project_id ?? "");
 
-    const [convRes, memRes, docRes, skillRes, artRes, agentRes, projRes, connRes, settingsRes] = await Promise.all([
-      fetch(`/api/projects/${projectId}/conversations`),
-      fetch(`/api/memory?scope=project&projectId=${projectId}`),
-      fetch(`/api/documents?projectId=${projectId}`),
-      fetch(`/api/skills?projectId=${projectId}`),
-      fetch(`/api/artifacts?projectId=${projectId}`),
-      fetch(`/api/agents/runs?projectId=${projectId}`),
-      fetch(`/api/projects`),
-      fetch(`/api/connections/runs?projectId=${projectId}`),
-      fetch(`/api/settings`),
-    ]);
+    const [convRes, memRes, docRes, skillRes, artRes, agentRes, projRes, connRes, interestRes, settingsRes] =
+      await Promise.all([
+        fetch(`/api/projects/${projectId}/conversations`),
+        fetch(`/api/memory?scope=project&projectId=${projectId}`),
+        fetch(`/api/documents?projectId=${projectId}`),
+        fetch(`/api/skills?projectId=${projectId}`),
+        fetch(`/api/artifacts?projectId=${projectId}`),
+        fetch(`/api/agents/runs?projectId=${projectId}`),
+        fetch(`/api/projects`),
+        fetch(`/api/connections/runs?projectId=${projectId}`),
+        fetch(`/api/people-interest/runs?projectId=${projectId}`),
+        fetch(`/api/settings`),
+      ]);
     setConversations((await convRes.json()).conversations);
     const memData: MemoryItem[] = (await memRes.json()).memory;
     setMemory(memData.filter((m) => m.scope === "project"));
@@ -213,6 +224,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     const allProjects: OtherProject[] = (await projRes.json()).projects;
     setOtherProjects(allProjects.filter((p) => p.id !== projectId));
     setConnectionRuns((await connRes.json()).runs);
+    setInterestRuns((await interestRes.json()).runs ?? []);
     setTools((await settingsRes.json()).tools ?? []);
   }
 
@@ -427,6 +439,24 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     const data = await res.json();
     setConnectionFormOpen(false);
     router.push(`/connections/runs/${data.run.id}`);
+  }
+
+  async function launchInterest() {
+    setLaunchingInterest(true);
+    setInterestError(null);
+    const res = await fetch("/api/people-interest/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId }),
+    });
+    setLaunchingInterest(false);
+    if (res.status === 412) {
+      const data = await res.json();
+      setInterestError(data.message ?? "Not available yet.");
+      return;
+    }
+    const data = await res.json();
+    router.push(`/people-interest/runs/${data.run.id}`);
   }
 
   if (notFound) {
@@ -669,6 +699,57 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                     </Panel>
                   </Link>
                 ))}
+              </div>
+            )}
+          </section>
+
+          {/* Who might be interested? — the People feature's payoff: the same
+              "go and look, don't guess" posture as Connections, aimed at
+              people rather than Projects. */}
+          <section>
+            <div className="mb-2.5 flex items-center justify-between">
+              <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+                Who might be interested?
+              </h2>
+              <Button variant="ghost" onClick={launchInterest} disabled={launchingInterest}>
+                <IconPlus /> {launchingInterest ? "Starting…" : "Ask"}
+              </Button>
+            </div>
+            {interestError && (
+              <div className="mb-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
+                {interestError}{" "}
+                <Link href="/people" className="text-[var(--color-accent)] underline">
+                  Open People
+                </Link>
+              </div>
+            )}
+            {interestRuns.length === 0 ? (
+              <EmptyState
+                title="Not asked yet"
+                description="Weighs each person you know against this Project's actual material, and reports nobody rather than inventing a link."
+              />
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {interestRuns.map((r) => {
+                  const real = r.findings.filter((f) => /strong|moderate/i.test(f.relevance)).length;
+                  return (
+                    <Link key={r.id} href={`/people-interest/runs/${r.id}`}>
+                      <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
+                        <span className="truncate text-[13.5px] text-[var(--color-text)]">
+                          {r.status === "running"
+                            ? "Considering…"
+                            : real === 0
+                              ? "Nobody obviously"
+                              : `${real} of ${r.findings.length} may be interested`}
+                        </span>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Tag tone={r.status === "running" ? "accent" : "default"}>{r.status}</Tag>
+                          <IconChevronRight className="text-[var(--color-text-faint)]" />
+                        </div>
+                      </Panel>
+                    </Link>
+                  );
+                })}
               </div>
             )}
           </section>

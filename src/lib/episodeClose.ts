@@ -14,6 +14,16 @@ import {
   type EpisodeClosure,
 } from "@/lib/repo/episodes";
 import { getProject } from "@/lib/repo/projects";
+import {
+  addPersonFact,
+  associate,
+  clearSuggestedPeopleForConversation,
+  createPerson,
+  findPersonByName,
+  listPeople,
+  listPeopleForClosure,
+  type Person,
+} from "@/lib/repo/people";
 import { getModel, modelForRole, reasoningEffortForRole } from "@/lib/models/registry";
 import type { TokenUsage } from "@/lib/models/types";
 import { recordUsage } from "@/lib/repo/usage";
@@ -43,7 +53,7 @@ const CLOSE_SYSTEM_PROMPT =
   "second-guess a choice, address the reader, or comment on your own output — no \"Is this a decision?\", " +
   "no \"Good.\", no \"maybe\". If you are unsure whether something belongs in a section, leave it out. Write " +
   "each bullet as a plain declarative statement with no surrounding quotation marks.\n\n" +
-  "Use exactly these five labeled sections, in this order, and nothing else:\n\n" +
+  "Use exactly these six labeled sections, in this order, and nothing else:\n\n" +
   "Summary:\n" +
   "Two to five sentences on what this conversation was for and where it ended up. Past tense, specific, " +
   "no preamble.\n\n" +
@@ -62,7 +72,21 @@ const CLOSE_SYSTEM_PROMPT =
   "Remember globally:\n" +
   "One bullet per durable fact about the USER — how they work, what they prefer, stable facts about their " +
   "situation — that would apply in an unrelated Project too. This section should usually be \"None.\"; " +
-  "propose something here only when it is clearly not Project-specific.";
+  "propose something here only when it is clearly not Project-specific.\n\n" +
+  "People:\n" +
+  "One bullet per person, written exactly as \"Name — what was learned about them here.\" Only people the " +
+  "user has a real working relationship with: colleagues, clients, collaborators, people they meet or " +
+  "correspond with, family. This is a rolodex of the user's actual working life, not an index of everyone " +
+  "the conversation named.\n" +
+  "Do NOT propose historical figures, authors, researchers, public figures, fictional characters, or " +
+  "anyone who is the SUBJECT MATTER of the conversation rather than a participant in the user's work. A " +
+  "conversation about Alan Turing, Marshall McLuhan, or a film director proposes nobody, however much was " +
+  "said about them. The test is whether the user has a relationship with this person, not whether the " +
+  "person was discussed.\n" +
+  "Where the user's known people are listed for you below, match one by their exact name or alias and use " +
+  "that exact spelling. Never assume a similar name is the same person — if you are not certain it is the " +
+  "same human, write the name as it appeared and let the user decide.\n" +
+  "Write \"None.\" if there are none, which is the common case.";
 
 // Bounded on purpose: closing a 900,000-character conversation must not cost
 // more than the conversation did. The rolling summary already covers the early
@@ -73,6 +97,9 @@ export interface ClosureDraft {
   closure: EpisodeClosure;
   notes: ProjectNote[];
   memory: MemoryItem[];
+  // People this closing proposed, or already-known people it learned something
+  // new about, each with the facts it proposed for them.
+  people: Array<{ person: Person; facts: MemoryItem[] }>;
 }
 
 function transcriptTail(messages: Message[]): string {
@@ -93,6 +120,7 @@ const SECTION_KEYS = [
   "open questions",
   "remember in this project",
   "remember globally",
+  "people",
 ] as const;
 
 // A heading is recognized by stripping its decoration and comparing, rather
@@ -150,6 +178,46 @@ export function bullets(section: string | undefined): string[] {
     .filter((line) => line.length > 0);
 }
 
+// Splits "Keith — cares about accessibility in every review." into a name and
+// what was learned. Models write the separator as an em dash, an en dash, a
+// hyphen, or a colon, so all four are accepted.
+//
+// A line with no separator is only treated as a bare name when it plausibly is
+// one: short, and not a sentence. Without that guard a model that ignored the
+// format would turn a whole sentence about someone into a person named after
+// the sentence — and a junk name in a rolodex is worse than a missed one,
+// because the user has to clean it up.
+const MAX_BARE_NAME_LENGTH = 60;
+
+export function parsePersonLine(line: string): { name: string; fact: string | null } | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^(.+?)\s*(?:—|–|:|\s-\s)\s*([\s\S]+)$/);
+  if (match) {
+    const name = match[1].trim();
+    const fact = match[2].trim();
+    if (!name || name.length > MAX_BARE_NAME_LENGTH) return null;
+    return { name, fact: fact || null };
+  }
+  if (trimmed.length > MAX_BARE_NAME_LENGTH || /[.!?]/.test(trimmed)) return null;
+  return { name: trimmed, fact: null };
+}
+
+// The known roster, handed to the model so it can match someone it recognizes
+// instead of proposing a duplicate. Names and aliases only — what is known
+// about them is not the closing model's business.
+function rosterBlock(): string {
+  const people = listPeople({ status: "established" });
+  if (!people.length) return "";
+  const listed = people
+    .slice(0, 60)
+    .map((p) => (p.aliases.length ? `${p.name} (also: ${p.aliases.join(", ")})` : p.name));
+  return (
+    `\n\nPeople already recorded (match by these exact names or aliases; anyone not listed is a new ` +
+    `proposal): ${listed.join("; ")}${people.length > 60 ? `; and ${people.length - 60} more` : ""}.`
+  );
+}
+
 // Drafts (or redrafts) the close-out of one conversation. Replaces any previous
 // draft for the same conversation, sparing whatever the user already kept.
 export async function draftClosure(conversationId: string): Promise<ClosureDraft> {
@@ -175,7 +243,8 @@ export async function draftClosure(conversationId: string): Promise<ClosureDraft
       {
         role: "user",
         content:
-          `Project: ${getProject(conversation.project_id)?.name ?? "Unknown"}\nConversation: ${conversation.title}\n\n` +
+          `Project: ${getProject(conversation.project_id)?.name ?? "Unknown"}\nConversation: ${conversation.title}` +
+          `${rosterBlock()}\n\n` +
           `${priorBlock}${transcriptTail(messages)}`,
       },
     ],
@@ -201,8 +270,11 @@ export async function draftClosure(conversationId: string): Promise<ClosureDraft
   // summary — better than an error and an empty draft.
   const summary = (sections["summary"] ?? extractDelimited(reply)).trim();
 
-  // Replace the previous draft only now that a new one actually exists.
+  // Replace the previous draft only now that a new one actually exists. Both
+  // people clearers run before deleteClosuresForConversation, because they find
+  // what to clear by joining through the closure rows it deletes.
   clearSuggestedForConversation(conversationId);
+  clearSuggestedPeopleForConversation(conversationId);
   clearProposedNotes(conversationId);
   deleteClosuresForConversation(conversationId);
 
@@ -256,10 +328,41 @@ export async function draftClosure(conversationId: string): Promise<ClosureDraft
     });
   }
 
+  // People. A name the roster already knows becomes a new suggested fact on the
+  // person who is already there; an unknown name becomes a suggested person as
+  // well. Either way the association with this Project is proposed, not made:
+  // being on a Project's roster puts someone into every prompt in it, which is
+  // more than a closing gets to decide on its own.
+  for (const line of bullets(sections["people"])) {
+    const parsed = parsePersonLine(line);
+    if (!parsed) continue;
+    const existing = findPersonByName(parsed.name);
+    const personId =
+      existing?.id ??
+      createPerson({
+        name: parsed.name,
+        status: "suggested",
+        closureId: closure.id,
+        sourceConversationId: conversationId,
+      }).id;
+    if (parsed.fact) {
+      addPersonFact({
+        personId,
+        content: parsed.fact,
+        status: "suggested",
+        source: `episode:${conversationId}`,
+        closureId: closure.id,
+        sourceConversationId: conversationId,
+      });
+    }
+    associate(conversation.project_id, personId, null, { status: "suggested", closureId: closure.id });
+  }
+
   return {
     closure,
     notes: listNotesForClosure(closure.id),
     memory: listMemoryForClosure(closure.id),
+    people: listPeopleForClosure(closure.id),
   };
 }
 
@@ -270,5 +373,6 @@ export function getDraft(conversationId: string): ClosureDraft | null {
     closure,
     notes: listNotesForClosure(closure.id),
     memory: listMemoryForClosure(closure.id),
+    people: listPeopleForClosure(closure.id),
   };
 }

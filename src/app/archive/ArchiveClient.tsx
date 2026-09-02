@@ -1,10 +1,11 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Button, EmptyState, Input, Tag } from "@/components/ui";
 import { IconSearch } from "@/components/icons";
 import { renderMarkdown } from "@/lib/markdownToReact";
+import { TrajectoryTimeline, type TimelineTrajectory } from "@/components/TrajectoryTimeline";
 
 interface SearchResult {
   kind: string;
@@ -18,7 +19,7 @@ interface SearchResult {
 
 function highlightSnippet(snippet: string): string {
   const escaped = snippet.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return escaped.replace(/⟦/g, "<mark>").replace(/⟧/g, "</mark>");
+  return escaped.replace(/âŸ¦/g, "<mark>").replace(/âŸ§/g, "</mark>");
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -31,6 +32,7 @@ const KIND_LABEL: Record<string, string> = {
   skill: "Skill",
   style_guide: "Style Guide",
   character: "Character",
+  person: "Person",
 };
 
 function hrefFor(r: SearchResult): string {
@@ -44,72 +46,11 @@ function hrefFor(r: SearchResult): string {
     case "style_guide":
     case "character":
       return r.projectId ? `/image-lab?project=${r.projectId}` : "/image-lab";
+    case "person":
+      return `/people/${r.refId}`;
     default:
       return r.projectId ? `/projects/${r.projectId}` : "/archive";
   }
-}
-
-interface TrajectoryPassage {
-  chunkId: string;
-  kind: string;
-  title: string;
-  date: string;
-  preview: string;
-  similarity?: number;
-  href?: string;
-  sourceContext?: string;
-}
-interface Trajectory {
-  query: string;
-  granularity: "month" | "quarter";
-  totalPassages: number;
-  firstDate: string | null;
-  lastDate: string | null;
-  first: TrajectoryPassage | null;
-  last: TrajectoryPassage | null;
-  spanDays: number;
-  periods: { key: string; label: string; count: number; passages: TrajectoryPassage[] }[];
-}
-
-// How often the topic came up in each period. One series, so no legend — the
-// heading names it; magnitude over ordered time, so columns rather than a line
-// (the periods are counts in buckets, not a continuous measurement). The
-// period list rendered below this doubles as the chart's table view, so the
-// shape is never the only way to read the numbers.
-function TimelineChart({ periods }: { periods: { key: string; label: string; count: number }[] }) {
-  if (periods.length < 2) return null;
-  const max = Math.max(...periods.map((p) => p.count));
-  const peak = periods.findIndex((p) => p.count === max);
-
-  return (
-    <div>
-      <div className="flex h-14 items-end gap-[2px]" role="img" aria-label={`Passages per period, peaking at ${max} in ${periods[peak].label}`}>
-        {periods.map((p, i) => (
-          <div
-            key={p.key}
-            title={`${p.label}: ${p.count} passage${p.count === 1 ? "" : "s"}`}
-            className="group relative flex-1 rounded-t-[4px] bg-[var(--color-accent)] opacity-70 transition-opacity hover:opacity-100"
-            style={{ height: `${Math.max(6, (p.count / max) * 100)}%` }}
-          >
-            <span className="pointer-events-none absolute -top-4 left-1/2 hidden -translate-x-1/2 whitespace-nowrap font-technical text-[10px] text-[var(--color-text)] group-hover:block">
-              {p.count}
-            </span>
-            {/* Selective direct labels only: the peak carries a number at rest,
-                every other bar reveals its own on hover. */}
-            {i === peak && (
-              <span className="pointer-events-none absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap font-technical text-[10px] text-[var(--color-text-muted)] group-hover:hidden">
-                {p.count}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="mt-1 flex justify-between font-technical text-[10px] text-[var(--color-text-faint)]">
-        <span>{periods[0].label}</span>
-        <span>{periods[periods.length - 1].label}</span>
-      </div>
-    </div>
-  );
 }
 
 export function ArchiveClient() {
@@ -122,7 +63,7 @@ export function ArchiveClient() {
   const [answerSources, setAnswerSources] = useState<SearchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [trajectory, setTrajectory] = useState<Trajectory | null>(null);
+  const [trajectory, setTrajectory] = useState<TimelineTrajectory | null>(null);
   const [narration, setNarration] = useState<string | null>(null);
   const [tracing, setTracing] = useState(false);
   const [narrating, setNarrating] = useState(false);
@@ -151,7 +92,7 @@ export function ArchiveClient() {
     return () => clearTimeout(handle);
   }, [query, mode, searchStyle]);
 
-  // The timeline itself costs nothing — it's retrieval reorganized by date —
+  // The timeline itself costs nothing â€” it's retrieval reorganized by date â€”
   // so it runs on its own. Narration is a separate button because it's the
   // only part that spends anything.
   async function trace(narrate: boolean) {
@@ -212,10 +153,10 @@ export function ArchiveClient() {
             }}
             placeholder={
               mode === "search"
-                ? "Search by meaning or wording…"
+                ? "Search by meaning or wordingâ€¦"
                 : mode === "ask"
-                  ? "Ask a question about your archive…"
-                  : "A topic to trace over time…"
+                  ? "Ask a question about your archiveâ€¦"
+                  : "A topic to trace over timeâ€¦"
             }
             className="pl-8"
           />
@@ -237,11 +178,11 @@ export function ArchiveClient() {
         <div className="mb-6">
           <div className="flex items-center gap-2">
             <Button variant="accent" onClick={() => trace(false)} disabled={!query.trim() || tracing}>
-              {tracing ? "Tracing…" : "Trace this topic"}
+              {tracing ? "Tracingâ€¦" : "Trace this topic"}
             </Button>
             {trajectory && trajectory.totalPassages > 0 && !narration && (
               <Button variant="ghost" onClick={() => trace(true)} disabled={narrating}>
-                {narrating ? "Reading the timeline…" : "Describe how it changed"}
+                {narrating ? "Reading the timelineâ€¦" : "Describe how it changed"}
               </Button>
             )}
           </div>
@@ -274,64 +215,7 @@ export function ArchiveClient() {
 
           {trajectory && trajectory.totalPassages > 0 && (
             <div className="mt-5">
-              <div className="mb-4 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[12.5px] text-[var(--color-text-muted)]">
-                <span>
-                  <span className="text-[var(--color-text)]">{trajectory.totalPassages}</span> passages
-                </span>
-                <span>
-                  first on <span className="text-[var(--color-text)]">{trajectory.firstDate?.slice(0, 10)}</span>
-                </span>
-                <span>
-                  most recent <span className="text-[var(--color-text)]">{trajectory.lastDate?.slice(0, 10)}</span>
-                </span>
-                <span>
-                  spanning <span className="text-[var(--color-text)]">{trajectory.spanDays}</span> days
-                </span>
-              </div>
-              <TimelineChart periods={trajectory.periods} />
-              <div className="mt-5 flex flex-col gap-5">
-                {trajectory.periods.map((p) => (
-                  <div key={p.key}>
-                    <div className="mb-1.5 flex items-baseline gap-2">
-                      <span className="text-[13px] font-medium text-[var(--color-text)]">{p.label}</span>
-                      <span className="font-technical text-[11px] text-[var(--color-text-faint)]">
-                        {p.count} passage{p.count === 1 ? "" : "s"}
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-1.5 border-l border-[var(--color-border)] pl-3">
-                      {/* Counts are uncapped; the passages are a
-                          relevance-ranked sample, so a quiet period can be real
-                          and still have nothing strong enough to show. Say that
-                          rather than rendering an empty period. */}
-                      {p.passages.length === 0 && (
-                        <p className="text-[12px] text-[var(--color-text-faint)]">
-                          Mentioned here, but nothing among the closest matches.
-                        </p>
-                      )}
-                      {p.passages.map((x) => (
-                        <div key={x.chunkId}>
-                          <div className="flex items-baseline gap-2">
-                            <span className="font-technical text-[10.5px] uppercase tracking-[0.06em] text-[var(--color-text-faint)]">
-                              {x.date.slice(0, 10)} · {KIND_LABEL[x.kind] ?? x.kind}
-                            </span>
-                            {x.href ? (
-                              <Link
-                                href={x.href}
-                                className="truncate text-[12.5px] text-[var(--color-text)] underline decoration-[var(--color-border-strong)] underline-offset-2 transition-colors hover:text-[var(--color-accent)]"
-                              >
-                                {x.title}
-                              </Link>
-                            ) : (
-                              <span className="truncate text-[12.5px] text-[var(--color-text)]">{x.title}</span>
-                            )}
-                          </div>
-                          <p className="text-[12px] leading-relaxed text-[var(--color-text-muted)]">{x.preview}…</p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <TrajectoryTimeline trajectory={trajectory} />
             </div>
           )}
         </div>
@@ -340,7 +224,7 @@ export function ArchiveClient() {
       {mode === "ask" && (
         <div className="mb-6">
           <Button variant="accent" onClick={ask} disabled={!query.trim() || asking}>
-            {asking ? "Consulting the archive…" : "Ask my archive"}
+            {asking ? "Consulting the archiveâ€¦" : "Ask my archive"}
           </Button>
           {error && (
             <div className="mt-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">

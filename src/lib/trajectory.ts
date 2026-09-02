@@ -121,7 +121,15 @@ export async function traceTrajectory(
     .filter((c) => /^\d{4}-\d{2}/.test(c.sourceDate))
     .sort((a, b) => (a.sourceDate < b.sourceDate ? -1 : a.sourceDate > b.sourceDate ? 1 : 0));
 
-  if (!dated.length && !counts.total) {
+  // The keyword count is the only honest denominator, and it is also the only
+  // honest *gate*. The semantic half of retrieval has no relevance floor —
+  // cosine similarity ranks every passage in the archive, so it always returns
+  // a full pool however unrelated the query is. Building a timeline from that
+  // pool produced a confident 240-passage history for a query matching nothing
+  // at all (verified against the real archive: "zzzznothing" reported the same
+  // 240 as a real topic, because 240 is POOL_SIZE). Semantic passages are still
+  // used below — but only to illustrate periods that lexically exist.
+  if (!counts.total) {
     return {
       query,
       granularity: "month",
@@ -140,11 +148,9 @@ export async function traceTrajectory(
 
   // Granularity is chosen from how many distinct months actually matched, so a
   // topic confined to one season stays month-by-month while one spanning years
-  // collapses to quarters.
-  const distinctMonths = new Set([
-    ...counts.byMonth.keys(),
-    ...dated.map((c) => monthKey(c.sourceDate)),
-  ]).size;
+  // collapses to quarters. Only real (keyword-counted) months count here, for
+  // the same reason they gate the periods below.
+  const distinctMonths = counts.byMonth.size;
   const granularity: "month" | "quarter" = distinctMonths > MAX_PERIODS ? "quarter" : "month";
   const keyOf = granularity === "quarter" ? quarterKey : monthKey;
 
@@ -157,38 +163,47 @@ export async function traceTrajectory(
     periodCounts.set(key, (periodCounts.get(key) ?? 0) + n);
   }
 
+  // Passages illustrate periods; they never create them. A pooled passage in a
+  // period the counts don't know about is a semantic near-miss, not evidence
+  // that the topic came up then.
   const buckets = new Map<string, RetrievedChunk[]>();
   for (const chunk of dated) {
     const key = keyOf(chunk.sourceDate);
+    if (!periodCounts.has(key)) continue;
     const list = buckets.get(key);
     if (list) list.push(chunk);
     else buckets.set(key, [chunk]);
-    if (!periodCounts.has(key)) periodCounts.set(key, 0);
   }
 
   const periods: TrajectoryPeriod[] = [...periodCounts.keys()]
     .sort((a, b) => (a < b ? -1 : 1))
     .map((key) => {
-      const chunks = buckets.get(key) ?? [];
+      const passages = (buckets.get(key) ?? [])
+        // Most relevant within the period — the point is what best represents
+        // this moment in the topic's life, not what happened to come first.
+        .slice()
+        .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
+        .slice(0, PASSAGES_PER_PERIOD)
+        .map((c) => toPassage(c, linkFor(c)));
       return {
         key,
         label: label(key),
         // Semantic-only matches don't appear in the keyword count, so a period
-        // never claims fewer passages than it is actually showing.
-        count: Math.max(periodCounts.get(key) ?? 0, chunks.length),
-        passages: chunks
-          // Most relevant within the period — the point is what best represents
-          // this moment in the topic's life, not what happened to come first.
-          .slice()
-          .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-          .slice(0, PASSAGES_PER_PERIOD)
-          .map((c) => toPassage(c, linkFor(c))),
+        // never claims fewer passages than it is actually *showing*. Compared
+        // against the shown passages, not the bucket: the bucket holds the
+        // whole retrieval pool for that period, and taking its size made the
+        // bars sum to far more than the stated total.
+        count: Math.max(periodCounts.get(key) ?? 0, passages.length),
+        passages,
       };
     });
 
-  const firstDate = [counts.earliest, dated[0]?.sourceDate].filter(Boolean).sort()[0] ?? null;
-  const lastDate =
-    [counts.latest, dated[dated.length - 1]?.sourceDate].filter(Boolean).sort().reverse()[0] ?? null;
+  // Endpoints come from the counts for the same reason: a semantic near-miss
+  // from 2019 must not become "when I first thought about this".
+  const firstDate = counts.earliest;
+  const lastDate = counts.latest;
+  const realPeriods = periods.filter((p) => p.count > 0);
+  const shown = realPeriods.flatMap((p) => p.passages);
   const spanDays =
     firstDate && lastDate
       ? Math.round((new Date(lastDate).getTime() - new Date(firstDate).getTime()) / 86_400_000)
@@ -197,13 +212,18 @@ export async function traceTrajectory(
   return {
     query,
     granularity,
-    totalPassages: Math.max(counts.total, dated.length),
+    // The sum of what the periods claim, so the number in the header is always
+    // the number the bars add up to. That is the archive's keyword count plus,
+    // at most, the few semantic-only passages each period is actually showing
+    // — never the size of the retrieval pool, which is what used to make every
+    // query report POOL_SIZE.
+    totalPassages: realPeriods.reduce((n, p) => n + p.count, 0),
     firstDate,
     lastDate,
-    first: dated.length ? toPassage(dated[0], linkFor(dated[0])) : null,
-    last: dated.length ? toPassage(dated[dated.length - 1], linkFor(dated[dated.length - 1])) : null,
+    first: shown.length ? shown[0] : null,
+    last: shown.length ? shown[shown.length - 1] : null,
     spanDays: Number.isFinite(spanDays) ? spanDays : 0,
-    periods: periods.filter((p) => p.count > 0),
+    periods: realPeriods,
   };
 }
 

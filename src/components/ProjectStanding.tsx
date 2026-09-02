@@ -21,6 +21,15 @@ interface ActivityEntry {
   at: string;
   href: string;
 }
+interface ProjectPerson {
+  id: string;
+  name: string;
+  relationship: string | null;
+  status: "established" | "suggested";
+  // The association's own state. A person can be long established while their
+  // membership of *this* Project is still only proposed.
+  association_status: "established" | "suggested";
+}
 
 // Relative time, because "where the work stands" is a question about recency —
 // "3 days ago" answers it and "2026-08-30" makes the reader do arithmetic.
@@ -55,6 +64,7 @@ const ACTIVITY_LABEL: Record<string, string> = {
 export function ProjectStanding({ projectId }: { projectId: string }) {
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [people, setPeople] = useState<ProjectPerson[]>([]);
   const [adding, setAdding] = useState<"decision" | "question" | null>(null);
   const [draft, setDraft] = useState("");
 
@@ -64,6 +74,7 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
     const data = await res.json();
     setNotes(data.notes ?? []);
     setActivity(data.activity ?? []);
+    setPeople(data.people ?? []);
   }, [projectId]);
 
   useEffect(() => {
@@ -97,13 +108,39 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
     load();
   }
 
+  async function keepPerson(person: ProjectPerson) {
+    // Two things can be un-kept here, and both have to be settled for someone
+    // to appear on the roster the model actually sees.
+    if (person.status === "suggested") {
+      await fetch(`/api/people/${person.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "established" }),
+      });
+    }
+    await fetch(`/api/people/${person.id}/projects`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, status: "established" }),
+    });
+    load();
+  }
+
+  // Discarding removes them from this Project, not from Magi — someone
+  // proposed for the wrong Project is still a real person.
+  async function dropPerson(person: ProjectPerson) {
+    await fetch(`/api/people/${person.id}/projects?projectId=${projectId}`, { method: "DELETE" });
+    load();
+  }
+
   const questions = notes.filter((n) => n.kind === "question" && n.status !== "resolved");
   const decisions = notes.filter((n) => n.kind === "decision");
-  const proposedCount = notes.filter((n) => n.status === "proposed").length;
+  const proposedPeople = people.filter((p) => p.status === "suggested" || p.association_status === "suggested");
+  const proposedCount = notes.filter((n) => n.status === "proposed").length + proposedPeople.length;
 
   // Nothing recorded and nothing to show: say what this band is for rather
   // than rendering three empty boxes.
-  if (!notes.length && !activity.length) return null;
+  if (!notes.length && !activity.length && !people.length) return null;
 
   return (
     <div className="border-b border-[var(--color-border)] px-8 py-6">
@@ -168,6 +205,66 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
             )}
           </div>
         </div>
+
+        {/* People sits under the grid rather than as a fourth column: it is a
+            list of names, which reads as a strip and would waste a column. */}
+        {people.length > 0 && (
+          <div className="mt-5 border-t border-[var(--color-border)] pt-4">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+              People
+            </div>
+            <ul className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              {people.map((p) => {
+                const proposed = p.status === "suggested" || p.association_status === "suggested";
+                return (
+                  <li key={p.id} className="group flex items-center gap-1.5 text-[12.5px]">
+                    <Link
+                      href={`/people/${p.id}`}
+                      className={`transition-colors hover:text-[var(--color-accent)] ${
+                        proposed ? "text-[var(--color-text-muted)]" : "text-[var(--color-text)]"
+                      }`}
+                      title={p.relationship ?? undefined}
+                    >
+                      {p.name}
+                    </Link>
+                    {p.relationship && !proposed && (
+                      <span className="text-[11px] text-[var(--color-text-faint)]">{p.relationship}</span>
+                    )}
+                    {/* Same rule as a proposed decision: the band announces
+                        that there are proposals, so the action stays visible
+                        rather than hiding behind a hover. */}
+                    {proposed ? (
+                      <>
+                        <Tag>Proposed</Tag>
+                        <button
+                          onClick={() => keepPerson(p)}
+                          className="text-[11px] text-[var(--color-accent)] transition-colors hover:underline"
+                        >
+                          Keep
+                        </button>
+                        <button
+                          onClick={() => dropPerson(p)}
+                          aria-label={`Remove ${p.name} from this Project`}
+                          className="focus-ring text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-danger)]"
+                        >
+                          <IconTrash />
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        onClick={() => dropPerson(p)}
+                        aria-label={`Remove ${p.name} from this Project`}
+                        className="focus-ring text-[var(--color-text-faint)] opacity-0 transition-opacity hover:text-[var(--color-danger)] group-hover:opacity-100"
+                      >
+                        <IconTrash />
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
 
         {adding && (
           <div className="mt-4 flex items-center gap-2">

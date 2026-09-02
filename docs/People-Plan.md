@@ -1,8 +1,15 @@
 # People — implementation plan
 
-> Status: **not started**. This document is the brief for building it. Written 2026-09-02, after the
+> Status: **complete — all three phases shipped 2026-09-02**, except §8.3, which the user deliberately
+> deferred (see §11). Written 2026-09-02, after the
 > retrieval / lifecycle / provenance / composition / trajectory / test work described in
 > [`Handoff.md`](Handoff.md). Read that first — this plan assumes all of it exists and reuses most of it.
+>
+> What was actually built is in `Handoff.md` under **People — phase 1 (the rolodex)**, **phase 2 (Magi
+> participates)**, and **phase 3 (the connective payoff)**. The §11 open questions are answered in §11
+> below; the one §7.1 left undecided was settled while building phase 2 (see the note there); and
+> building §8.2 turned up a real pre-existing bug in `trajectory.ts` — recorded in §8.2 below and in the
+> Handoff.
 
 ---
 
@@ -225,9 +232,22 @@ bounded roster:
 Name, relationship, one-line summary only. **Cap it** (suggested: 12 people, then "…and N more") —
 this is a per-turn cost on every turn in that Project. Established people only.
 
-Their *facts* are not injected. Facts reach the model through retrieval, because they are indexed —
-which means the model gets the facts relevant to the actual question rather than all of them. This is
-the elegant part of the design and the reason phase 1's indexing matters.
+Their *facts* are not injected.
+
+> **Settled while building phase 2: `lookup_person` is the only route to a person's facts, and the
+> retrieval idea below was dropped deliberately.**
+>
+> The original plan said facts would reach the model through retrieval, since they are indexed — so the
+> model would get the facts relevant to the actual question rather than all of them. That never worked
+> and was never going to without a change: person facts are indexed with `project_id = null`, and
+> `buildSystemPrompt()` scopes retrieval to `familyProjectIds()`, so its `project_id IN (…)` clause
+> excludes them.
+>
+> Rather than widen that clause, the user chose the tool as the sole route. It is cheaper (no extra
+> per-turn query), more predictable, and it preserves something better than the original design: nothing
+> about a person enters a turn unless the model asks for it by name. The roster says who exists; the
+> tool says what is known. Verified live — a real model asked about someone called `lookup_person`
+> unprompted and answered only from what was recorded.
 
 Record it in `ContextProvenance` (`peopleOnProject: number` or similar) so the Context panel can show
 it, consistent with every other context source.
@@ -291,10 +311,32 @@ Output a finding per person with its evidence, promotable into a note or memory 
 passages are dated. Surface it on the person page as an **Over time** tab reusing the Archive page's
 timeline component.
 
+> **It was not free — it was broken, and building this found the bug.** Two things had to be fixed
+> first, both pre-existing and both invisible to the test suite (which runs with no embedding model, so
+> the semantic half of retrieval is always empty there):
+>
+> 1. **Every trajectory reported `POOL_SIZE`.** The semantic half has no relevance floor — cosine
+>    similarity ranks every passage in the archive — so it always returns a full pool however unrelated
+>    the query. `totalPassages: Math.max(counts.total, dated.length)` therefore reported 240 for
+>    *anything*. Verified against the real archive: `"zzzznothing"` reported the same 240 passages as a
+>    real topic, with invented periods. Periods are now created only by the keyword counts; pooled
+>    passages illustrate periods that lexically exist, and never create one.
+> 2. **The bars summed to more than the total.** Each period's count was `max(keyword count, size of
+>    that period's slice of the pool)`, so the chart claimed 223 passages while the header said 150. It
+>    now compares against the passages actually *shown* (at most three), which is what the guard was
+>    always meant to do, and the header is the sum of the bars by construction.
+>
+> Also: a person's own rolodex record is excluded from their timeline. It is indexed under their name
+> and dated when it was written, so leaving it in put a false point at "today" on the end of every
+> person's history.
+
 ### 8.3 Outstanding with a person
 
 Reuse the `project_notes` shape — a `person_id` on notes, or a parallel concept — for "what's open
 with X." Only worth building if the user actually wants it; ask before assuming.
+
+> **Asked, and deferred.** The user chose not to build it. It is the least certain of the three, and it
+> is the closest to the task-tracking gravity §2 warns about. Nothing in the schema blocks adding it.
 
 ---
 
@@ -337,17 +379,22 @@ Minimum bar before calling any phase done:
 
 ---
 
-## 11. Open questions for the user
+## 11. Open questions — answered 2026-09-02
 
-Ask before building the part each affects; none of them block starting phase 1.
+All four were put to the user before phase 1 was built. These are decisions now, not questions.
 
-1. **Do person facts appear on the Memory page too, or only on the person page?** Recommendation: the
-   person page is primary, with a "People" filter on Memory so nothing is hidden.
-2. **Hard delete or archive?** Recommendation: hard delete, with a confirmation. An archived person is
-   a strange object, and §9 argues for real deletion.
-3. **Should a person carry a photo?** Cheap (`data/people/` mirrors `data/images/`), genuinely helps
-   recognition, and is not CRM drift. Probably yes, but confirm.
-4. **Do people travel with a Project export?** See §9.
+1. **Do person facts appear on the Memory page too, or only on the person page?** — **Both.** The
+   person's page is where facts are managed; the Memory page gained a **People** section so it remains
+   the one place that shows everything Magi holds. Built.
+2. **Hard delete or archive?** — **Hard delete, with a confirmation.** `deletePerson()` removes the
+   person, their facts, their associations, and every index / embedding / passage row. Built and
+   verified against the live database.
+3. **Should a person carry a photo?** — **No, not for now.** Phase 1 is textual. Nothing prevents adding
+   it later: a `data/people/` directory mirroring `data/images/` plus one `addColumnIfMissing`.
+4. **Do people travel with a Project export?** — **No, deliberately.** A Project export is a file the
+   user may share, and what they know about third parties is not part of it. The `scope === 'project'`
+   filter in `exportProject()` enforces it and now says so in a comment. A single-person export
+   (`exportPerson()`, `GET /api/people/[id]/export`) is the answer instead.
 
 ---
 

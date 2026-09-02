@@ -176,6 +176,7 @@ const DATE_SOURCES: Array<{ kind: SearchKind; table: string }> = [
   { kind: "project", table: "projects" },
   { kind: "style_guide", table: "style_guides" },
   { kind: "character", table: "characters" },
+  { kind: "person", table: "people" },
 ];
 
 // One-time repair, same posture as ensureChunkIndex: local, no network, guarded

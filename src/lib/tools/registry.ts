@@ -8,6 +8,7 @@ import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
 import { runPython, runJavaScript } from "@/lib/tools/codeExec";
 import { saveDocxArtifact, saveXlsxArtifact, savePptxArtifact, saveGeneratedFile } from "@/lib/repo/artifacts";
 import { getSkill } from "@/lib/repo/skills";
+import { listPeople, lookupPerson } from "@/lib/repo/people";
 import { getProject, listAncestorProjects, familyProjectIds } from "@/lib/repo/projects";
 import { projectTheme } from "@/lib/files/theme";
 
@@ -59,6 +60,21 @@ export const TOOL_SPECS: ToolSpec[] = [
         },
       },
       required: ["topic"],
+    },
+  },
+  {
+    name: "lookup_person",
+    description:
+      "Look up one of the people the user works with — a colleague, client, collaborator, or family member they have recorded in Magi. Returns how they relate to the user, what the user has deliberately recorded about them (each fact dated), which Projects they are on, and the most relevant places they are mentioned in the archive. Use this whenever a named person comes up and what you know about them matters: before saying anything about who someone is, what they care about, or what was agreed with them. It returns only what the user actually recorded — if it finds nothing, say so rather than inferring the person from surrounding context.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "The person's name, exactly as the user writes it. Aliases the user has recorded also match.",
+        },
+      },
+      required: ["name"],
     },
   },
   {
@@ -271,6 +287,47 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
           })
           .join("\n\n")
       );
+    }
+
+    if (name === "lookup_person") {
+      const who = (rawInput as { name?: string } | undefined)?.name;
+      if (!who) return "Error: no name given.";
+      ensureChunkIndex();
+      const found = await lookupPerson(who);
+      if (!found) {
+        // Naming who *is* known is the difference between a dead end and a
+        // usable answer — and it is also the guard against the model deciding
+        // that a near-miss must be the same human. Matching is exact by
+        // design; the model is told plainly that it is.
+        const known = listPeople({ status: "established" }).map((p) => p.name);
+        if (!known.length) return `No one named "${who}" is recorded, and no people have been recorded yet.`;
+        return (
+          `No one named "${who}" is recorded. Names are matched exactly (including recorded aliases) — do not ` +
+          `assume a similar name is the same person. Recorded people: ${known.slice(0, 40).join(", ")}` +
+          (known.length > 40 ? `, and ${known.length - 40} more.` : ".")
+        );
+      }
+
+      const lines = [`${found.person.name}${found.person.relationship ? ` — ${found.person.relationship}` : ""}`];
+      if (found.person.aliases.length) lines.push(`Also known as: ${found.person.aliases.join(", ")}`);
+      if (found.person.summary) lines.push(found.person.summary);
+      if (found.projects.length) lines.push(`\nProjects: ${found.projects.map((p) => p.name).join(", ")}`);
+
+      lines.push(
+        found.facts.length
+          ? `\nWhat the user has recorded about them:\n` +
+              found.facts.map((f) => `- (${f.created_at.slice(0, 10)}) ${f.content}`).join("\n")
+          : `\nThe user has not recorded any facts about them yet.`
+      );
+      if (found.mentions.length) {
+        lines.push(
+          `\nMentioned in:\n` +
+            found.mentions
+              .map((m) => `- (${m.sourceDate.slice(0, 10)}) ${m.title}\n  ${m.content.replace(/\s+/g, " ").slice(0, 400)}`)
+              .join("\n")
+        );
+      }
+      return lines.join("\n");
     }
 
     if (name === "trace_thinking") {

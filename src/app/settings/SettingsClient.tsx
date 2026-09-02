@@ -619,7 +619,7 @@ export function SettingsClient() {
       <section>
         <h2 className="mb-1 text-[14px] font-semibold text-[var(--color-text)]">Usage &amp; cost</h2>
         <p className="mb-3 text-[13px] text-[var(--color-text-muted)]">
-          Every model call — conversations, Agents, Councils, Connections, and archive questions — is
+          Every model call — conversations, Agents, Councils, Connections, People, and archive questions — is
           logged with its token counts. Cost is computed automatically for OpenRouter models from their
           own live pricing catalog; Anthropic doesn&apos;t expose pricing via API, so its cost only appears
           once you enter a rate below.
@@ -700,7 +700,13 @@ export function SettingsClient() {
           permissions you set for that run. The Image Lab keeps Style Guides and Characters around for
           visual continuity. Projects can discover connections to each other, and can be exported or
           imported — including a ChatGPT or Claude data export. Every model call is logged for cost and
-          usage, with per-role reasoning-effort control.
+          usage, with per-role reasoning-effort control. People is a rolodex of who your work involves —
+          what you know about each of them, where you learned it, and every mention of them already in
+          your archive. Magi is told who is on a Project, can look one of them up mid-conversation,
+          proposes people when you close a conversation, can trace how your work with one of them
+          developed over time, and can ask which of the people you know might genuinely care about a
+          Project. It stays local, nothing is ever more than a proposal until you keep it, and deleting
+          someone really deletes them.
         </p>
         <p className="mt-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
           Anthropic is supported directly, along with every model OpenRouter proxies. The provider

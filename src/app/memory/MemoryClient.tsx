@@ -7,8 +7,11 @@ import { IconPlus, IconTrash } from "@/components/icons";
 
 interface MemoryItem {
   id: string;
-  scope: "global" | "project";
+  scope: "global" | "project" | "person";
   project_id: string | null;
+  person_id: string | null;
+  // Resolved server-side, so a fact about someone can say whose it is.
+  personName: string | null;
   content: string;
   source: string | null;
   status: "established" | "suggested";
@@ -88,6 +91,7 @@ export function MemoryClient() {
   const established = items.filter((i) => i.status !== "suggested");
   const globalItems = established.filter((i) => i.scope === "global");
   const projectItems = established.filter((i) => i.scope === "project");
+  const personItems = established.filter((i) => i.scope === "person");
   const projectName = (id: string | null) => projects.find((p) => p.id === id)?.name ?? "Unknown Project";
 
   return (
@@ -154,7 +158,13 @@ export function MemoryClient() {
                     <MemoryOrigin item={item} />
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
-                    <Tag>{item.scope === "global" ? "Global" : projectName(item.project_id)}</Tag>
+                    <Tag>
+                      {item.scope === "global"
+                        ? "Global"
+                        : item.scope === "person"
+                          ? item.personName ?? "Person"
+                          : projectName(item.project_id)}
+                    </Tag>
                     <Button variant="ghost" onClick={() => establish(item.id)}>
                       Keep
                     </Button>
@@ -201,7 +211,7 @@ export function MemoryClient() {
         )}
       </section>
 
-      <section>
+      <section className="mb-8">
         <h2 className="mb-2.5 text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
           Project memory
         </h2>
@@ -225,6 +235,52 @@ export function MemoryClient() {
                 onEditCancel={() => setEditingId(null)}
                 onRemove={() => remove(item.id)}
               />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* People. These are memory rows too, so this page shows them rather than
+          hiding a whole category of what Magi holds — but the person's own page
+          is where they are actually managed. */}
+      <section>
+        <h2 className="mb-1 text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+          People
+        </h2>
+        <p className="mb-2.5 text-[12.5px] text-[var(--color-text-muted)]">
+          What you know about the people in your work. These never enter a reply through the memory blocks above — they
+          reach one only through retrieval, or through the person&rsquo;s own page.{" "}
+          <Link href="/people" className="text-[var(--color-accent)]">
+            Open People
+          </Link>
+        </p>
+        {personItems.length === 0 ? (
+          <EmptyState title="Nothing here yet" description="Facts recorded on a person's page appear here as well." />
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {personItems.map((item) => (
+              <Panel key={item.id} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="text-[13px] leading-relaxed text-[var(--color-text)]">{item.content}</span>
+                    <MemoryOrigin item={item} />
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {item.person_id && (
+                      <Link href={`/people/${item.person_id}`}>
+                        <Tag tone="accent">{item.personName ?? "Person"}</Tag>
+                      </Link>
+                    )}
+                    <button
+                      onClick={() => remove(item.id)}
+                      aria-label="Delete"
+                      className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                </div>
+              </Panel>
             ))}
           </div>
         )}

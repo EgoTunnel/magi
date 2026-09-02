@@ -3,6 +3,7 @@ import { getProject, listAncestorProjects, familyProjectIds, type Project } from
 import { listMemory } from "@/lib/repo/memory";
 import { listDocuments } from "@/lib/repo/documents";
 import { getSkill } from "@/lib/repo/skills";
+import { listProjectRoster } from "@/lib/repo/people";
 import { projectTheme } from "@/lib/files/theme";
 import { ensureChunkIndex, retrieveChunks, type RetrievedChunk } from "@/lib/retrieval";
 import { resolveSourceLinks } from "@/lib/sourceLinks";
@@ -18,7 +19,15 @@ you don't know something the user may have already told Magi. Only search other 
 actually relevant, and say so when you do. When the question is about time or change — when something
 first came up, whether a view has shifted, what a period was spent on — use trace_thinking instead:
 it returns the same material as a dated timeline. Use the calculator for anything beyond trivial
-arithmetic rather than computing by hand.`;
+arithmetic rather than computing by hand.
+When a person the user actually works with comes up, use lookup_person rather than inferring from
+context: it returns what the user has deliberately recorded about them and where each fact came from.
+Never state something about a person as known unless it came back from that tool or is in front of you.`;
+
+// A per-turn cost in every conversation in the Project, so it is a list of who
+// exists, not a dossier on each of them. Past this many the block names the
+// overflow rather than growing without limit.
+const ROSTER_LIMIT = 12;
 
 // Fallback only: how much whole-document text gets injected in list order when
 // there is nothing to retrieve *against* (no user message yet) or the passage
@@ -77,6 +86,9 @@ export interface ContextProvenance {
   globalMemoryCount: number;
   projectMemoryCount: number;
   documentsUsed: { id: string; title: string; truncated: boolean }[];
+  // How many people were named in the Project roster block. Their facts are
+  // not injected — only who they are — so this counts names, not knowledge.
+  peopleOnProject: number;
   // Set when this conversation is long enough that older turns were replaced
   // by a rolling summary — how many, so the Context panel can say so.
   summarizedMessages?: number;
@@ -122,6 +134,10 @@ export async function buildSystemPrompt(opts: {
     (m) => m.status === "established" && m.scope === "project"
   );
   const documents = listDocuments(opts.projectId);
+  // Established people whose association with this Project is also established
+  // — see listProjectRoster. A suggested person or a proposed association is
+  // an inference, and inferences do not enter a prompt.
+  const roster = listProjectRoster(opts.projectId);
 
   // Passage retrieval against this turn's question. Scoped to the Project's
   // family (itself, what it inherits from, and what inherits from it) — the
@@ -248,6 +264,24 @@ export async function buildSystemPrompt(opts: {
       `\n## Project memory (established knowledge specific to this Project)\n${projectMemory.map(memoryLine).join("\n")}`
     );
   }
+  // Who this Project involves — names, relationship, one line each, and
+  // nothing more. What is *known* about any of them stays out: it would be a
+  // per-turn cost paid on every turn for facts most turns don't need, and the
+  // model has lookup_person for the turns that do.
+  if (roster.length) {
+    const listed = roster.slice(0, ROSTER_LIMIT);
+    const more = roster.length - listed.length;
+    const lines = listed.map((p) => {
+      const parts = [p.relationship, p.summary].filter((v): v is string => !!v && v.trim().length > 0);
+      return `- ${p.name}${parts.length ? ` — ${parts.join(". ")}` : ""}`;
+    });
+    sections.push(
+      `\n## People on this Project\nThe people the user actually works with here. This is who exists, not what ` +
+        `is known about them — call lookup_person for that, and don't infer anything about someone from this ` +
+        `list alone.\n${lines.join("\n")}` + (more > 0 ? `\n- …and ${more} more` : "")
+    );
+  }
+
   const passageLinks = resolveSourceLinks(passages.map((p) => ({ kind: p.kind, refId: p.refId })));
 
   if (passages.length) {
@@ -304,6 +338,7 @@ export async function buildSystemPrompt(opts: {
       globalMemoryCount: globalMemory.length,
       projectMemoryCount: projectMemory.length,
       documentsUsed,
+      peopleOnProject: Math.min(roster.length, ROSTER_LIMIT),
       summarizedMessages: opts.conversationSummary?.messageCount,
       retrievalMode: passages.length ? "retrieval" : documentBlocks.length ? "documents" : "none",
       retrieved: passages.length

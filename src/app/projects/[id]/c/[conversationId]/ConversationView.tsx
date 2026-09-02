@@ -470,6 +470,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
               {closeOpen && (
                 <EpisodeClosePanel
                   draft={closureDraft}
+                  projectId={projectId}
                   drafting={drafting}
                   error={closeError}
                   onDraft={draftClosure}
@@ -513,6 +514,12 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                 <div>{provenance.usedBrandGuide ? "Brand Guide applied" : "No Brand Guide set"}</div>
                 <div>{provenance.globalMemoryCount} global memory item(s)</div>
                 <div>{provenance.projectMemoryCount} Project memory item(s)</div>
+                {provenance.peopleOnProject > 0 && (
+                  <div>
+                    {provenance.peopleOnProject} person/people named on this Project (names only — facts come from
+                    lookup_person)
+                  </div>
+                )}
                 {provenance.summarizedMessages ? (
                   <div>
                     <div className="text-[var(--color-text-faint)]">Conversation history</div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bullets, extractDelimited, splitSections } from "@/lib/episodeClose";
+import { bullets, extractDelimited, parsePersonLine, splitSections } from "@/lib/episodeClose";
 
 describe("splitSections", () => {
   // Regression: the original heading matcher used a pattern that tried to
@@ -80,5 +80,43 @@ describe("bullets", () => {
   it("returns nothing for an absent or empty section", () => {
     expect(bullets(undefined)).toEqual([]);
     expect(bullets("   \n  ")).toEqual([]);
+  });
+});
+
+describe("parsePersonLine", () => {
+  it.each([
+    ["em dash", "Keith — cares about accessibility."],
+    ["en dash", "Keith – cares about accessibility."],
+    ["hyphen", "Keith - cares about accessibility."],
+    ["colon", "Keith: cares about accessibility."],
+  ])("splits a name from what was learned, with an %s", (_label, line) => {
+    expect(parsePersonLine(line)).toEqual({ name: "Keith", fact: "cares about accessibility." });
+  });
+
+  it("keeps a hyphenated name intact", () => {
+    expect(parsePersonLine("Anne-Marie — runs the studio.")).toEqual({
+      name: "Anne-Marie",
+      fact: "runs the studio.",
+    });
+  });
+
+  it("accepts a bare name with nothing learned", () => {
+    expect(parsePersonLine("Syl")).toEqual({ name: "Syl", fact: null });
+  });
+
+  // A model that ignored the format must not turn a sentence into a person
+  // named after the sentence — junk in a rolodex costs the user cleanup, which
+  // is worse than the miss.
+  it("refuses a sentence with no separator", () => {
+    expect(parsePersonLine("The team discussed the review process at some length.")).toBeNull();
+    expect(parsePersonLine("Nobody in particular was mentioned in this conversation at all")).toBeNull();
+  });
+
+  it("refuses a line whose name half is implausibly long", () => {
+    expect(parsePersonLine(`${"a".repeat(80)} — said something`)).toBeNull();
+  });
+
+  it("ignores blank lines", () => {
+    expect(parsePersonLine("   ")).toBeNull();
   });
 });

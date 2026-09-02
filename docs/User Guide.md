@@ -38,11 +38,11 @@ disk. Nothing is sent anywhere except to the model provider a given action actua
 The left sidebar is the whole of Magi's top-level structure:
 
 ```
-Home · Projects · Archive · Memory · Image Lab · Councils · Skills · Settings
+Home · Projects · Archive · Memory · People · Image Lab · Councils · Skills · Settings
 ```
 
 **⌘K** (or Ctrl+K) opens a command palette that searches across Projects, conversations, memory,
-documents, artifacts, Skills, Style Guides, and Characters — by wording, not just by title. The status
+documents, artifacts, Skills, Style Guides, Characters, and people — by wording, not just by title. The status
 bar at the bottom always shows where you are and which model is about to answer.
 
 ---
@@ -158,6 +158,89 @@ Hover an assistant message for three actions:
 **Global** (applies everywhere) and **Project** (applies to one Project). Add, edit, or delete freely.
 Nothing here appeared by accident — it was promoted from a conversation, a Council finding, or typed in
 directly.
+
+A third section, **People**, lists what you know about the people in your work. Those facts are managed
+on each person's own page (below); they appear here so that this page remains the one place that shows
+everything Magi holds.
+
+---
+
+## People
+
+**People** is a rolodex of the people your work actually involves — colleagues, clients, collaborators,
+family. It is deliberately *not* a contact book: there are no phone numbers, no email addresses, no
+birthdays, no reminders, and nothing syncs with anything. What it holds is what you know about someone
+and where you learned it.
+
+Add someone with **Add person**: a name, how they relate to you, a one-line summary, and — optionally —
+**also known as**, a list of exact alternate names. That list is the *only* way two names ever refer to
+the same person. Magi never guesses that "Keith" and "Keith Bell" are the same human; if they are, you
+say so, either by adding an alias or by merging the two records, which asks you to confirm.
+
+A person's page has three parts:
+
+- **What I know** — the facts you've recorded, each with the date you learned it and, where it came
+  from a conversation, a link straight back to the message. Add one with the box at the bottom.
+- **Mentions** — passages from anywhere in your archive that mention them. This needs no setup and no
+  extraction: it searches what you have already written, so a person added today immediately has a
+  history going back as far as your archive does.
+- **Over time** — press **Trace** and the page shows how your work with them has developed: when they
+  first came up, how often in each period since, and a few representative passages from each. It costs
+  nothing and calls no model — every passage in your archive is already dated.
+- **Projects** — which Projects they're part of. A person is global and crosses Projects, which is the
+  point of them being separate from any one. An association proposed by closing a conversation shows as
+  `PROPOSED` until you keep it.
+
+### Who might be interested in this?
+
+On any Project, under **Who might be interested?**, press **Ask**. Magi weighs each person you've
+recorded against that Project's actual material — searching the archive before deciding — and reports
+which of them, if any, genuinely relate to the work, with the evidence for each.
+
+It is built to say **nobody**. Most people have no real connection to most Projects, and a weak, generic
+link ("both involve strategy") is worse than none, because you might act on it. A run that finds nobody
+is working correctly. Findings you keep are saved to that Project's memory, attributed to the run — they
+are Magi's judgement about relevance, not new facts about the person, so they never quietly become part
+of what you "know" about them.
+
+### How Magi uses this
+
+Three ways, all of them bounded:
+
+- **The roster.** A conversation in a Project is told who is on that Project — name, relationship, and
+  the one-line summary, capped at twelve. That is who exists, not what you know: no facts are included.
+- **Looking someone up.** When a person comes up, Magi calls a `lookup_person` tool and gets back what
+  you have recorded, with dates, plus where they're mentioned. Nothing about a person reaches a reply
+  unless Magi asks for them by name — and it only ever gets facts you have kept.
+- **Names are matched exactly.** If you ask about a name Magi doesn't have, it says so and tells you who
+  it does have, rather than deciding a similar name must be the same person.
+
+**Closing a conversation** now also proposes people. It reads the conversation and suggests anyone you
+appear to have a real working relationship with, along with what it learned about them — matching names
+you've already recorded, and proposing a new person only when the name is genuinely new. It is told
+explicitly not to propose historical figures, authors, public figures, or anyone who was the subject
+matter rather than a participant, so a conversation about Turing or McLuhan proposes nobody. Review it
+in the closing panel: keeping someone there adds them to that Project's roster, and every proposal stays
+inert until you do.
+
+### What Magi stores about other people
+
+This is the only part of Magi whose subject is someone other than you, so it works to a higher standard:
+
+- **Everything stays on your machine.** People and their facts live in the same local SQLite file as the
+  rest of Magi. Nothing is uploaded, synced, or shared.
+- **Magi only ever proposes.** Anything Magi suggests about a person — the person themselves, a fact
+  about them, or their involvement in a Project — arrives marked *suggested*, is used in no reply, and
+  is not searchable, until you keep it. Nothing is inferred into the record behind your back, and
+  proposing only ever happens when you deliberately close a conversation, never turn by turn.
+- **Nothing is presented as fact that isn't.** A suggestion looks like a suggestion until you promote it.
+- **Delete means delete.** Deleting a person (bottom of their page, with a confirmation) removes them,
+  every fact about them, every Project association, and every trace of them in search and retrieval. It
+  cannot be undone, and nothing is quietly retained.
+- **Export** (top of their page) downloads everything Magi holds about one person as a single JSON file —
+  the honest answer to "what does your app know about me?"
+- **People do not travel with a Project export.** A Project export is a file you might share; what you
+  know about third parties is not part of it. Export a person from their own page instead.
 
 ---
 
@@ -352,3 +435,7 @@ Cost visibility, granular per-Skill/per-Agent permissions beyond the cross-Proje
 model recommendation, true semantic (meaning-based, as opposed to keyword) search, importing from other
 AI products' export formats, and Brand Libraries are all part of the larger vision but not built yet.
 See the Handoff document for the full list and the reasoning behind what got prioritized.
+
+**People** does not track what's still open with someone — "what's outstanding with X". It was
+considered and deliberately left out: it sits closest to task management, which this feature is
+explicitly not.

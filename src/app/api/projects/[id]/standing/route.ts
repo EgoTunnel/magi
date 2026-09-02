@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { listProjectActivity } from "@/lib/repo/activity";
 import { listProjectNotes } from "@/lib/repo/projectNotes";
+import { listPeopleForProject } from "@/lib/repo/people";
 
 // Everything the "where the work stands" band needs, in one request — it is a
 // single reading of the Project's state, not three independent widgets.
@@ -10,5 +11,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
   return NextResponse.json({
     notes: listProjectNotes(id),
     activity: listProjectActivity(id, Number.isFinite(limit) ? limit : 12),
+    // Who this Project involves, proposed members included — the band is where
+    // a proposal gets kept or discarded.
+    people: listPeopleForProject(id),
   });
 }

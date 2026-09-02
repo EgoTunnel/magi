@@ -5,14 +5,26 @@ import { db } from "@/lib/db";
 import { createProject } from "@/lib/repo/projects";
 import { addMessage, createConversation, listMessages, type Message } from "@/lib/repo/conversations";
 import { createDocument } from "@/lib/repo/documents";
-import { createMemory, listMemory } from "@/lib/repo/memory";
+import { createMemory, listMemory, setMemoryStatus } from "@/lib/repo/memory";
 import { createSkill } from "@/lib/repo/skills";
+import {
+  addPersonFact,
+  associate,
+  createPerson,
+  listPeople,
+  listPeopleForProject,
+  listProjectRoster,
+} from "@/lib/repo/people";
 import { buildHistoryWindow, getConversationSummary } from "@/lib/conversationWindow";
 import { draftClosure } from "@/lib/episodeClose";
 import { buildSystemPrompt } from "@/lib/contextBuilder";
 import { createAgentRun, getAgentRun } from "@/lib/repo/agents";
 import { runAgent } from "@/lib/agent";
 import { runCouncilDeliberation } from "@/lib/council";
+import { runPeopleInterestDiscovery } from "@/lib/peopleInterest";
+import { createPeopleInterestRun, getPeopleInterestRun } from "@/lib/repo/peopleInterest";
+import { traceTrajectory } from "@/lib/trajectory";
+import { SEARCH_KINDS } from "@/lib/searchIndex";
 import { createCouncilRun, getCouncilRun } from "@/lib/repo/councils";
 
 let mock: MockProvider;
@@ -140,6 +152,39 @@ describe("context assembly", () => {
     expect(system).not.toContain("SUGGESTED_FACT");
   });
 
+  // The property the People feature rests on. A fact about a third party is an
+  // ordinary memory row, so the only thing keeping it out of the Project and
+  // global memory blocks is that scope = 'person' matches neither branch of
+  // listMemory. If that ever stops being true, every person fact starts
+  // arriving in every turn of the Project they were mentioned in.
+  it("never puts a person's facts into the global or Project memory blocks", async () => {
+    const project = createProject({ name: "P" });
+    const person = createPerson({ name: "Keith" });
+    createMemory({ scope: "project", projectId: project.id, content: "PROJECT_FACT" });
+    addPersonFact({ personId: person.id, content: "PERSON_FACT_ABOUT_KEITH" });
+
+    const { system } = await buildSystemPrompt({ projectId: project.id, query: "Keith" });
+    expect(system).toContain("PROJECT_FACT");
+    expect(system).not.toContain("PERSON_FACT_ABOUT_KEITH");
+  });
+
+  it("never puts a suggested person or a suggested fact into the prompt", async () => {
+    const project = createProject({ name: "P" });
+    const proposed = createPerson({ name: "SUGGESTED_PERSON_MARTA", status: "suggested", summary: "A collaborator." });
+    const kept = createPerson({ name: "Keith" });
+    addPersonFact({ personId: kept.id, content: "SUGGESTED_FACT_ABOUT_KEITH", status: "suggested" });
+
+    const { system } = await buildSystemPrompt({ projectId: project.id, query: "Marta Keith collaborator" });
+    expect(system).not.toContain("SUGGESTED_PERSON_MARTA");
+    expect(system).not.toContain("SUGGESTED_FACT_ABOUT_KEITH");
+    // Not merely absent from the prompt — never indexed, so retrieval cannot
+    // reach them either.
+    expect(
+      (db.prepare(`SELECT COUNT(*) n FROM chunks WHERE kind = 'person' AND ref_id = ?`).get(proposed.id) as { n: number })
+        .n
+    ).toBe(0);
+  });
+
   it("dates every memory item and names where it came from", async () => {
     const project = createProject({ name: "P" });
     const conversation = createConversation(project.id, "Origin conversation");
@@ -235,6 +280,298 @@ None.
     const project = createProject({ name: "P" });
     const conversation = createConversation(project.id, "Empty");
     await expect(draftClosure(conversation.id)).rejects.toThrow(/nothing in this conversation/i);
+  });
+
+  const PEOPLE_REPLY = (people: string) => `<<<CLOSEOUT>>>
+Summary:
+A working session.
+
+Decisions:
+None.
+
+Open questions:
+None.
+
+Remember in this Project:
+None.
+
+Remember globally:
+None.
+
+People:
+${people}
+<<<END>>>`;
+
+  it("proposes an unknown name as a suggested person, with a suggested fact and a proposed association", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "q" });
+    mock.setDefaultReply(PEOPLE_REPLY("- Marta — leads the typography working group."));
+
+    const draft = await draftClosure(conversation.id);
+
+    expect(draft.people).toHaveLength(1);
+    const { person, facts } = draft.people[0];
+    expect(person.name).toBe("Marta");
+    expect(person.status).toBe("suggested");
+    expect(facts).toHaveLength(1);
+    expect(facts[0].status).toBe("suggested");
+    expect(facts[0].content).toBe("leads the typography working group.");
+    expect(facts[0].source_conversation_id).toBe(conversation.id);
+    // Proposed, not made: nothing has put her on the roster the model sees.
+    expect(listProjectRoster(project.id)).toHaveLength(0);
+    expect(listPeopleForProject(project.id)[0].association_status).toBe("suggested");
+  });
+
+  it("adds a fact to a person already in the roster rather than duplicating them", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "q" });
+    const existing = createPerson({ name: "Keith Bell", aliases: ["Keith"] });
+    mock.setDefaultReply(PEOPLE_REPLY("- Keith — cares about accessibility in every review."));
+
+    const draft = await draftClosure(conversation.id);
+
+    expect(listPeople()).toHaveLength(1);
+    expect(draft.people).toHaveLength(1);
+    expect(draft.people[0].person.id).toBe(existing.id);
+    // Matched by alias, and the person themselves is untouched — still
+    // established, not demoted by having been mentioned.
+    expect(draft.people[0].person.status).toBe("established");
+    expect(draft.people[0].facts[0].status).toBe("suggested");
+  });
+
+  // §4.1 — the encyclopedia problem. A Project about the history of technology
+  // must not turn Turing into a rolodex entry.
+  it("proposes nobody for a conversation about historical figures", async () => {
+    const project = createProject({ name: "History of Technology" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "Tell me about Turing." });
+    mock.setDefaultReply(PEOPLE_REPLY("None."));
+
+    const draft = await draftClosure(conversation.id);
+    expect(draft.people).toHaveLength(0);
+    expect(listPeople()).toHaveLength(0);
+  });
+
+  it("hands the closing model the existing roster so it can match by exact name", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "q" });
+    createPerson({ name: "Keith Bell", aliases: ["KB"] });
+    mock.setDefaultReply(PEOPLE_REPLY("None."));
+
+    await draftClosure(conversation.id);
+
+    expect(mock.calls[0].prompt).toContain("Keith Bell (also: KB)");
+  });
+
+  it("replaces un-kept people on a redraft but never one whose facts were kept", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "q" });
+    mock.setDefaultReply(PEOPLE_REPLY("- Marta — leads typography.\n- Nils — runs the print vendor."));
+    const first = await draftClosure(conversation.id);
+
+    const marta = first.people.find((p) => p.person.name === "Marta")!;
+    // The user kept a fact about Marta but has not yet kept Marta herself.
+    setMemoryStatus(marta.facts[0].id, "established");
+
+    mock.setDefaultReply(PEOPLE_REPLY("- Nils — runs the print vendor."));
+    await draftClosure(conversation.id);
+
+    const names = listPeople().map((p) => p.name).sort();
+    // Nils was re-proposed; Marta survived because deleting her would have
+    // taken an established fact with her.
+    expect(names).toEqual(["Marta", "Nils"]);
+    expect(listMemory({ personId: marta.person.id }).filter((f) => f.status === "established")).toHaveLength(1);
+  });
+});
+
+describe("the Project roster in a prompt", () => {
+  it("names established people and points the model at lookup_person", async () => {
+    const project = createProject({ name: "P" });
+    const person = createPerson({ name: "Keith", relationship: "client contact", summary: "Runs the reviews." });
+    addPersonFact({ personId: person.id, content: "SECRET_FACT_ABOUT_KEITH" });
+    associate(project.id, person.id);
+
+    const { system, provenance } = await buildSystemPrompt({ projectId: project.id, query: "Keith" });
+
+    expect(system).toContain("People on this Project");
+    expect(system).toContain("- Keith — client contact. Runs the reviews.");
+    expect(system).toContain("lookup_person");
+    expect(provenance.peopleOnProject).toBe(1);
+    // Who they are, not what is known about them.
+    expect(system).not.toContain("SECRET_FACT_ABOUT_KEITH");
+  });
+
+  it("caps the roster and says how many were left out", async () => {
+    const project = createProject({ name: "P" });
+    for (let i = 0; i < 15; i++) {
+      const person = createPerson({ name: `Person ${String(i).padStart(2, "0")}` });
+      associate(project.id, person.id);
+    }
+
+    const { system, provenance } = await buildSystemPrompt({ projectId: project.id, query: "anything" });
+
+    expect(provenance.peopleOnProject).toBe(12);
+    expect(system).toContain("Person 11");
+    expect(system).not.toContain("Person 12");
+    expect(system).toContain("…and 3 more");
+  });
+
+  it("omits the block entirely when the Project has nobody established on it", async () => {
+    const project = createProject({ name: "P" });
+    const proposed = createPerson({ name: "Marta", status: "suggested" });
+    associate(project.id, proposed.id, null, { status: "suggested" });
+
+    const { system, provenance } = await buildSystemPrompt({ projectId: project.id, query: "Marta" });
+    expect(system).not.toContain("People on this Project");
+    expect(system).not.toContain("Marta");
+    expect(provenance.peopleOnProject).toBe(0);
+  });
+});
+
+describe("who might be interested in this", () => {
+  const REPLY = (relevance: string, why: string) => `Relevance: ${relevance}\n\nWhy: ${why}`;
+
+  it("weighs each established person and records the evidence", async () => {
+    const project = createProject({ name: "Accessibility programme" });
+    const keith = createPerson({ name: "Keith", relationship: "client contact" });
+    addPersonFact({ personId: keith.id, content: "Cares about accessibility in every review." });
+    createPerson({ name: "Nils", relationship: "print vendor" });
+    createPerson({ name: "Marta", status: "suggested" });
+
+    const run = createPeopleInterestRun(project.id);
+    mock.setDefaultReply((opts) =>
+      String(opts.messages[0].content).includes("Keith")
+        ? REPLY("Strong", "Their recorded interest in accessibility is this Project's subject.")
+        : REPLY("None", "No real connection.")
+    );
+
+    await runPeopleInterestDiscovery({ runId: run.id, projectId: project.id });
+
+    const finished = getPeopleInterestRun(run.id)!;
+    expect(finished.status).toBe("complete");
+    // A suggested person is inert everywhere, this included.
+    expect(finished.findings.map((f) => f.personName).sort()).toEqual(["Keith", "Nils"]);
+    const forKeith = finished.findings.find((f) => f.personName === "Keith")!;
+    expect(forKeith.relevance).toBe("Strong");
+    expect(forKeith.summary).toContain("accessibility");
+  });
+
+  it("gives the model what is recorded about the person, and nothing invented", async () => {
+    const project = createProject({ name: "P" });
+    const person = createPerson({ name: "Keith", relationship: "client contact" });
+    addPersonFact({ personId: person.id, content: "KEPT_FACT" });
+    addPersonFact({ personId: person.id, content: "UNKEPT_FACT", status: "suggested" });
+
+    const run = createPeopleInterestRun(project.id);
+    mock.setDefaultReply(REPLY("None", "No real connection."));
+    await runPeopleInterestDiscovery({ runId: run.id, projectId: project.id });
+
+    const prompt = mock.calls[0].prompt;
+    expect(prompt).toContain("KEPT_FACT");
+    expect(prompt).not.toContain("UNKEPT_FACT");
+    // The instruction that keeps a manufactured link from being an acceptable
+    // answer lives in the system prompt, so it must actually be sent.
+    expect(mock.calls[0].system).toContain("Do not manufacture a connection");
+  });
+
+  it("marks someone already on the Project, and only when the association is kept", async () => {
+    const project = createProject({ name: "P" });
+    const onIt = createPerson({ name: "Keith" });
+    const proposed = createPerson({ name: "Syl" });
+    associate(project.id, onIt.id);
+    associate(project.id, proposed.id, null, { status: "suggested" });
+
+    const run = createPeopleInterestRun(project.id);
+    mock.setDefaultReply(REPLY("Moderate", "Some connection."));
+    await runPeopleInterestDiscovery({ runId: run.id, projectId: project.id });
+
+    const findings = getPeopleInterestRun(run.id)!.findings;
+    expect(findings.find((f) => f.personName === "Keith")!.alreadyOnProject).toBe(true);
+    expect(findings.find((f) => f.personName === "Syl")!.alreadyOnProject).toBe(false);
+  });
+
+  it("records a failure on the run rather than throwing", async () => {
+    const project = createProject({ name: "P" });
+    createPerson({ name: "Keith" });
+    const run = createPeopleInterestRun(project.id);
+    mock.failNext("provider exploded");
+
+    await runPeopleInterestDiscovery({ runId: run.id, projectId: project.id });
+
+    const finished = getPeopleInterestRun(run.id)!;
+    expect(finished.status).toBe("error");
+    expect(finished.findings[0].summary).toContain("provider exploded");
+  });
+});
+
+describe("person trajectory", () => {
+  // What the person page's Over time section asks for: everything except
+  // rolodex records themselves.
+  const PERSON_KINDS = SEARCH_KINDS.filter((k) => k !== "person");
+
+  it("traces a person by name and alias across the archive, dated", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "Keith wants the accessibility audit finished before the review board meets.",
+    });
+    const person = createPerson({ name: "Keith", aliases: ["KB"] });
+
+    const trajectory = await traceTrajectory([person.name, ...person.aliases].join(" "), {
+      kinds: PERSON_KINDS,
+    });
+
+    expect(trajectory.totalPassages).toBeGreaterThan(0);
+    expect(trajectory.periods.length).toBeGreaterThan(0);
+    expect(trajectory.firstDate).toBeTruthy();
+  });
+
+  // Regression, found against the real archive while building this: the
+  // semantic half of retrieval has no relevance floor, so it always returns a
+  // full pool. Counting that pool made every query — including one matching
+  // nothing at all — report exactly POOL_SIZE passages with an invented shape.
+  it("reports nothing for a query the archive does not actually match", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "The kestrel hunts at dusk." });
+
+    const trajectory = await traceTrajectory("zzzzunrelatedtopic");
+    expect(trajectory.totalPassages).toBe(0);
+    expect(trajectory.periods).toEqual([]);
+    expect(trajectory.firstDate).toBeNull();
+  });
+
+  // The bars are a picture of the same number the header states. They used to
+  // be able to sum to more than it, because each period's count could come
+  // from the size of its slice of the retrieval pool.
+  it("never claims more passages across its periods than in total", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    for (let i = 0; i < 12; i++) {
+      addMessage({ conversationId: conversation.id, role: "user", content: `The kestrel hunts at dusk, note ${i}.` });
+    }
+
+    const trajectory = await traceTrajectory("kestrel");
+    const summed = trajectory.periods.reduce((n, p) => n + p.count, 0);
+    expect(summed).toBe(trajectory.totalPassages);
+  });
+
+  // A rolodex record is indexed under the person's own name and dated when it
+  // was written, so including it would put a false point at "today" on the end
+  // of every person's timeline — an entry is not an occasion they came up.
+  it("does not count a person's own record as a mention of them", async () => {
+    const person = createPerson({ name: "Zzzznobodyhere", summary: "Nobody mentions them anywhere." });
+
+    expect((await traceTrajectory(person.name)).totalPassages).toBeGreaterThan(0);
+    const scoped = await traceTrajectory(person.name, { kinds: PERSON_KINDS });
+    expect(scoped.totalPassages).toBe(0);
+    expect(scoped.periods).toEqual([]);
   });
 });
 

@@ -244,6 +244,19 @@ export function IconPin(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function IconPeople(props: SVGProps<SVGSVGElement>) {
+  // Two figures, one behind the other — a rolodex of people you know, not a
+  // single contact card.
+  return (
+    <Base {...props}>
+      <circle cx="9.5" cy="8.5" r="3" />
+      <path d="M4 19.5c0-3 2.5-5 5.5-5s5.5 2 5.5 5" />
+      <path d="M15.5 6.2a3 3 0 0 1 0 5.6" />
+      <path d="M17 14.9c1.9.6 3 2.3 3 4.6" />
+    </Base>
+  );
+}
+
 export function IconEdit(props: SVGProps<SVGSVGElement>) {
   return (
     <Base {...props}>

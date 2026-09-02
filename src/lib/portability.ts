@@ -51,6 +51,12 @@ export function exportProject(projectId: string): ExportBundle {
     })),
   }));
 
+  // Project-scoped memory only — and deliberately no people. A person is
+  // global and crosses Projects, while a Project export is a file meant to be
+  // shared; shipping what the user knows about third parties inside it would
+  // be a privacy leak dressed up as portability. Someone who wants a person's
+  // record can export that person on their own page. The `scope === 'project'`
+  // filter is what enforces it, since a person's facts are memory rows.
   const memory = listMemory({ projectId })
     .filter((m) => m.scope === "project")
     .map((m) => ({ content: m.content, createdAt: m.created_at }));

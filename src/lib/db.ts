@@ -205,6 +205,20 @@ CREATE TABLE IF NOT EXISTS project_connections (
   updated_at TEXT NOT NULL
 );
 
+-- "Who might be interested in this?" — one investigation of a Project against
+-- the people the user knows. Same fire-and-forget shape as project_connections
+-- (a row created 'running', findings appended as they arrive, the client
+-- polling): a separate table rather than an overloaded one, because the
+-- question is Project→person, not Project→Project.
+CREATE TABLE IF NOT EXISTS people_interest_runs (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'running',
+  findings TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS usage_events (
   id TEXT PRIMARY KEY,
   project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
@@ -266,6 +280,36 @@ CREATE TABLE IF NOT EXISTS project_notes (
   updated_at TEXT NOT NULL
 );
 
+-- The people connected to the user's work. Deliberately not a contact record:
+-- there is no phone number, no email, no address book, and nothing syncs. What
+-- is actually stored about a person is their *facts*, which are ordinary memory
+-- rows (scope 'person', person_id set) — so they inherit established/suggested
+-- status, claim-level provenance, dating, and the rule that a suggestion is
+-- inert until kept. aliases is a JSON array of exact alternate names; matching
+-- is never fuzzy, because a wrong merge in a rolodex is worse than a miss.
+CREATE TABLE IF NOT EXISTS people (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  aliases TEXT NOT NULL DEFAULT '[]',
+  relationship TEXT,
+  summary TEXT,
+  status TEXT NOT NULL DEFAULT 'established',
+  closure_id TEXT,
+  source_conversation_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- A person crosses Projects — that is the entire point of them being global.
+-- Association is therefore a relationship, not a scope.
+CREATE TABLE IF NOT EXISTS project_people (
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  person_id  TEXT NOT NULL REFERENCES people(id)   ON DELETE CASCADE,
+  role TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, person_id)
+);
+
 -- Passage-level index over the same material search_index mirrors at whole-item
 -- granularity. This is what retrieval-first context assembly reads from: one
 -- row per ~1200-character passage, with its own vector, so a turn can be given
@@ -311,6 +355,9 @@ CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_model ON chunks(model);
 CREATE INDEX IF NOT EXISTS idx_episode_closures_conversation ON episode_closures(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_project_notes_project ON project_notes(project_id);
+CREATE INDEX IF NOT EXISTS idx_people_status ON people(status);
+CREATE INDEX IF NOT EXISTS idx_people_interest_runs_project ON people_interest_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_project_people_person ON project_people(person_id);
 `;
 
 db.exec(SCHEMA);
@@ -373,6 +420,19 @@ addColumnIfMissing("memory", "closure_id", "TEXT");
 // in the app rather than to a free-text `source` label.
 addColumnIfMissing("memory", "source_message_id", "TEXT");
 addColumnIfMissing("memory", "source_conversation_id", "TEXT");
+// A fact about a person. Set together with scope = 'person', which is a value
+// neither branch of listMemory() matches — so person facts cannot reach the
+// global or Project memory blocks of a system prompt by accident. They get
+// there only by the deliberate routes the People feature adds.
+addColumnIfMissing("memory", "person_id", "TEXT");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_person ON memory(person_id)`);
+// An association proposed by closing a conversation is itself an inference,
+// and inferences are never established here — being on a Project's roster puts
+// a person into every prompt in that Project, which is exactly the kind of
+// effect a proposal must not have before someone agrees to it. A person can be
+// established while their association with this Project is still proposed.
+addColumnIfMissing("project_people", "status", "TEXT NOT NULL DEFAULT 'established'");
+addColumnIfMissing("project_people", "closure_id", "TEXT");
 // Before those columns existed, the origin of a conversation-sourced memory
 // item was stuffed into the free-text `source` field — as a bare conversation
 // id by the "Remember" action, and as "episode:<id>" by an episode closing.

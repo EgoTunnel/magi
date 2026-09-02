@@ -3,8 +3,12 @@ import { indexRemove, indexUpsert } from "@/lib/searchIndex";
 
 export interface MemoryItem {
   id: string;
-  scope: "global" | "project";
+  // 'person' is a third scope, not a third kind of table: a fact about someone
+  // is an ordinary memory row, so it inherits status, provenance, dating, and
+  // the rule that a suggestion is inert. See src/lib/repo/people.ts.
+  scope: "global" | "project" | "person";
   project_id: string | null;
+  person_id: string | null;
   content: string;
   source: string | null;
   status: "established" | "suggested";
@@ -19,7 +23,20 @@ export interface MemoryItem {
   created_at: string;
 }
 
-export function listMemory(opts: { scope?: "global" | "project"; projectId?: string } = {}): MemoryItem[] {
+// Note what neither branch below matches: scope = 'person'. That is the safety
+// property the People feature rests on — a fact about someone can never be
+// swept into the global or Project memory block of a system prompt just because
+// it happens to live in the same table. Person facts are listed only by asking
+// for them explicitly (personId), or by the unfiltered call the Memory page
+// makes to show everything Magi holds.
+export function listMemory(
+  opts: { scope?: "global" | "project"; projectId?: string; personId?: string } = {}
+): MemoryItem[] {
+  if (opts.personId) {
+    return db
+      .prepare(`SELECT * FROM memory WHERE scope = 'person' AND person_id = ? ORDER BY created_at DESC`)
+      .all(opts.personId) as MemoryItem[];
+  }
   if (opts.scope === "global") {
     return db
       .prepare(`SELECT * FROM memory WHERE scope = 'global' ORDER BY created_at DESC`)
@@ -36,9 +53,24 @@ export function listMemory(opts: { scope?: "global" | "project"; projectId?: str
   return db.prepare(`SELECT * FROM memory ORDER BY created_at DESC`).all() as MemoryItem[];
 }
 
+// What a memory row is called in the search index and, through it, in the
+// "Retrieved from this Project" block of a prompt. A person's facts are titled
+// with their name rather than "person memory": a bare fact ("Runs the review
+// process") is close to useless without knowing who it is about, and the title
+// is what both the embedding and the citation carry.
+//
+// Deliberately a raw query rather than an import of the people repo — that repo
+// imports this one, and a cycle here would be paid at module load.
+function memoryTitle(scope: MemoryItem["scope"], personId: string | null): string {
+  if (scope !== "person" || !personId) return `${scope} memory`;
+  const row = db.prepare(`SELECT name FROM people WHERE id = ?`).get(personId) as { name: string } | undefined;
+  return row ? row.name : "person memory";
+}
+
 export function createMemory(input: {
-  scope: "global" | "project";
+  scope: "global" | "project" | "person";
   projectId?: string;
+  personId?: string;
   content: string;
   source?: string;
   status?: "established" | "suggested";
@@ -48,14 +80,16 @@ export function createMemory(input: {
 }): MemoryItem {
   const id = newId("mem");
   const ts = nowIso();
+  const personId = input.scope === "person" ? input.personId ?? null : null;
   db.prepare(
     `INSERT INTO memory
-     (id, scope, project_id, content, source, status, closure_id, source_message_id, source_conversation_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (id, scope, project_id, person_id, content, source, status, closure_id, source_message_id, source_conversation_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.scope,
     input.scope === "project" ? input.projectId ?? null : null,
+    personId,
     input.content,
     input.source ?? "manual",
     input.status ?? "established",
@@ -74,7 +108,7 @@ export function createMemory(input: {
       kind: "memory",
       refId: id,
       projectId: input.scope === "project" ? input.projectId ?? null : null,
-      title: `${input.scope} memory`,
+      title: memoryTitle(input.scope, personId),
       content: input.content,
     });
   }
@@ -90,7 +124,7 @@ export function updateMemory(id: string, content: string): MemoryItem | null {
       kind: "memory",
       refId: id,
       projectId: row.project_id,
-      title: `${row.scope} memory`,
+      title: memoryTitle(row.scope, row.person_id),
       content: row.content,
       sourceDate: row.created_at,
     });
@@ -117,7 +151,7 @@ export function setMemoryStatus(id: string, status: MemoryItem["status"]): Memor
       kind: "memory",
       refId: id,
       projectId: row.project_id,
-      title: `${row.scope} memory`,
+      title: memoryTitle(row.scope, row.person_id),
       content: row.content,
       sourceDate: row.created_at,
     });

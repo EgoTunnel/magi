@@ -87,6 +87,11 @@ src/
     trajectory.ts                Retrieval reorganized by time — "when did I first think about this"
     skillComposition.ts          The §39 seam — resolves a Skill into an executable method
     sourceLinks.ts               (kind, ref_id) → a URL and a human-readable place
+        repo/people.ts              People, their facts (memory rows, scope 'person'), Project
+                                   association, merge, single-person export, and mentions
+    peopleInterest.ts            "Who might be interested in this?" — each person weighed against
+                                   one Project, grounded in the archive
+      repo/peopleInterest.ts      Its runs and findings
       repo/activity.ts            One UNION over everything a Project accumulates, newest first
       repo/projectNotes.ts        Decisions and open questions (proposed → open/settled/resolved)
       repo/episodes.ts            Episode-closing records
@@ -307,8 +312,10 @@ src/
     the shape of the evidence — verified live, and it correctly refused to manufacture an arc, concluding
     of one topic that it "never developed — it was *repurposed*", and naming the gap that made a
     development narrative unsupportable.
-- **A test layer** — `npm test` (vitest, the only new dependency). 93 tests, ~6 seconds, no network and no
-  API key. Two small production seams make it possible: `MAGI_DATA_DIR` in `db.ts` (each test file gets a
+- **A test layer** — `npm test` (vitest, the only new dependency). 139 tests, ~7 seconds, no network and no
+  API key. **Its blind spot is worth knowing**: no embedding model is configured, so the semantic half of
+  retrieval is always empty under test. Two real trajectory bugs lived behind exactly that gap (see
+  People phase 3) — anything whose behaviour changes once vectors exist has to be checked live. Two small production seams make it possible: `MAGI_DATA_DIR` in `db.ts` (each test file gets a
   throwaway SQLite database via `tests/setup.ts`) and `__setProvidersForTests()` in the model registry.
   - **`tests/helpers/provider.ts`** is the mock provider — it records what it was asked, replies with
     whatever the test queued, and can be told to fail or to request a tool call. That's what makes the
@@ -333,6 +340,145 @@ src/
        proposal from an episode closing was retrievable and got injected as a cited passage. That defeats
        the entire point of a suggestion being inert until kept. Suggestions are no longer indexed;
        promotion indexes, demotion unindexes, and a migration clears the ones already written.
+- **People — phase 1 (the rolodex)** — the first Magi feature whose subject is someone other than the
+  user. Built to `docs/People-Plan.md`, which is the brief and stays the reference for phases 2 and 3.
+  A person is first-class in the UI (`/people`, `/people/[id]`, a sidebar item) and memory-backed in the
+  data: **facts about a person are `memory` rows with `scope = 'person'` and a `person_id`**, not a
+  parallel table, so they inherit established/suggested status, claim-level provenance, dating, and the
+  rule that a suggestion is neither prompted nor indexed — none of which a second table would have got
+  right twice.
+  - **The safety property everything rests on**: neither branch of `listMemory()` matches
+    `scope = 'person'` (global matches `'global'`; the Project branch matches `'project' AND project_id
+    = ?` or `'global'`). A person fact therefore *cannot* reach the global or Project memory block of a
+    system prompt by accident — only by a route someone deliberately adds. There is a test asserting
+    exactly this, and it is the first thing to re-check if the People feature ever starts leaking.
+  - **A related consequence worth knowing before phase 2**: person facts are indexed with
+    `project_id = null`, and `buildSystemPrompt()` scopes retrieval to `familyProjectIds()`. So they are
+    not retrievable into a Project turn today either. Phase 2's claim that "facts reach the model through
+    retrieval" needs that scoping widened deliberately (or the `lookup_person` tool to carry them) — it
+    will not happen for free.
+  - **Matching is never fuzzy.** `findPersonByName()` matches the name or an exact declared alias,
+    case-insensitively, and nothing else. `mergePeople()` is a manual, confirmed action that moves facts
+    and associations across and folds the loser's name into the survivor's aliases. A wrong merge in a
+    rolodex is worse than a miss, because the user acts on it.
+  - **Mentions are the day-one value and cost nothing to build**: `listPersonMentions()` is
+    `retrieveChunks(name + aliases)` over the existing passage index, so a person added this afternoon
+    immediately has 15 months of history. Verified live against the real archive — a person created by
+    hand returned real dated passages from two Projects, each linking to the exact message. Their own
+    record and their own facts are filtered out; both match by construction and are already on the page.
+    - **A mention must actually name them**, and that filter is load-bearing. Found while curating a
+      real archive: retrieval's semantic half has no relevance floor, so someone named in three places
+      came back with a full twenty "mentions" — twelve of which were other people's names and character
+      descriptions sitting nearby in embedding space, under a heading promising the opposite. Passages
+      are now kept only if the content matches the name or an alias on a word boundary. Same root cause
+      as the two trajectory bugs under phase 3; this is the third place it surfaced.
+    - Known limitation, documented at the call site: retrieval's keyword half drops terms of two
+      characters or fewer, so an alias like "KB" finds nothing on its own. Three characters or more
+      behave normally.
+  - **Hard delete is real, and took the `deleteConversation` lesson seriously**: `deletePerson()`
+    removes the facts through `deleteMemory()` (→ `indexRemove`) *before* deleting the person row, since
+    deleting the parent first and unindexing afterwards is precisely the bug that left every message of
+    a deleted conversation searchable. Verified against the live database: after deleting a person,
+    `people`, `project_people`, person-scoped `memory`, and their `search_index` / `chunks` /
+    `embeddings` / `chunk_search` rows were all zero, with the user's own messages untouched.
+  - **A person's facts are titled with their name** in the index (`memoryTitle()` in the memory repo),
+    not "person memory" — a bare fact is close to useless without knowing whose it is, and the title is
+    what both the embedding and the citation carry. Renaming a person re-titles their facts.
+  - **`sourceLinks.ts` gained two kinds**: `person` → `/people/{id}`, and a `memory` row carrying a
+    `person_id` now links to its person rather than to the undifferentiated `/memory` page.
+  - **Deliberate decisions, recorded so they aren't re-litigated**: hard delete rather than archive; no
+    photo for now (`addColumnIfMissing` makes it a later, cheap addition); person facts appear on the
+    Memory page under a **People** section as well as on the person's page, so no category of what Magi
+    holds is invisible there; and **people do not travel with a Project export** — a Project export is
+    shareable, what you know about third parties is not. `exportPerson()` / `GET /api/people/[id]/export`
+    is the single-person answer instead.
+- **People — phase 2 (Magi participates)** — the roster reaches the prompt, a tool reaches the facts, and
+  closing a conversation proposes people. Built to `docs/People-Plan.md` §7.
+  - **The roster, not the knowledge.** `buildSystemPrompt()` injects a **People on this Project** block —
+    name, relationship, one-line summary, capped at 12 with "…and N more" — and nothing else about
+    anyone. It is a per-turn cost on every turn in the Project, so it says who exists and points at
+    `lookup_person` for the rest. Recorded as `provenance.peopleOnProject` and shown in the Context panel.
+  - **`listProjectRoster()` requires *both* halves established** — the person and the association. This
+    is the phase-2 counterpart to phase 1's scope property: a suggested person is inert everywhere, and a
+    proposed association is a guess about this Project specifically. `project_people` therefore gained
+    its own `status` and `closure_id`, because an association proposed by a closing is itself an
+    inference, and being on a roster is exactly the kind of effect an inference must not have.
+  - **The §7.1 retrieval idea was dropped, deliberately** (the user chose it; see the note in the plan).
+    Person facts are indexed with `project_id = null` and `buildSystemPrompt()` scopes retrieval to
+    `familyProjectIds()`, so they were never reachable that way. Instead of widening that clause,
+    `lookup_person` is the sole route — cheaper, more predictable, and it preserves a stronger property
+    than the original design: **nothing about a person enters a turn unless the model asks for them by
+    name.**
+  - **`lookup_person`** returns relationship, summary, established facts with dates, Projects, and top
+    mentions. Established facts only — a tool result is a route into context like any other, and "the
+    user hasn't agreed this is true yet" is not a caveat worth trusting a model to carry. On a miss it
+    lists the known names and states plainly that matching is exact, which is what stops a model
+    deciding a near-miss must be the same human.
+  - **Extraction at episode close** is a sixth `<<<CLOSEOUT>>>` section, using the parser and delimiters
+    that were already tested. The prompt carries the encyclopedia guard from §4.1 explicitly (a
+    conversation about Turing or McLuhan proposes nobody — "the test is whether the user has a
+    relationship with this person, not whether the person was discussed"), and the user message carries
+    the existing roster so a known person is matched by exact name or alias instead of duplicated.
+    `parsePersonLine()` is exported and unit-tested: it accepts four separators models actually use, and
+    **refuses a separator-less line that looks like a sentence** — a model that ignores the format would
+    otherwise create a person named after a whole sentence, and junk in a rolodex costs the user cleanup.
+  - **Redraft safety, again.** `clearSuggestedPeopleForConversation()` drops un-kept proposed people and
+    associations, but **spares a suggested person whose facts the user already kept** — deleting them
+    cascades through `deletePerson()` and would take an established fact with them. Same class of bug as
+    a redraft deleting a kept decision; there is a test.
+  - **`associate()` never demotes or erases.** `ON CONFLICT` leaves the existing status alone and
+    `COALESCE`s the role, so a closing that re-mentions someone already on the Project cannot downgrade
+    an association the user established or wipe a role they typed.
+  - **Verified live against a real model**, which is the only way to check the part tests can't: asked
+    about a recorded person, the model called `lookup_person` unprompted and answered only from what was
+    recorded; asked about a deliberately near-miss name, it refused to conflate them and suggested adding
+    an alias instead. Provenance showed `peopleOnProject: 1` and the tool call. The verification Project,
+    conversation and person were deleted afterwards and the database re-checked clean.
+- **People — phase 3 (the connective payoff)** — the question the whole feature was built toward, plus
+  the timeline that comes free from dated passages. Built to `docs/People-Plan.md` §8; §8.3
+  ("outstanding with a person") was put to the user and deliberately deferred.
+  - **"Who might be interested in this?"** (`src/lib/peopleInterest.ts`, `people_interest_runs`) weighs
+    each established person against one Project — same fire-and-forget + polling shape as Connections,
+    a separate table because the question is Project→person rather than Project→Project. Capped at 24
+    people, since each is a model call. The prompt inherits the Connections discipline and hardens it:
+    "most people will have no real link to most Projects, and saying so is the correct and expected
+    answer — a weak, generic link is worse than none, because the user may act on it", plus an explicit
+    ban on inferring anything about the person beyond what was recorded. The run view defaults to
+    showing only Strong/Moderate findings and says **"Nobody obviously"** when there are none. A finding
+    promotes to *Project* memory, not to a fact about the person — it is Magi's judgement, and filing a
+    judgement as something "known" about a third party is exactly what §2 forbids.
+  - **Person trajectory** — `GET /api/people/[id]/trajectory` traces name + aliases, and the person page
+    gets an opt-in **Over time** section. The Archive's timeline was extracted to
+    `src/components/TrajectoryTimeline.tsx` and both pages now render the same component, so they cannot
+    drift about what a timeline looks like or what its caveats are.
+  - **Two real pre-existing bugs in `trajectory.ts`, found by building this against the live archive,
+    both invisible to the suite** — the test environment has no embedding model, so the semantic half of
+    retrieval is always empty there and neither could reproduce:
+    1. **Every trajectory reported `POOL_SIZE`.** The semantic half has no relevance floor (cosine ranks
+       every passage), so it always returns a full pool no matter how unrelated the query, and
+       `totalPassages: Math.max(counts.total, dated.length)` reported 240 for anything. Confirmed live:
+       `"zzzznothing"` reported the same 240 passages as a real topic, with fabricated periods. Periods
+       are now created only by `matchCountsByDate`; pooled passages illustrate periods that lexically
+       exist and never create one. The same query now correctly reports 0.
+    2. **The bars summed to more than the header.** A period's count was `max(keyword count, size of its
+       slice of the pool)`, so a real person's chart claimed 223 passages under a header saying 150. It
+       now compares against the passages actually shown (≤3), which is what that guard was always for,
+       and `totalPassages` is the sum of the periods, so the number and the picture agree by
+       construction.
+    - The endpoints (`firstDate`/`lastDate`) come from the counts for the same reason: a semantic
+      near-miss from 2019 must not become "when I first thought about this".
+  - **A person's own record is excluded from their own timeline** — it is indexed under their name and
+    dated when it was written, so including it put a false point at "today" at the end of every person's
+    history. `SEARCH_KINDS` is now an exported array (the `SearchKind` union derives from it) so
+    "everything except one kind" can be expressed without silently excluding future kinds.
+  - **Verified live against the real archive and a real model.** The person timeline for someone with 15
+    months of history produced a genuine shape — June 59 → July 55 → August 34 → September 3 over 92
+    days — with the header and bars agreeing. An interest run over a throwaway Project scored a person
+    with real archive presence *Moderate*, citing the Project's own open question and what the archive
+    said about them, and scored a person with no relevant history *None*, stating plainly that the
+    Project's material "doesn't mention print production, event collateral, or vendors at all" rather
+    than reaching for a link. Both searched the archive before answering. Everything created was deleted
+    afterwards and the database re-checked clean.
 - **§25–26 Cross-Project intelligence** — `search_archive` tool with a `scope: this_project | all` param
   gated by a Settings toggle (§25), and the standalone Connections feature for proactive discovery (§26).
 - **§27–31 Model independence** — provider abstraction (`ModelProvider` interface), two providers live,

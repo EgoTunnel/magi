@@ -85,8 +85,41 @@ function projectScopedLinks(
   return out;
 }
 
+// A fact about someone belongs to that person, not to the undifferentiated
+// Memory page — "where did that come from?" should land where the rest of what
+// is known about them is. Rows without a person_id fall through to /memory.
+function memoryLinks(refIds: string[]): Map<string, SourceLink> {
+  const out = new Map<string, SourceLink>();
+  if (!refIds.length) return out;
+  const rows = db
+    .prepare(
+      `SELECT m.id, p.id AS person_id, p.name AS person_name
+       FROM memory m LEFT JOIN people p ON p.id = m.person_id
+       WHERE m.id IN (${refIds.map(() => "?").join(",")})`
+    )
+    .all(...refIds) as Array<{ id: string; person_id: string | null; person_name: string | null }>;
+  for (const r of rows) {
+    out.set(
+      r.id,
+      r.person_id
+        ? { href: `/people/${r.person_id}`, context: r.person_name ?? "" }
+        : { href: "/memory", context: "" }
+    );
+  }
+  return out;
+}
+
+function personLinks(refIds: string[]): Map<string, SourceLink> {
+  const out = new Map<string, SourceLink>();
+  if (!refIds.length) return out;
+  const rows = db
+    .prepare(`SELECT id, name FROM people WHERE id IN (${refIds.map(() => "?").join(",")})`)
+    .all(...refIds) as Array<{ id: string; name: string }>;
+  for (const r of rows) out.set(r.id, { href: `/people/${r.id}`, context: r.name });
+  return out;
+}
+
 const FLAT_ROUTES: Partial<Record<SearchKind, string>> = {
-  memory: "/memory",
   skill: "/skills",
   style_guide: "/image-lab",
   character: "/image-lab",
@@ -109,6 +142,8 @@ export function resolveSourceLinks(items: Array<{ kind: SearchKind; refId: strin
   add("conversation", conversationLinks(byKind.get("conversation") ?? []));
   add("document", projectScopedLinks("documents", "documents", byKind.get("document") ?? []));
   add("artifact", projectScopedLinks("artifacts", "artifacts", byKind.get("artifact") ?? []));
+  add("memory", memoryLinks(byKind.get("memory") ?? []));
+  add("person", personLinks(byKind.get("person") ?? []));
 
   for (const refId of byKind.get("project") ?? []) {
     out.set(`project:${refId}`, { href: `/projects/${refId}`, context: "Project" });
@@ -123,4 +158,27 @@ export function resolveSourceLinks(items: Array<{ kind: SearchKind; refId: strin
 
 export function resolveSourceLink(kind: SearchKind, refId: string): SourceLink | null {
   return resolveSourceLinks([{ kind, refId }]).get(`${kind}:${refId}`) ?? null;
+}
+
+// Claim-level provenance for a list of memory rows: the exact message a fact
+// was promoted from, or the conversation an episode closing proposed it in.
+// Two batched queries for the whole list rather than one per row.
+export function attachClaimLinks<
+  T extends { source_message_id: string | null; source_conversation_id: string | null }
+>(items: T[]): Array<T & { sourceLink: SourceLink | null }> {
+  const messageLinks = resolveSourceLinks(
+    items.filter((i) => i.source_message_id).map((i) => ({ kind: "message" as const, refId: i.source_message_id! }))
+  );
+  const conversationLinks = resolveSourceLinks(
+    items
+      .filter((i) => !i.source_message_id && i.source_conversation_id)
+      .map((i) => ({ kind: "conversation" as const, refId: i.source_conversation_id! }))
+  );
+  return items.map((i) => ({
+    ...i,
+    sourceLink:
+      (i.source_message_id ? messageLinks.get(`message:${i.source_message_id}`) : null) ??
+      (i.source_conversation_id ? conversationLinks.get(`conversation:${i.source_conversation_id}`) : null) ??
+      null,
+  }));
 }
