@@ -1,15 +1,12 @@
 ﻿import type { ToolSpec } from "@/lib/models/types";
-import { search, semanticSearch, type SearchResult } from "@/lib/searchIndex";
-import { ensureChunkIndex, retrieveChunks } from "@/lib/retrieval";
-import { traceTrajectory, trajectoryDigest } from "@/lib/trajectory";
-import { getCrossProjectSearchEnabled, getDisabledTools, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
+import { describePerson, searchArchive, traceThinking } from "@/lib/knowledgeTools";
+import { getDisabledTools } from "@/lib/settings";
 import { evaluateExpression } from "@/lib/tools/calculator";
 import { searchWeb, fetchWebPage } from "@/lib/tools/webSearch";
 import { runPython, runJavaScript } from "@/lib/tools/codeExec";
 import { saveDocxArtifact, saveXlsxArtifact, savePptxArtifact, saveGeneratedFile } from "@/lib/repo/artifacts";
 import { getSkill } from "@/lib/repo/skills";
-import { listPeople, lookupPerson } from "@/lib/repo/people";
-import { getProject, listAncestorProjects, familyProjectIds } from "@/lib/repo/projects";
+import { getProject, listAncestorProjects } from "@/lib/repo/projects";
 import { projectTheme } from "@/lib/files/theme";
 
 export interface ToolContext {
@@ -231,124 +228,20 @@ export async function executeTool(name: string, rawInput: unknown, ctx: ToolCont
 
     if (name === "search_archive") {
       const input = rawInput as { query?: string; scope?: string } | undefined;
-      const query = input?.query;
-      if (!query) return "Error: no query given.";
-      const wantsAll = input?.scope === "all";
-      const crossProjectAllowed = wantsAll && getCrossProjectSearchEnabled();
-      // Not "all": search this Project's whole hierarchy branch — itself,
-      // every ancestor it inherits context from, and every descendant a
-      // meta-project's members live in — not just the one row's own id.
-      const scopeProjectId = crossProjectAllowed ? undefined : ctx.projectId ? familyProjectIds(ctx.projectId) : undefined;
-
-      // Passage retrieval: real extracts of the matching material rather than
-      // a 24-token keyword window around the hit, and hybrid, so a question
-      // phrased differently than the archive's own wording still lands. This
-      // is the same machinery context assembly uses (src/lib/retrieval.ts).
-      ensureChunkIndex();
-      const passages = await retrieveChunks(query, { projectId: scopeProjectId, limit: 8 }).catch(() => []);
-      if (passages.length) {
-        return passages
-          .map((p, i) => {
-            const elsewhere = p.projectId && p.projectId !== ctx.projectId ? ", from another Project" : "";
-            const kind = p.kind === "style_guide" ? "style guide" : p.kind;
-            return `[${i + 1}] (${kind}${elsewhere}, ${p.sourceDate.slice(0, 10)}) ${p.title}\n${p.content}`;
-          })
-          .join("\n\n");
-      }
-
-      // Nothing in the passage index matched — fall back to the whole-item
-      // keyword index, which still covers rows too short to have produced a
-      // passage (a conversation title, a one-line memory item).
-      let results: SearchResult[] = search(query, { projectId: scopeProjectId, limit: 10 });
-      let matchedByMeaning = false;
-      if (results.length === 0 && getEmbeddingModelId() && getOpenRouterApiKey()) {
-        try {
-          const semanticResults = await semanticSearch(query, { projectId: scopeProjectId, limit: 10 });
-          if (semanticResults.length) {
-            results = semanticResults;
-            matchedByMeaning = true;
-          }
-        } catch {
-          // Fall through to "No matches found" below.
-        }
-      }
-      if (results.length === 0) {
-        return wantsAll && !crossProjectAllowed
-          ? "No matches in this Project. Cross-Project search is turned off in Settings, so other Projects were not searched."
-          : "No matches found.";
-      }
-      const header = matchedByMeaning ? "(matched by meaning/topic, not exact wording)\n\n" : "";
-      return (
-        header +
-        results
-          .map((r, i) => {
-            const elsewhere = r.projectId && r.projectId !== ctx.projectId ? ", from another Project" : "";
-            return `[${i + 1}] (${r.kind}${elsewhere}) ${r.title}\n${r.snippet.replace(/⟦|⟧/g, "")}`;
-          })
-          .join("\n\n")
-      );
+      if (!input?.query) return "Error: no query given.";
+      return await searchArchive(input.query, { projectId: ctx.projectId, scope: input.scope });
     }
 
     if (name === "lookup_person") {
       const who = (rawInput as { name?: string } | undefined)?.name;
       if (!who) return "Error: no name given.";
-      ensureChunkIndex();
-      const found = await lookupPerson(who);
-      if (!found) {
-        // Naming who *is* known is the difference between a dead end and a
-        // usable answer — and it is also the guard against the model deciding
-        // that a near-miss must be the same human. Matching is exact by
-        // design; the model is told plainly that it is.
-        const known = listPeople({ status: "established" }).map((p) => p.name);
-        if (!known.length) return `No one named "${who}" is recorded, and no people have been recorded yet.`;
-        return (
-          `No one named "${who}" is recorded. Names are matched exactly (including recorded aliases) — do not ` +
-          `assume a similar name is the same person. Recorded people: ${known.slice(0, 40).join(", ")}` +
-          (known.length > 40 ? `, and ${known.length - 40} more.` : ".")
-        );
-      }
-
-      const lines = [`${found.person.name}${found.person.relationship ? ` — ${found.person.relationship}` : ""}`];
-      if (found.person.aliases.length) lines.push(`Also known as: ${found.person.aliases.join(", ")}`);
-      if (found.person.summary) lines.push(found.person.summary);
-      if (found.projects.length) lines.push(`\nProjects: ${found.projects.map((p) => p.name).join(", ")}`);
-
-      lines.push(
-        found.facts.length
-          ? `\nWhat the user has recorded about them:\n` +
-              found.facts.map((f) => `- (${f.created_at.slice(0, 10)}) ${f.content}`).join("\n")
-          : `\nThe user has not recorded any facts about them yet.`
-      );
-      if (found.mentions.length) {
-        lines.push(
-          `\nMentioned in:\n` +
-            found.mentions
-              .map((m) => `- (${m.sourceDate.slice(0, 10)}) ${m.title}\n  ${m.content.replace(/\s+/g, " ").slice(0, 400)}`)
-              .join("\n")
-        );
-      }
-      return lines.join("\n");
+      return await describePerson(who);
     }
 
     if (name === "trace_thinking") {
       const input = rawInput as { topic?: string; scope?: string } | undefined;
-      const topic = input?.topic;
-      if (!topic) return "Error: no topic given.";
-      // Unlike search_archive, this defaults to every Project: a question
-      // about how thinking developed is rarely bounded by where the thinking
-      // happened to be filed. The cross-Project setting still governs it.
-      const restrict = input?.scope === "this_project" || !getCrossProjectSearchEnabled();
-      const scopeProjectId = restrict && ctx.projectId ? familyProjectIds(ctx.projectId) : undefined;
-
-      const trajectory = await traceTrajectory(topic, { projectId: scopeProjectId });
-      if (trajectory.totalPassages === 0) return "Nothing in the archive touches on this topic.";
-
-      const header =
-        `${trajectory.totalPassages} passages about "${topic}", from ` +
-        `${trajectory.firstDate?.slice(0, 10)} to ${trajectory.lastDate?.slice(0, 10)} ` +
-        `(${trajectory.spanDays} days).\n` +
-        (restrict ? "Scope: this Project and its hierarchy.\n" : "Scope: every Project.\n");
-      return `${header}\n${trajectoryDigest(trajectory)}`;
+      if (!input?.topic) return "Error: no topic given.";
+      return await traceThinking(input.topic, { projectId: ctx.projectId, scope: input.scope });
     }
 
     if (name === "web_search") {
