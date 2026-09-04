@@ -54,6 +54,41 @@ export function extractText(message: { content?: string | null }): string {
   return content ?? "";
 }
 
+// The /v1/embeddings call, identical wherever it is served from — OpenRouter,
+// or an Ollama/LM Studio endpoint on this machine. Batched because passage
+// indexing turns one document into dozens of chunks, and sending them one
+// request apiece would mean dozens of round trips per save.
+export async function embedViaOpenAI(client: OpenAI, model: string, texts: string[]): Promise<number[][]> {
+  if (!texts.length) return [];
+  // encoding_format is explicit on purpose. Left unset, the OpenAI SDK asks for
+  // base64 on the wire as an optimization and decodes it on the way back (see
+  // node_modules/openai/lib/embeddings.js) — which is fine against OpenAI and
+  // OpenRouter, and silently destroys the vectors from any server that ignores
+  // the parameter and answers with plain float arrays, as local ones may. The
+  // failure is empty embeddings rather than an error, so it would surface as
+  // retrieval quietly getting worse.
+  const res = await client.embeddings.create({ model, input: texts, encoding_format: "float" });
+  if (res.data.length !== texts.length) {
+    throw new Error(`Embedding request returned ${res.data.length} vectors for ${texts.length} inputs.`);
+  }
+  // Providers are not required to return the data array in input order — the
+  // per-item index is authoritative, so re-sort rather than trusting position.
+  return res.data
+    .slice()
+    .sort((a, b) => a.index - b.index)
+    .map((d) => decodeEmbedding(d.embedding));
+}
+
+// Asking for floats does not guarantee getting them: a server is free to
+// answer in base64 regardless, and the typed SDK will hand it straight through
+// as if it were an array of numbers. Converting here is what keeps "any
+// OpenAI-compatible server" an honest claim.
+function decodeEmbedding(embedding: number[] | string): number[] {
+  if (typeof embedding !== "string") return embedding;
+  const buf = Buffer.from(embedding, "base64");
+  return Array.from(new Float32Array(buf.buffer, buf.byteOffset, buf.length / 4));
+}
+
 export async function resolveToolCalls(
   opts: CompleteOptions,
   toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]

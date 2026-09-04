@@ -10,8 +10,12 @@ import type {
   StreamEvent,
 } from "@/lib/models/types";
 import { REASONING_EFFORTS } from "@/lib/models/types";
+// Type-only: embeddings.ts imports this module's functions at runtime, so a
+// value import here would be a real cycle. Types are erased, this is not.
+import type { EmbeddingModelInfo } from "@/lib/models/embeddings";
 import {
   DEFAULT_MAX_TOOL_ITERATIONS,
+  embedViaOpenAI,
   extractText,
   resolveToolCalls,
   toOpenAITools,
@@ -53,12 +57,6 @@ export interface ImageModelInfo {
   label: string;
   description: string;
   editsImages: boolean;
-}
-
-export interface EmbeddingModelInfo {
-  id: string;
-  label: string;
-  description: string;
 }
 
 function describe(m: OpenRouterModelEntry): string {
@@ -192,34 +190,12 @@ export const OPENROUTER_EMBEDDING_MODELS: EmbeddingModelInfo[] = [
   { id: "qwen/qwen3-embedding-8b", label: "Qwen: Qwen3 Embedding 8B", description: "Open-weight, strong multilingual performance" },
 ];
 
-export function getCachedOpenRouterEmbeddingModels(): { models: EmbeddingModelInfo[] } {
-  return { models: OPENROUTER_EMBEDDING_MODELS };
-}
-
 // Standard OpenAI-compatible shape, unlike image generation — the typed SDK
-// client already covers this, no raw fetch needed.
-export async function embedText(model: string, text: string): Promise<number[]> {
-  const [vector] = await embedTexts(model, [text]);
-  return vector;
-}
-
-// The array form of the same endpoint. Passage-level indexing turns one
-// document into dozens of chunks, and sending them one request apiece would
-// mean dozens of round trips per save; the embeddings API takes a batch
-// natively and returns the vectors in input order.
+// client already covers this, no raw fetch needed. Callers outside this file
+// should go through src/lib/models/embeddings.ts rather than here, so that
+// which provider serves a model stays one decision in one place.
 export async function embedTexts(model: string, texts: string[]): Promise<number[][]> {
-  if (!texts.length) return [];
-  const c = client();
-  const res = await c.embeddings.create({ model, input: texts });
-  if (res.data.length !== texts.length) {
-    throw new Error(`Embedding request returned ${res.data.length} vectors for ${texts.length} inputs.`);
-  }
-  // Providers are not required to return the data array in input order — the
-  // per-item index is authoritative, so re-sort rather than trusting position.
-  return res.data
-    .slice()
-    .sort((a, b) => a.index - b.index)
-    .map((d) => d.embedding as number[]);
+  return embedViaOpenAI(client(), model, texts);
 }
 
 export interface GeneratedImagePart {

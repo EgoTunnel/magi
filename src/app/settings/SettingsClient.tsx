@@ -36,6 +36,15 @@ interface EmbeddingModelInfo {
   label: string;
   description: string;
 }
+interface EmbeddingProviderInfo {
+  id: string;
+  label: string;
+  configured: boolean;
+  // Set when a provider is configured but couldn't be reached — a local server
+  // that isn't running. Distinct from "not configured", which needs a
+  // different fix.
+  error: string | null;
+}
 interface BackfillStatus {
   status: "idle" | "running" | "complete" | "error";
   processed: number;
@@ -103,8 +112,11 @@ export function SettingsClient() {
 
   const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelInfo[]>([]);
   const [embeddingModelId, setEmbeddingModelIdState] = useState<string | null>(null);
+  const [embeddingProviders, setEmbeddingProviders] = useState<EmbeddingProviderInfo[]>([]);
   const [backfillStatus, setBackfillStatus] = useState<BackfillStatus | null>(null);
   const [savingEmbeddingModel, setSavingEmbeddingModel] = useState(false);
+  const [localEmbeddingInput, setLocalEmbeddingInput] = useState("");
+  const [savingLocalEmbedding, setSavingLocalEmbedding] = useState(false);
 
   const [allTimeSpend, setAllTimeSpend] = useState<SpendTotals | null>(null);
   const [todaySpend, setTodaySpend] = useState<SpendTotals | null>(null);
@@ -139,6 +151,7 @@ export function SettingsClient() {
     setTavilyKeyPreview(settings.tavilyKeyPreview);
     setCrossProjectSearch(settings.crossProjectSearchEnabled);
     setEmbeddingModelIdState(settings.embeddingModelId);
+    setLocalEmbeddingInput(settings.localEmbeddingBaseUrl ?? "");
     setToolsList(settings.tools ?? []);
     setDisabledToolsState(settings.disabledTools ?? []);
     setModels(modelsData.models);
@@ -147,6 +160,7 @@ export function SettingsClient() {
     setReasoningEfforts(modelsData.reasoningEfforts ?? []);
     setEffortAssignments(modelsData.reasoningEffortAssignments ?? {});
     setEmbeddingModels(embeddingModelsData.models ?? []);
+    setEmbeddingProviders(embeddingModelsData.providers ?? []);
     setBackfillStatus(backfill.status ?? null);
     setAllTimeSpend(usage.allTime);
     setTodaySpend(usage.today);
@@ -224,6 +238,19 @@ export function SettingsClient() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chutesApiKey: "" }),
     });
+    loadAll();
+  }
+
+  async function saveLocalEmbeddingUrl(url: string) {
+    setSavingLocalEmbedding(true);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ localEmbeddingBaseUrl: url }),
+    });
+    setSavingLocalEmbedding(false);
+    // Reloads the model list too: pointing at a server is only useful once its
+    // catalog is on screen to choose from.
     loadAll();
   }
 
@@ -663,14 +690,47 @@ export function SettingsClient() {
       <section>
         <h2 className="mb-1 text-[14px] font-semibold text-[var(--color-text)]">Semantic search</h2>
         <p className="mb-3 text-[13px] text-[var(--color-text-muted)]">
-          Lets the Archive page search by meaning instead of exact wording. This needs an OpenRouter
-          key specifically, since Anthropic has no embeddings API — the Image Lab has the same
-          requirement, for the same reason. OpenRouter doesn&apos;t list embedding models in its regular
-          catalog either, so the list below is hand-picked rather than the live dropdown used elsewhere.
+          Lets the Archive page search by meaning instead of exact wording. Either an OpenRouter key
+          (Anthropic has no embeddings API — the Image Lab has the same requirement, for the same
+          reason) or a local OpenAI-compatible server will do. A local model is the more durable
+          choice: it keeps the archive searchable by meaning with the network unplugged, and with no
+          vendor able to withdraw it.
         </p>
-        {!openRouterKeySet ? (
+
+        <Panel className="mb-3 px-4 py-4">
+          <Label>Local embedding server</Label>
+          <div className="flex gap-2">
+            <Input
+              placeholder="http://localhost:11434/v1"
+              value={localEmbeddingInput}
+              onChange={(e) => setLocalEmbeddingInput(e.target.value)}
+            />
+            <Button
+              variant="accent"
+              onClick={() => saveLocalEmbeddingUrl(localEmbeddingInput)}
+              disabled={savingLocalEmbedding}
+            >
+              {savingLocalEmbedding ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+            Ollama serves this at <span className="font-technical">http://localhost:11434/v1</span>,
+            LM Studio at <span className="font-technical">http://localhost:1234/v1</span>. Its models
+            join the list below marked &ldquo;local&rdquo;. Leave empty to use OpenRouter only.
+          </p>
+          {embeddingProviders
+            .filter((p) => p.error)
+            .map((p) => (
+              <p key={p.id} className="mt-2 text-[12px] text-[var(--color-danger)]">
+                {p.label}: {p.error}
+              </p>
+            ))}
+        </Panel>
+
+        {!embeddingProviders.some((p) => p.configured) ? (
           <Panel className="px-4 py-3.5 text-[13px] text-[var(--color-text-muted)]">
-            Add an OpenRouter key above to enable semantic search.
+            Add an OpenRouter key above, or point Magi at a local embedding server, to enable
+            semantic search.
           </Panel>
         ) : (
           <Panel className="px-4 py-4">
@@ -692,7 +752,9 @@ export function SettingsClient() {
             </select>
             <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
               Switching models doesn&apos;t lose anything already indexed — it just goes unused until you
-              switch back, or you rebuild the index for the new model.
+              switch back, or you rebuild the index for the new model. A local server lists every
+              model it has, including chat models, since none of them say which can embed; picking
+              one that can&apos;t will fail on the first request rather than silently.
             </p>
 
             <div className="mt-4 border-t border-[var(--color-border)] pt-4">

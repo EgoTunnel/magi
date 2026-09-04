@@ -1,7 +1,7 @@
 import { db, nowIso } from "@/lib/db";
 import { chunkText } from "@/lib/chunking";
-import { embedTexts } from "@/lib/models/openrouter";
-import { getEmbeddingModelId, getOpenRouterApiKey, getSetting, setSetting } from "@/lib/settings";
+import { embedTexts, isEmbeddingConfigured } from "@/lib/models/embeddings";
+import { getEmbeddingModelId, getSetting, setSetting } from "@/lib/settings";
 import { packVector, unpackVector, cosineSimilarity } from "@/lib/vectors";
 // Type-only: searchIndex.ts imports this module's functions at runtime, so a
 // value import here would be a real cycle. Types are erased, this is not.
@@ -122,7 +122,7 @@ export function reindexChunks(opts: {
 // it. Whatever this misses is closed by the Settings "Build index" backfill.
 function queueChunkEmbeddings(kind: SearchKind, refId: string) {
   const modelId = getEmbeddingModelId();
-  if (!modelId || !getOpenRouterApiKey()) return;
+  if (!modelId || !isEmbeddingConfigured()) return;
   const rows = db
     .prepare(`SELECT id, title, content FROM chunks WHERE kind = ? AND ref_id = ? ORDER BY chunk_index`)
     .all(kind, refId) as Array<{ id: string; title: string; content: string }>;
@@ -410,7 +410,7 @@ async function semanticChunks(
   limit: number
 ): Promise<Array<ChunkMeta & { similarity: number }>> {
   const modelId = getEmbeddingModelId();
-  if (!modelId || !getOpenRouterApiKey()) return [];
+  if (!modelId || !isEmbeddingConfigured()) return [];
 
   const project = projectClause(opts.projectId, "project_id");
   const kinds = opts.kinds?.length ? ` AND kind IN (${opts.kinds.map(() => "?").join(",")})` : "";

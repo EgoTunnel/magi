@@ -1,6 +1,6 @@
 import { db, nowIso } from "@/lib/db";
-import { getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
-import { embedText } from "@/lib/models/openrouter";
+import { getEmbeddingModelId } from "@/lib/settings";
+import { embedText, isEmbeddingConfigured } from "@/lib/models/embeddings";
 import { packVector, unpackVector, cosineSimilarity } from "@/lib/vectors";
 import { reindexChunks, removeChunks } from "@/lib/retrieval";
 
@@ -39,7 +39,7 @@ export async function storeEmbedding(opts: {
 // backfill, not by retrying here.
 function queueEmbedding(opts: { kind: SearchKind; refId: string; projectId: string | null; title: string; content: string }) {
   const modelId = getEmbeddingModelId();
-  if (!modelId || !getOpenRouterApiKey()) return;
+  if (!modelId || !isEmbeddingConfigured()) return;
   storeEmbedding({ ...opts, modelId }).catch((err) => {
     console.error(`[searchIndex] embedding failed for ${opts.kind}:${opts.refId}`, err instanceof Error ? err.message : err);
   });
@@ -185,7 +185,7 @@ export async function semanticSearch(
   const trimmed = query.trim();
   if (!trimmed) return [];
   const modelId = getEmbeddingModelId();
-  if (!modelId || !getOpenRouterApiKey()) throw new Error("NO_EMBEDDING_MODEL");
+  if (!modelId || !isEmbeddingConfigured()) throw new Error("NO_EMBEDDING_MODEL");
 
   const queryVector = new Float32Array(await embedText(modelId, trimmed));
 

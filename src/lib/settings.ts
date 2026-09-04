@@ -64,6 +64,22 @@ export function setEmbeddingModelId(modelId: string) {
   setSetting("embedding_model_id", modelId);
 }
 
+// Base URL of an OpenAI-compatible server on this machine (Ollama's
+// http://localhost:11434/v1, LM Studio's http://localhost:1234/v1, or
+// anything else of that shape) that can serve embeddings. Setting this is what
+// makes the archive's semantic half independent of any remote vendor: with a
+// local model chosen, retrieval keeps working with the network unplugged.
+export function getLocalEmbeddingBaseUrl(): string | null {
+  const raw = getSetting("local_embedding_base_url") || process.env.MAGI_LOCAL_EMBEDDING_URL || null;
+  // Stored without a trailing slash so callers can join paths without
+  // producing "//v1/models", which some servers 404 on.
+  return raw ? raw.trim().replace(/\/+$/, "") : null;
+}
+
+export function setLocalEmbeddingBaseUrl(url: string) {
+  setSetting("local_embedding_base_url", url.trim());
+}
+
 // Tools turned off everywhere, regardless of Skill/Agent-run allowlists —
 // permissions can only narrow past this, never widen beyond it.
 export function getDisabledTools(): string[] {

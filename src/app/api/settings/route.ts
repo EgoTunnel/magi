@@ -7,6 +7,8 @@ import {
   setCrossProjectSearchEnabled,
   getEmbeddingModelId,
   setEmbeddingModelId,
+  getLocalEmbeddingBaseUrl,
+  setLocalEmbeddingBaseUrl,
   getDisabledTools,
   setDisabledTools,
 } from "@/lib/settings";
@@ -42,6 +44,7 @@ export async function GET() {
     configured: isAnyProviderConfigured(),
     crossProjectSearchEnabled: getCrossProjectSearchEnabled(),
     embeddingModelId: getEmbeddingModelId(),
+    localEmbeddingBaseUrl: getLocalEmbeddingBaseUrl(),
     tools: TOOL_SPECS.map((t) => ({ name: t.name, description: t.description })),
     disabledTools: getDisabledTools(),
   });
@@ -102,6 +105,14 @@ export async function POST(req: NextRequest) {
 
   if (typeof body.embeddingModelId === "string" && body.embeddingModelId.trim()) {
     setEmbeddingModelId(body.embeddingModelId.trim());
+  }
+
+  if (typeof body.localEmbeddingBaseUrl === "string") {
+    if (body.localEmbeddingBaseUrl.trim()) {
+      setLocalEmbeddingBaseUrl(body.localEmbeddingBaseUrl.trim());
+    } else {
+      deleteSetting("local_embedding_base_url");
+    }
   }
 
   if (Array.isArray(body.disabledTools)) {

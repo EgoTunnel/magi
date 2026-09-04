@@ -1,5 +1,6 @@
 import { db, nowIso } from "@/lib/db";
-import { getSetting, setSetting, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
+import { getSetting, setSetting, getEmbeddingModelId } from "@/lib/settings";
+import { isEmbeddingConfigured } from "@/lib/models/embeddings";
 import { storeEmbedding, type SearchKind } from "@/lib/searchIndex";
 import { embedChunkRows, ensureChunkIndex, listUnembeddedChunks } from "@/lib/retrieval";
 
@@ -35,7 +36,7 @@ function setBackfillStatus(status: BackfillStatus) {
 // running and how far did it get."
 export async function runEmbeddingBackfill() {
   const modelId = getEmbeddingModelId();
-  if (!modelId || !getOpenRouterApiKey()) {
+  if (!modelId || !isEmbeddingConfigured()) {
     setBackfillStatus({ status: "error", processed: 0, total: 0, model: modelId, error: "NO_EMBEDDING_MODEL", updatedAt: nowIso() });
     return;
   }

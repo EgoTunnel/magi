@@ -1,7 +1,8 @@
 import { search, semanticSearch, type SearchResult } from "@/lib/searchIndex";
 import { ensureChunkIndex, retrieveChunks } from "@/lib/retrieval";
 import { traceTrajectory, trajectoryDigest } from "@/lib/trajectory";
-import { getCrossProjectSearchEnabled, getEmbeddingModelId, getOpenRouterApiKey } from "@/lib/settings";
+import { getCrossProjectSearchEnabled } from "@/lib/settings";
+import { isEmbeddingConfigured } from "@/lib/models/embeddings";
 import { listPeople, lookupPerson } from "@/lib/repo/people";
 import { familyProjectIds } from "@/lib/repo/projects";
 
@@ -58,7 +59,7 @@ export async function searchArchive(query: string, opts: ArchiveScope = {}): Pro
   // conversation title, a one-line memory item).
   let results: SearchResult[] = search(query, { projectId: scopeProjectId, limit: 10 });
   let matchedByMeaning = false;
-  if (results.length === 0 && getEmbeddingModelId() && getOpenRouterApiKey()) {
+  if (results.length === 0 && isEmbeddingConfigured()) {
     try {
       const semanticResults = await semanticSearch(query, { projectId: scopeProjectId, limit: 10 });
       if (semanticResults.length) {
