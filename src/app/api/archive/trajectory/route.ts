@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
   });
   recordUsage({
     source: "archive_ask",
-    provider: resolved.provider.id as "anthropic" | "openrouter",
+    provider: resolved.provider.id as "anthropic" | "openrouter" | "chutes",
     model: modelId,
     role: "synthesizer",
     usage,

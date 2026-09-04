@@ -34,7 +34,7 @@ export function recordUsage(input: {
   projectId?: string | null;
   source: UsageSource;
   sourceId?: string | null;
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "chutes";
   model: string;
   role?: string | null;
   usage?: TokenUsage[];

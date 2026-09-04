@@ -40,6 +40,42 @@ const INTEREST_SYSTEM_PROMPT =
 // Each person costs a model call, so this is bounded the way the roster block
 // is. Established people only — a suggested person is inert everywhere.
 const MAX_PEOPLE = 24;
+// Assessments are independent of each other, so they run concurrently the way
+// a Council's first-look stages do. Bounded rather than unbounded: providers
+// rate-limit, and twenty-four simultaneous tool-using calls is how you find
+// that out the expensive way.
+const CONCURRENCY = 4;
+
+// Who is worth spending a model call on. Someone with no association to this
+// Project and not a single passage mentioning them anywhere has nothing for the
+// model to reason from — it would be asked to judge relevance from a name and a
+// relationship line, which is exactly the kind of thin material that produces a
+// manufactured link. Skipping them is both cheaper and more honest.
+export async function selectCandidates(projectId: string): Promise<{
+  candidates: Array<{ person: Person; alreadyOnProject: boolean }>;
+  skipped: string[];
+}> {
+  const people = listPeople({ status: "established" });
+  const candidates: Array<{ person: Person; alreadyOnProject: boolean }> = [];
+  const skipped: string[] = [];
+
+  for (const person of people) {
+    const alreadyOnProject = listProjectsForPerson(person.id).some(
+      (p) => p.id === projectId && p.status === "established"
+    );
+    if (alreadyOnProject) {
+      candidates.push({ person, alreadyOnProject });
+      continue;
+    }
+    const mentioned = await listPersonMentions(person, { limit: 1, scope: "everywhere" })
+      .then((r) => r.mentions.length > 0)
+      .catch(() => true);
+    if (mentioned) candidates.push({ person, alreadyOnProject });
+    else skipped.push(person.name);
+  }
+
+  return { candidates: candidates.slice(0, MAX_PEOPLE), skipped };
+}
 
 function projectSummary(project: Project): string {
   const memory = listMemory({ projectId: project.id })
@@ -62,7 +98,7 @@ async function personSummary(person: Person): Promise<string> {
     .filter((f) => f.status === "established")
     .map((f) => `- (${f.created_at.slice(0, 10)}) ${f.content}`)
     .join("\n");
-  const mentions = (await listPersonMentions(person, 6).catch(() => []))
+  const mentions = (await listPersonMentions(person, { limit: 6 }).then((r) => r.mentions).catch(() => []))
     .map((m) => `- (${m.sourceDate.slice(0, 10)}) ${m.title}: ${m.content.replace(/\s+/g, " ").slice(0, 300)}`)
     .join("\n");
 
@@ -123,7 +159,7 @@ async function assess(
     projectId: project.id,
     source: "people_interest",
     sourceId: runId,
-    provider: resolved.provider.id as "anthropic" | "openrouter",
+    provider: resolved.provider.id as "anthropic" | "openrouter" | "chutes",
     model: modelId,
     role: modelRole,
     usage,
@@ -148,17 +184,22 @@ export async function runPeopleInterestDiscovery(opts: { runId: string; projectI
     return;
   }
 
-  const people = listPeople({ status: "established" }).slice(0, MAX_PEOPLE);
-  const onProject = new Set(
-    people
-      .filter((p) => listProjectsForPerson(p.id).some((x) => x.id === projectId && x.status === "established"))
-      .map((p) => p.id)
-  );
-
   try {
-    for (const person of people) {
-      appendPersonInterestFinding(runId, await assess(project, person, onProject.has(person.id), runId));
-    }
+    const { candidates } = await selectCandidates(projectId);
+
+    // A small worker pool rather than a sequential loop: the assessments don't
+    // depend on each other, and running them one at a time is what made this
+    // feel like something you run once rather than something you reach for.
+    // Findings are appended as each finishes, so the run view fills in live.
+    const queue = [...candidates];
+    const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        appendPersonInterestFinding(runId, await assess(project, next.person, next.alreadyOnProject, runId));
+      }
+    });
+    await Promise.all(workers);
     setPeopleInterestStatus(runId, "complete");
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

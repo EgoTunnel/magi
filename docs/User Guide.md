@@ -180,22 +180,37 @@ say so, either by adding an alias or by merging the two records, which asks you 
 A person's page has three parts:
 
 - **What I know** — the facts you've recorded, each with the date you learned it and, where it came
-  from a conversation, a link straight back to the message. Add one with the box at the bottom.
-- **Mentions** — passages from anywhere in your archive that mention them. This needs no setup and no
-  extraction: it searches what you have already written, so a person added today immediately has a
-  history going back as far as your archive does.
+  from a conversation, a link straight back to the message. Add one with the box at the bottom. A fact
+  you typed by hand has no link, so it offers **find where I learned this**: Magi searches your archive
+  for where the claim came from and shows candidates for you to pick. It never links one on its own.
+  You can also record a linked fact directly from a conversation — **Remember about a person** sits
+  beside *Remember in Project* under any reply.
+  - **When a fact stops being true**, mark it **Outdated** rather than deleting it. It stays readable as
+    history and stops reaching replies, the roster, and search. When you add a replacement you can name
+    the fact it supersedes, so an old age or an old job never sits alongside the new one as if both were
+    current.
+- **Mentions** — passages that mention them by name. This needs no setup and no extraction: it searches
+  what you have already written, so a person added today immediately has a history going back as far as
+  your archive does. Because most people are recorded under a first name, this searches the Projects
+  they're on by default and tells you how many more the whole archive would find — one click widens it.
+  If their own Projects turn up nothing, it widens automatically and says so.
 - **Over time** — press **Trace** and the page shows how your work with them has developed: when they
   first came up, how often in each period since, and a few representative passages from each. It costs
-  nothing and calls no model — every passage in your archive is already dated.
+  nothing and calls no model — every passage in your archive is already dated. Like Mentions, it is
+  scoped to the Projects they're on.
+- **Draft summary** (top of the page) writes the one-line summary from the facts you've recorded. It
+  arrives as a suggestion beside the current one, and changes nothing until you keep it.
 - **Projects** — which Projects they're part of. A person is global and crosses Projects, which is the
   point of them being separate from any one. An association proposed by closing a conversation shows as
   `PROPOSED` until you keep it.
 
 ### Who might be interested in this?
 
-On any Project, under **Who might be interested?**, press **Ask**. Magi weighs each person you've
-recorded against that Project's actual material — searching the archive before deciding — and reports
-which of them, if any, genuinely relate to the work, with the evidence for each.
+On any Project, under **Who might be interested?**, press **Ask**. Magi first tells you what it will
+cost — how many of your people it will weigh, and who it is skipping because they have no link to that
+Project and no mention anywhere — and only runs when you confirm. It then weighs each candidate against
+the Project's actual material, searching the archive before deciding, and reports which of them, if any,
+genuinely relate to the work, with the evidence for each.
 
 It is built to say **nobody**. Most people have no real connection to most Projects, and a weak, generic
 link ("both involve strategy") is worse than none, because you might act on it. A run that finds nobody

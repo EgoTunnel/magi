@@ -63,7 +63,7 @@ async function runStep(opts: {
     projectId: opts.projectId ?? undefined,
     source: "agent",
     sourceId: opts.runId,
-    provider: resolved.provider.id as "anthropic" | "openrouter",
+    provider: resolved.provider.id as "anthropic" | "openrouter" | "chutes",
     model: modelId,
     role: opts.modelRole,
     usage,

@@ -24,6 +24,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     closureId: body.closureId ?? null,
     sourceMessageId: body.sourceMessageId ?? null,
     sourceConversationId: body.sourceConversationId ?? null,
+    // What a person is like changes. A new fact can name the one it replaces,
+    // which retires the old one to history rather than leaving both current.
+    supersedesId: body.supersedesId ?? null,
   });
   return NextResponse.json({ fact }, { status: 201 });
 }

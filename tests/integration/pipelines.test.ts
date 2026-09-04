@@ -15,13 +15,14 @@ import {
   listPeopleForProject,
   listProjectRoster,
 } from "@/lib/repo/people";
-import { buildHistoryWindow, getConversationSummary } from "@/lib/conversationWindow";
+import { buildHistoryWindow, getConversationSummary, pendingFold } from "@/lib/conversationWindow";
 import { draftClosure } from "@/lib/episodeClose";
 import { buildSystemPrompt } from "@/lib/contextBuilder";
+import { resolveTurnModel, runChatTurn } from "@/lib/chatTurn";
 import { createAgentRun, getAgentRun } from "@/lib/repo/agents";
 import { runAgent } from "@/lib/agent";
 import { runCouncilDeliberation } from "@/lib/council";
-import { runPeopleInterestDiscovery } from "@/lib/peopleInterest";
+import { runPeopleInterestDiscovery, selectCandidates } from "@/lib/peopleInterest";
 import { createPeopleInterestRun, getPeopleInterestRun } from "@/lib/repo/peopleInterest";
 import { traceTrajectory } from "@/lib/trajectory";
 import { SEARCH_KINDS } from "@/lib/searchIndex";
@@ -101,6 +102,35 @@ describe("conversation window pipeline", () => {
     expect(mock.calls[1].prompt).not.toContain("MARK0X");
   });
 
+  it("answers without waiting for the summary to catch up, and folds behind the turn", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    seedMessages(conversation.id, 60);
+    mock.setDefaultReply("A summary.");
+    await buildHistoryWindow(conversation.id, listMessages(conversation.id));
+    const foldedThrough = db
+      .prepare(`SELECT summary_through_id FROM conversations WHERE id = ?`)
+      .get(conversation.id) as { summary_through_id: string };
+
+    // Two more turns: enough to push material out of the window, nowhere near
+    // enough to be worth stalling the next answer on.
+    const added = seedMessages(conversation.id, 2, 60);
+    const windowed = await buildHistoryWindow(conversation.id, listMessages(conversation.id));
+
+    // Answered from the summary it already had, with the turns that aged out
+    // since then carried verbatim rather than waited for.
+    expect(windowed.summary).toBe("A summary.");
+    const sent = windowed.history.map((m) => m.content).join("\n");
+    expect(sent).toContain(added[0].content.slice(0, 8));
+
+    // And the fold happened anyway, behind the answer.
+    await pendingFold(conversation.id);
+    const now = db.prepare(`SELECT summary_through_id FROM conversations WHERE id = ?`).get(conversation.id) as {
+      summary_through_id: string;
+    };
+    expect(now.summary_through_id).not.toBe(foldedThrough.summary_through_id);
+  });
+
   it("falls back to the whole history when summarization fails", async () => {
     const project = createProject({ name: "P" });
     const conversation = createConversation(project.id, "Talk");
@@ -119,14 +149,52 @@ describe("context assembly", () => {
     createDocument(project.id, "Irrelevant", "Filler about gardening. ".repeat(400));
     createDocument(project.id, "Relevant", "The migration runs on Tuesday at dawn. ".repeat(60));
 
-    const { system, provenance } = await buildSystemPrompt({
+    const { system, turnContext, provenance } = await buildSystemPrompt({
       projectId: project.id,
       query: "when does the migration run",
     });
     expect(provenance.retrievalMode).toBe("retrieval");
-    expect(system).toContain("Retrieved from this Project");
-    expect(system).toContain("migration runs on Tuesday");
+    expect(turnContext).toContain("Retrieved from this Project");
+    expect(turnContext).toContain("migration runs on Tuesday");
     expect(provenance.retrieved?.length).toBeGreaterThan(0);
+    // Passages belong to the message, not to the standing prompt — keeping the
+    // system prompt identical across a conversation is what makes it cacheable.
+    expect(system).not.toContain("migration runs on Tuesday");
+  });
+
+  it("sends retrieved passages with the message they were retrieved for, not in the standing prompt", async () => {
+    const project = createProject({ name: "P" });
+    createDocument(project.id, "Relevant", "The migration runs on Tuesday at dawn. ".repeat(60));
+    const conversation = createConversation(project.id, "Talk");
+    const earlier = addMessage({ conversationId: conversation.id, role: "user", content: "An earlier question." });
+    addMessage({ conversationId: conversation.id, role: "assistant", content: "An earlier answer.", parentId: earlier.id });
+    const asking = addMessage({ conversationId: conversation.id, role: "user", content: "when does the migration run" });
+
+    const turnModel = await resolveTurnModel("default", asking.content, null);
+    if (!turnModel.ok) throw new Error("model did not resolve");
+    const response = await runChatTurn({
+      conversationId: conversation.id,
+      projectId: project.id,
+      history: listMessages(conversation.id).map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+      skillId: null,
+      turnModel: turnModel.value,
+      signal: new AbortController().signal,
+      excludeRefIds: [asking.id],
+      parentId: asking.id,
+    });
+    await response.text();
+
+    const call = mock.calls[mock.calls.length - 1];
+    // The passages arrive attached to the live turn...
+    expect(call.prompt).toContain("migration runs on Tuesday");
+    expect(call.prompt).toContain("when does the migration run");
+    expect(call.prompt.indexOf("migration runs on Tuesday")).toBeLessThan(
+      call.prompt.indexOf("when does the migration run")
+    );
+    // ...and not in the system prompt, which has to stay identical from one
+    // turn to the next for the provider's cache to hit it.
+    expect(call.system).not.toContain("migration runs on Tuesday");
+    expect(call.system).toContain("## Project: P");
   });
 
   it("falls back to whole documents when nothing matches", async () => {
@@ -437,6 +505,9 @@ describe("who might be interested in this", () => {
 
   it("weighs each established person and records the evidence", async () => {
     const project = createProject({ name: "Accessibility programme" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "Keith and Nils were both at the review." });
+
     const keith = createPerson({ name: "Keith", relationship: "client contact" });
     addPersonFact({ personId: keith.id, content: "Cares about accessibility in every review." });
     createPerson({ name: "Nils", relationship: "print vendor" });
@@ -465,6 +536,7 @@ describe("who might be interested in this", () => {
     const person = createPerson({ name: "Keith", relationship: "client contact" });
     addPersonFact({ personId: person.id, content: "KEPT_FACT" });
     addPersonFact({ personId: person.id, content: "UNKEPT_FACT", status: "suggested" });
+    associate(project.id, person.id);
 
     const run = createPeopleInterestRun(project.id);
     mock.setDefaultReply(REPLY("None", "No real connection."));
@@ -480,6 +552,10 @@ describe("who might be interested in this", () => {
 
   it("marks someone already on the Project, and only when the association is kept", async () => {
     const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    // Syl's association is only proposed, so he qualifies as a candidate on the
+    // strength of being mentioned rather than on the association.
+    addMessage({ conversationId: conversation.id, role: "user", content: "Syl asked about the timeline." });
     const onIt = createPerson({ name: "Keith" });
     const proposed = createPerson({ name: "Syl" });
     associate(project.id, onIt.id);
@@ -496,7 +572,8 @@ describe("who might be interested in this", () => {
 
   it("records a failure on the run rather than throwing", async () => {
     const project = createProject({ name: "P" });
-    createPerson({ name: "Keith" });
+    const person = createPerson({ name: "Keith" });
+    associate(project.id, person.id);
     const run = createPeopleInterestRun(project.id);
     mock.failNext("provider exploded");
 
@@ -504,7 +581,85 @@ describe("who might be interested in this", () => {
 
     const finished = getPeopleInterestRun(run.id)!;
     expect(finished.status).toBe("error");
-    expect(finished.findings[0].summary).toContain("provider exploded");
+    expect(finished.findings.some((f) => f.summary.includes("provider exploded"))).toBe(true);
+  });
+
+  // One Ask used to be up to 24 sequential model calls with tools, whatever
+  // was in the rolodex. Someone with no link to this Project and no mention
+  // anywhere gives the model nothing to reason from — which is precisely the
+  // thin material that produces a manufactured link.
+  it("skips people with neither an association nor a single mention", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "Keith raised it at the review." });
+
+    const mentioned = createPerson({ name: "Keith" });
+    const associated = createPerson({ name: "Anna" });
+    associate(project.id, associated.id);
+    createPerson({ name: "Zoltan" });
+
+    const { candidates, skipped } = await selectCandidates(project.id);
+    expect(candidates.map((c) => c.person.name).sort()).toEqual(["Anna", "Keith"]);
+    expect(skipped).toEqual(["Zoltan"]);
+    expect(candidates.find((c) => c.person.id === mentioned.id)!.alreadyOnProject).toBe(false);
+  });
+});
+
+describe("retrieval hygiene", () => {
+  // The turn's own message is written and indexed before the prompt is built,
+  // and it is a perfect lexical match for the query — because it *is* the
+  // query — so it reliably retrieved itself as the top passage and spent the
+  // budget telling the model what the user had just said.
+  it("does not retrieve the message the turn is answering", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    createDocument(project.id, "Notes", "The kestrel hunts at dusk over the water meadows. ".repeat(40));
+    const asking = addMessage({
+      conversationId: conversation.id,
+      role: "user",
+      content: "What did we say about the kestrel hunting at dusk?",
+    });
+
+    const withoutGuard = await buildSystemPrompt({ projectId: project.id, query: asking.content });
+    expect(withoutGuard.provenance.retrieved?.some((p) => p.refId === asking.id)).toBe(true);
+
+    const guarded = await buildSystemPrompt({
+      projectId: project.id,
+      query: asking.content,
+      excludeRefIds: [asking.id],
+    });
+    expect(guarded.provenance.retrieved?.some((p) => p.refId === asking.id)).toBe(false);
+    // And the budget it was occupying goes to real material instead.
+    expect(guarded.provenance.retrieved?.length).toBeGreaterThan(0);
+  });
+
+  // FTS5 indexes every declared column unless told not to. With chunk_id
+  // indexed, ids joined the same term pool as the prose: searchable as text,
+  // and counted into the document lengths bm25 normalizes against.
+  it("does not index the passage table's own id column", () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    const message = addMessage({ conversationId: conversation.id, role: "user", content: "Ordinary prose here." });
+
+    const chunkId = (db.prepare(`SELECT id FROM chunks WHERE ref_id = ?`).get(message.id) as { id: string }).id;
+    const hits = db
+      .prepare(`SELECT COUNT(*) n FROM chunk_search WHERE chunk_search MATCH ?`)
+      .get(`"${chunkId}"`) as { n: number };
+    expect(hits.n).toBe(0);
+  });
+
+  it("does not present its own earlier replies as the Project's ground truth", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({
+      conversationId: conversation.id,
+      role: "assistant",
+      content: "The migration runs on Tuesday at dawn, according to my earlier reading. ".repeat(20),
+    });
+
+    const { turnContext } = await buildSystemPrompt({ projectId: project.id, query: "when does the migration run" });
+    expect(turnContext).toContain("your own earlier reply");
+    expect(turnContext).not.toContain("Treat them as ground truth");
   });
 });
 

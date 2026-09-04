@@ -1,22 +1,27 @@
 import OpenAI from "openai";
-import type { ChatCompletionContentPart, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
+import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import { getOpenRouterApiKey, getTavilyApiKey, getSetting, setSetting } from "@/lib/settings";
 import type {
   CompleteOptions,
   ModelCapabilities,
   ModelInfo,
-  ModelMessage,
   ModelProvider,
   ReasoningEffort,
   StreamEvent,
-  ToolSpec,
 } from "@/lib/models/types";
 import { REASONING_EFFORTS } from "@/lib/models/types";
+import {
+  DEFAULT_MAX_TOOL_ITERATIONS,
+  extractText,
+  resolveToolCalls,
+  toOpenAITools,
+  toWorkingMessages,
+} from "@/lib/models/openaiCompatible";
 
 const MODELS_CACHE_KEY = "openrouter_models_cache";
 const IMAGE_MODELS_CACHE_KEY = "openrouter_image_models_cache";
 const CAPABILITIES_CACHE_KEY = "openrouter_capabilities_cache";
-const MAX_TOOL_ITERATIONS = 10;
+const MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS;
 
 function client() {
   const apiKey = getOpenRouterApiKey();
@@ -308,36 +313,6 @@ export async function generateOpenRouterImage(opts: {
   return urls.map((dataUrl) => ({ dataUrl }));
 }
 
-function toOpenAITools(tools?: ToolSpec[]): ChatCompletionTool[] | undefined {
-  if (!tools || !tools.length) return undefined;
-  return tools.map((t) => ({
-    type: "function",
-    function: { name: t.name, description: t.description, parameters: t.inputSchema },
-  }));
-}
-
-function toOpenAIContent(content: ModelMessage["content"]): string | ChatCompletionContentPart[] {
-  if (typeof content === "string") return content;
-  return content.map((part): ChatCompletionContentPart =>
-    part.type === "image"
-      ? { type: "image_url", image_url: { url: `data:${part.mimeType};base64,${part.dataBase64}` } }
-      : { type: "text", text: part.text ?? "" }
-  );
-}
-
-function toWorkingMessages(opts: CompleteOptions): ChatCompletionMessageParam[] {
-  const messages: ChatCompletionMessageParam[] = [];
-  if (opts.system) messages.push({ role: "system", content: opts.system });
-  for (const m of opts.messages) {
-    messages.push(
-      m.role === "user"
-        ? { role: "user", content: toOpenAIContent(m.content) }
-        : { role: "assistant", content: typeof m.content === "string" ? m.content : (m.content.find((p) => p.type === "text")?.text ?? "") }
-    );
-  }
-  return messages;
-}
-
 // Shapes a request to what the specific model actually supports, per its
 // live-fetched capabilities. Unknown models (capabilities not yet cached —
 // e.g. right after a fresh install before the first refresh) fail open:
@@ -382,40 +357,6 @@ function requestExtras(opts: CompleteOptions): {
     : requestedMax;
 
   return { tools, reasoning, maxTokens, plugins };
-}
-
-// Some reasoning models proxied through OpenRouter (GLM, DeepSeek R1, QwQ, and
-// others) can return an empty `content` alongside a separate `reasoning` /
-// `reasoning_content` field when they spend their whole turn "thinking" —
-// especially under a tight max_tokens budget. Treat that as the answer
-// rather than showing the user nothing.
-function extractText(message: { content?: string | null }): string {
-  const content = message.content;
-  if (content && content.trim()) return content;
-  const loose = message as unknown as { reasoning?: string; reasoning_content?: string };
-  const reasoning = loose.reasoning ?? loose.reasoning_content;
-  if (reasoning && reasoning.trim()) return reasoning.trim();
-  return content ?? "";
-}
-
-async function resolveToolCalls(
-  opts: CompleteOptions,
-  toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]
-): Promise<ChatCompletionMessageParam[]> {
-  const results: ChatCompletionMessageParam[] = [];
-  for (const call of toolCalls) {
-    if (call.type !== "function") continue;
-    let input: unknown = {};
-    try {
-      input = JSON.parse(call.function.arguments || "{}");
-    } catch {
-      // leave input as {} — the tool executor will report an error for missing fields
-    }
-    const result = opts.onToolCall ? await opts.onToolCall(call.function.name, input) : "(no tool executor configured)";
-    opts.toolLog?.push({ name: call.function.name, input, result });
-    results.push({ role: "tool", tool_call_id: call.id, content: result });
-  }
-  return results;
 }
 
 export const openRouterProvider: ModelProvider = {

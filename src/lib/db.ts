@@ -331,7 +331,12 @@ CREATE TABLE IF NOT EXISTS chunks (
   updated_at TEXT NOT NULL
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search USING fts5(chunk_id, content);
+-- chunk_id is UNINDEXED: it is a join key, not searchable text. Left indexed,
+-- FTS5 tokenizes ids like "message:msg_4f3a…:2" into the same term pool as the
+-- prose, so a query could match on an id fragment and — worse — every id
+-- inflates the document lengths bm25 normalizes against, quietly distorting
+-- the ranking of every search. See the rebuild below for existing databases.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search USING fts5(chunk_id UNINDEXED, content);
 
 CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -425,6 +430,13 @@ addColumnIfMissing("memory", "source_conversation_id", "TEXT");
 // global or Project memory blocks of a system prompt by accident. They get
 // there only by the deliberate routes the People feature adds.
 addColumnIfMissing("memory", "person_id", "TEXT");
+// What a person is like changes, and the point of the rolodex is remembering
+// details of other people's lives — which is exactly the category of fact that
+// goes stale. A superseded item keeps its place in the record (it was true, and
+// when it stopped being true is itself worth knowing) but stops reaching any
+// prompt, tool result, or index. superseded_by names the fact that replaced it.
+addColumnIfMissing("memory", "superseded_by", "TEXT");
+addColumnIfMissing("memory", "superseded_at", "TEXT");
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_person ON memory(person_id)`);
 // An association proposed by closing a conversation is itself an inference,
 // and inferences are never established here — being on a Project's roster puts
@@ -433,6 +445,48 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_person ON memory(person_id)`);
 // established while their association with this Project is still proposed.
 addColumnIfMissing("project_people", "status", "TEXT NOT NULL DEFAULT 'established'");
 addColumnIfMissing("project_people", "closure_id", "TEXT");
+// A drafted one-line summary, held separately from the real one so it is a
+// proposal rather than an edit: it appears beside the current summary with
+// Keep/discard, and nothing reads it until it is kept. Same posture as every
+// other thing Magi proposes about a person.
+addColumnIfMissing("people", "suggested_summary", "TEXT");
+// How many people this run set out to assess, so the run view can say "4 of 9"
+// rather than counting up from nothing with no idea where it ends.
+addColumnIfMissing("people_interest_runs", "expected", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("people_interest_runs", "skipped", "TEXT NOT NULL DEFAULT '[]'");
+// A conversation's messages became a tree rather than a flat line — editing a
+// user message or regenerating a reply creates a sibling branch instead of
+// mutating history, so nothing is ever silently lost. parent_id is the tree
+// edge (NULL = root of the conversation); head_message_id (on conversations)
+// is which leaf is currently being viewed. No FK on head_message_id
+// deliberately — it would create a circular-FK ordering hazard with
+// messages.conversation_id's own cascade.
+addColumnIfMissing("messages", "parent_id", "TEXT REFERENCES messages(id) ON DELETE CASCADE");
+addColumnIfMissing("conversations", "head_message_id", "TEXT");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id)`);
+// Existing conversations are still a single flat line — backfill treats that
+// line as this tree's one existing branch: each message's parent becomes the
+// previous message in its conversation (created_at, with rowid as a
+// tiebreaker for same-millisecond inserts — nowIso() has no monotonic
+// counter), and the conversation's head becomes its last message.
+// Self-guarding via the IS NULL checks below, so this can only ever run once
+// per message/conversation — same idiom as the other backfills in this file.
+{
+  const conversationIds = db.prepare(`SELECT id FROM conversations`).all() as { id: string }[];
+  const backfillBranches = db.transaction(() => {
+    const setParent = db.prepare(`UPDATE messages SET parent_id = ? WHERE id = ? AND parent_id IS NULL`);
+    const setHead = db.prepare(`UPDATE conversations SET head_message_id = ? WHERE id = ? AND head_message_id IS NULL`);
+    for (const { id } of conversationIds) {
+      const rows = db
+        .prepare(`SELECT id FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC`)
+        .all(id) as { id: string }[];
+      if (rows.length === 0) continue;
+      for (let i = 1; i < rows.length; i++) setParent.run(rows[i - 1].id, rows[i].id);
+      setHead.run(rows[rows.length - 1].id, id);
+    }
+  });
+  backfillBranches();
+}
 // Before those columns existed, the origin of a conversation-sourced memory
 // item was stuffed into the free-text `source` field — as a bare conversation
 // id by the "Remember" action, and as "episode:<id>" by an episode closing.
@@ -472,6 +526,25 @@ db.exec(
      SELECT id FROM memory WHERE status = 'suggested'
    )`
 );
+
+// An FTS5 table's columns cannot be altered, so a database created before
+// chunk_id was UNINDEXED has to have the table rebuilt from `chunks`, which is
+// the authoritative copy. Self-guarding on the stored schema rather than on a
+// settings flag: the condition *is* the thing being fixed, so this can never
+// run twice or be skipped because a flag was written optimistically.
+{
+  const existing = db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'chunk_search'`).get() as
+    | { sql: string | null }
+    | undefined;
+  if (existing?.sql && !/UNINDEXED/i.test(existing.sql)) {
+    const rebuild = db.transaction(() => {
+      db.exec(`DROP TABLE chunk_search`);
+      db.exec(`CREATE VIRTUAL TABLE chunk_search USING fts5(chunk_id UNINDEXED, content)`);
+      db.exec(`INSERT INTO chunk_search (chunk_id, content) SELECT id, content FROM chunks`);
+    });
+    rebuild();
+  }
+}
 
 export function nowIso() {
   return new Date().toISOString();

@@ -24,6 +24,10 @@ export interface PeopleInterestRun {
   project_id: string;
   status: PeopleInterestRunStatus;
   findings: PersonInterestFinding[];
+  // How many people this run set out to assess, and who it left out for having
+  // no association and no mention anywhere.
+  expected: number;
+  skipped: string[];
   created_at: string;
   updated_at: string;
 }
@@ -33,21 +37,30 @@ interface RunRow {
   project_id: string;
   status: PeopleInterestRunStatus;
   findings: string;
+  expected: number;
+  skipped: string;
   created_at: string;
   updated_at: string;
 }
 
 function parse(row: RunRow): PeopleInterestRun {
-  return { ...row, findings: JSON.parse(row.findings) as PersonInterestFinding[] };
+  return {
+    ...row,
+    findings: JSON.parse(row.findings) as PersonInterestFinding[],
+    skipped: JSON.parse(row.skipped) as string[],
+  };
 }
 
-export function createPeopleInterestRun(projectId: string): PeopleInterestRun {
+export function createPeopleInterestRun(
+  projectId: string,
+  opts: { expected?: number; skipped?: string[] } = {}
+): PeopleInterestRun {
   const id = newId("pint");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO people_interest_runs (id, project_id, status, findings, created_at, updated_at)
-     VALUES (?, ?, 'running', '[]', ?, ?)`
-  ).run(id, projectId, ts, ts);
+    `INSERT INTO people_interest_runs (id, project_id, status, findings, expected, skipped, created_at, updated_at)
+     VALUES (?, ?, 'running', '[]', ?, ?, ?, ?)`
+  ).run(id, projectId, opts.expected ?? 0, JSON.stringify(opts.skipped ?? []), ts, ts);
   return getPeopleInterestRun(id)!;
 }
 

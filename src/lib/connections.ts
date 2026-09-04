@@ -66,7 +66,7 @@ async function analyzeTarget(source: Project, target: Project, runId: string): P
     projectId: source.id,
     source: "connection",
     sourceId: runId,
-    provider: resolved.provider.id as "anthropic" | "openrouter",
+    provider: resolved.provider.id as "anthropic" | "openrouter" | "chutes",
     model: modelId,
     role: modelRole,
     usage,

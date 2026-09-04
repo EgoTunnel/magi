@@ -19,6 +19,8 @@ interface Run {
   project_id: string;
   status: "running" | "complete" | "error";
   findings: Finding[];
+  expected: number;
+  skipped: string[];
 }
 
 function isReal(relevance: string): boolean {
@@ -102,8 +104,17 @@ export function PeopleInterestRunView({ runId }: { runId: string }) {
 
       {run.status === "running" && (
         <Panel className="mb-6 px-4 py-3 text-[13px] text-[var(--color-text-muted)]">
-          Weighing each person against this Project — {findings.length} considered so far…
+          Weighing each person against this Project — {findings.length}
+          {run.expected ? ` of ${run.expected}` : ""} done.
         </Panel>
+      )}
+
+      {run.skipped?.length > 0 && (
+        <p className="mb-4 text-[12px] text-[var(--color-text-faint)]">
+          {run.skipped.length} {run.skipped.length === 1 ? "person was" : "people were"} not weighed, having no link to
+          this Project and no mention anywhere in the archive: {run.skipped.slice(0, 8).join(", ")}
+          {run.skipped.length > 8 ? `, and ${run.skipped.length - 8} more` : ""}.
+        </p>
       )}
 
       {run.status === "complete" && relevant.length === 0 && (

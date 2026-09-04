@@ -109,7 +109,14 @@ interface InterestRun {
   id: string;
   status: "running" | "complete" | "error";
   findings: { relevance: string }[];
+  expected: number;
+  skipped: string[];
   created_at: string;
+}
+interface InterestEstimate {
+  recorded: number;
+  willAssess: number;
+  skipped: string[];
 }
 interface ToolInfo {
   name: string;
@@ -179,6 +186,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
   const [interestRuns, setInterestRuns] = useState<InterestRun[]>([]);
   const [launchingInterest, setLaunchingInterest] = useState(false);
   const [interestError, setInterestError] = useState<string | null>(null);
+  const [interestEstimate, setInterestEstimate] = useState<InterestEstimate | null>(null);
 
   async function load() {
     const res = await fetch(`/api/projects/${projectId}`);
@@ -439,6 +447,14 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
     const data = await res.json();
     setConnectionFormOpen(false);
     router.push(`/connections/runs/${data.run.id}`);
+  }
+
+  // What it would cost, before spending it — one model call per candidate.
+  async function estimateInterest() {
+    setInterestError(null);
+    const res = await fetch(`/api/people-interest/run?projectId=${projectId}`);
+    if (!res.ok) return;
+    setInterestEstimate(await res.json());
   }
 
   async function launchInterest() {
@@ -711,10 +727,46 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
               <h2 className="text-[13px] font-semibold uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
                 Who might be interested?
               </h2>
-              <Button variant="ghost" onClick={launchInterest} disabled={launchingInterest}>
-                <IconPlus /> {launchingInterest ? "Starting…" : "Ask"}
+              <Button variant="ghost" onClick={estimateInterest} disabled={launchingInterest}>
+                <IconPlus /> Ask
               </Button>
             </div>
+            {/* The cost, before it is spent. One model call per candidate, and
+                the candidate list is not everyone. */}
+            {interestEstimate && (
+              <Panel className="mb-3 px-4 py-3">
+                <p className="text-[13px] leading-relaxed text-[var(--color-text)]">
+                  {interestEstimate.willAssess === 0 ? (
+                    <>Nobody recorded is on this Project or mentioned anywhere in the archive, so there is nothing to weigh.</>
+                  ) : (
+                    <>
+                      This will weigh <strong>{interestEstimate.willAssess}</strong> of your{" "}
+                      {interestEstimate.recorded} recorded {interestEstimate.recorded === 1 ? "person" : "people"} against
+                      this Project — one model call each, run a few at a time.
+                    </>
+                  )}
+                </p>
+                {interestEstimate.skipped.length > 0 && (
+                  <p className="mt-1.5 text-[12px] text-[var(--color-text-muted)]">
+                    Skipping {interestEstimate.skipped.length} with no link to this Project and no mention anywhere:{" "}
+                    {interestEstimate.skipped.slice(0, 8).join(", ")}
+                    {interestEstimate.skipped.length > 8 ? `, and ${interestEstimate.skipped.length - 8} more` : ""}.
+                  </p>
+                )}
+                <div className="mt-3 flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setInterestEstimate(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="accent"
+                    onClick={launchInterest}
+                    disabled={launchingInterest || interestEstimate.willAssess === 0}
+                  >
+                    {launchingInterest ? "Starting…" : "Run it"}
+                  </Button>
+                </div>
+              </Panel>
+            )}
             {interestError && (
               <div className="mb-3 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
                 {interestError}{" "}
@@ -737,7 +789,7 @@ export function ProjectDashboard({ projectId }: { projectId: string }) {
                       <Panel className="flex items-center justify-between px-3.5 py-2.5 transition-colors hover:border-[var(--color-border-strong)]">
                         <span className="truncate text-[13.5px] text-[var(--color-text)]">
                           {r.status === "running"
-                            ? "Considering…"
+                            ? `Considering… ${r.findings.length}${r.expected ? ` of ${r.expected}` : ""}`
                             : real === 0
                               ? "Nobody obviously"
                               : `${real} of ${r.findings.length} may be interested`}

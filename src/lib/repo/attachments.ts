@@ -70,6 +70,24 @@ export function attachToMessage(attachmentIds: string[], messageId: string) {
   for (const id of attachmentIds) stmt.run(messageId, id);
 }
 
+// Edit can't safely carry an attachment into a new branch (attachToMessage is
+// one-row-one-owner — "copying" it would either duplicate the row or strip it
+// from the original, now off-path, message) so the UI hides Edit on a message
+// this returns true for rather than silently dropping the attachment.
+export function hasAttachmentsForMessage(messageId: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM attachments WHERE message_id = ? LIMIT 1`).get(messageId);
+}
+
+// The same question for a whole conversation in one query. Asking it per
+// message meant a round trip per turn every time the conversation was loaded —
+// and it is reloaded at the end of every turn.
+export function messagesWithAttachments(conversationId: string): Set<string> {
+  const rows = db
+    .prepare(`SELECT DISTINCT message_id FROM attachments WHERE conversation_id = ? AND message_id IS NOT NULL`)
+    .all(conversationId) as Array<{ message_id: string }>;
+  return new Set(rows.map((r) => r.message_id));
+}
+
 export function deleteAttachment(id: string) {
   const existing = getAttachment(id);
   if (!existing) return;

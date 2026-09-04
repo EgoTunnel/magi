@@ -1,4 +1,4 @@
-import { getConversation, listMessages, type Message } from "@/lib/repo/conversations";
+import { getConversation, getActivePath, type Message } from "@/lib/repo/conversations";
 import { getConversationSummary } from "@/lib/conversationWindow";
 import { createMemory, clearSuggestedForConversation, listMemoryForClosure, type MemoryItem } from "@/lib/repo/memory";
 import {
@@ -223,7 +223,10 @@ function rosterBlock(): string {
 export async function draftClosure(conversationId: string): Promise<ClosureDraft> {
   const conversation = getConversation(conversationId);
   if (!conversation) throw new Error("Conversation not found");
-  const messages = listMessages(conversationId).filter((m) => m.role === "user" || m.role === "assistant");
+  // The active branch only — closing an episode should summarize what the
+  // user actually experienced, not a branch they edited away or regenerated
+  // past.
+  const messages = getActivePath(conversationId).filter((m) => m.role === "user" || m.role === "assistant");
   if (messages.length === 0) throw new Error("There is nothing in this conversation to close.");
 
   const modelId = modelForRole("synthesizer");
@@ -259,7 +262,7 @@ export async function draftClosure(conversationId: string): Promise<ClosureDraft
     projectId: conversation.project_id,
     source: "conversation",
     sourceId: conversationId,
-    provider: resolved.provider.id as "anthropic" | "openrouter",
+    provider: resolved.provider.id as "anthropic" | "openrouter" | "chutes",
     model: modelId,
     role: "synthesizer",
     usage,

@@ -11,7 +11,13 @@ export interface MemoryItem {
   person_id: string | null;
   content: string;
   source: string | null;
-  status: "established" | "suggested";
+  // 'superseded' is a third state, not a kind of deletion: the item stays
+  // readable as history but is inert everywhere a prompt, tool or index can
+  // reach it — the same posture 'suggested' takes, for the opposite reason.
+  status: "established" | "suggested" | "superseded";
+  // The item that replaced this one, when one did.
+  superseded_by: string | null;
+  superseded_at: string | null;
   // Set when this item was proposed by closing a conversation rather than
   // written by hand — see src/lib/episodeClose.ts.
   closure_id: string | null;
@@ -77,6 +83,9 @@ export function createMemory(input: {
   closureId?: string | null;
   sourceMessageId?: string | null;
   sourceConversationId?: string | null;
+  // An older item this one replaces. Set together, so "she moved to X" and
+  // "she worked at Y" never both read as current.
+  supersedesId?: string | null;
 }): MemoryItem {
   const id = newId("mem");
   const ts = nowIso();
@@ -112,6 +121,9 @@ export function createMemory(input: {
       content: input.content,
     });
   }
+  // Only after the replacement exists — superseding first would briefly leave
+  // the person with neither fact.
+  if (input.supersedesId) supersedeMemory(input.supersedesId, id);
   return db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem;
 }
 
@@ -132,6 +144,18 @@ export function updateMemory(id: string, content: string): MemoryItem | null {
   return row ?? null;
 }
 
+// Attaches an origin to a fact that was typed rather than promoted. Typing a
+// fact by hand is the fastest way to record one and the only one that loses the
+// link, which left the person page claiming provenance it mostly didn't have.
+export function setMemoryOrigin(id: string, messageId: string | null, conversationId: string | null): MemoryItem | null {
+  db.prepare(`UPDATE memory SET source_message_id = ?, source_conversation_id = ? WHERE id = ?`).run(
+    messageId,
+    conversationId,
+    id
+  );
+  return (db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem) ?? null;
+}
+
 export function deleteMemory(id: string) {
   db.prepare(`DELETE FROM memory WHERE id = ?`).run(id);
   indexRemove("memory", id);
@@ -144,8 +168,9 @@ export function setMemoryStatus(id: string, status: MemoryItem["status"]): Memor
   db.prepare(`UPDATE memory SET status = ? WHERE id = ?`).run(status, id);
   const row = (db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem) ?? null;
   if (!row) return null;
-  // Promotion is what puts an item into the archive; demotion takes it back
-  // out, so a suggestion can never be retrieved into a prompt.
+  // Promotion is what puts an item into the archive; demotion and superseding
+  // both take it back out, so neither a suggestion nor a fact that has stopped
+  // being true can be retrieved into a prompt.
   if (status === "established") {
     indexUpsert({
       kind: "memory",
@@ -159,6 +184,21 @@ export function setMemoryStatus(id: string, status: MemoryItem["status"]): Memor
     indexRemove("memory", id);
   }
   return row;
+}
+
+// Records that `replacement` has taken over from `id`. The old item keeps its
+// text and its date and stays visible as history; it just stops being current.
+// Deliberately not a delete: "Beatrix is 8" was true, and when it stopped being
+// true is part of what the record is for.
+export function supersedeMemory(id: string, replacementId: string | null): MemoryItem | null {
+  const row = db.prepare(`SELECT * FROM memory WHERE id = ?`).get(id) as MemoryItem | undefined;
+  if (!row) return null;
+  db.prepare(`UPDATE memory SET superseded_by = ?, superseded_at = ? WHERE id = ?`).run(
+    replacementId,
+    nowIso(),
+    id
+  );
+  return setMemoryStatus(id, "superseded");
 }
 
 export function listMemoryForClosure(closureId: string): MemoryItem[] {

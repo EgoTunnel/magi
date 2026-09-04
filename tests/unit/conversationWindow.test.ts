@@ -11,6 +11,7 @@ function messages(count: number, size: number): Message[] {
     model: null,
     provenance: null,
     created_at: "2026-01-01T00:00:00.000Z",
+    parent_id: i === 0 ? null : `m${i - 1}`,
   }));
 }
 

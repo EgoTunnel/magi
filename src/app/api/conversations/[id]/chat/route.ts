@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import { NextRequest, NextResponse } from "next/server";
-import { addMessage, getConversation, listMessages } from "@/lib/repo/conversations";
+import { addMessage, getConversation, getActivePath, newMessageId } from "@/lib/repo/conversations";
 import { getAttachment, attachToMessage, type Attachment } from "@/lib/repo/attachments";
 import type { ContentPart, ModelRoleId } from "@/lib/models/types";
 import { resolveTurnModel, runChatTurn } from "@/lib/chatTurn";
+import { prefetchRetrieval } from "@/lib/contextBuilder";
 import { buildHistoryWindow } from "@/lib/conversationWindow";
 
 // Per-attachment and combined caps on how much extracted text gets baked into
@@ -39,6 +40,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     return NextResponse.json({ error: "content or at least one attachment is required" }, { status: 400 });
   }
 
+  // The id this turn's user message will be saved under, allocated now so
+  // retrieval can start before the message exists and still know to exclude
+  // it — without that exclusion the message reliably retrieves itself, being a
+  // perfect match for a query that *is* it.
+  const userMessageId = newMessageId();
+  // Started before the model is resolved, not after. On an "Auto" turn
+  // resolveTurnModel() below makes its own model call to classify the message,
+  // and these two have nothing to say to each other — running them
+  // concurrently costs the slower one instead of both.
+  const retrieval = prefetchRetrieval({
+    projectId: conversation.project_id,
+    query: content,
+    excludeRefIds: [userMessageId],
+  });
+
   const turnModel = await resolveTurnModel(requestedRole, content, skillId);
   if (!turnModel.ok) return turnModel.response;
   const { resolved } = turnModel.value;
@@ -56,13 +72,17 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     .join("");
   const finalContent = content + attachmentSuffix;
 
-  const userMessage = addMessage({ conversationId: id, role: "user", content: finalContent });
+  const userMessage = addMessage({ id: userMessageId, conversationId: id, role: "user", content: finalContent });
   if (attachments.length) attachToMessage(attachments.map((a) => a.id), userMessage.id);
 
   // Long conversations send a rolling summary of their older turns plus a
   // recent window, rather than every message every time — see
-  // src/lib/conversationWindow.ts. Short ones are unaffected.
-  const windowed = await buildHistoryWindow(id, listMessages(id));
+  // src/lib/conversationWindow.ts. Short ones are unaffected. getActivePath()
+  // (not listMessages()) matters here specifically: it's the current branch
+  // only — a different branch can contain an entire unrelated exchange that
+  // just happens to sort in between chronologically, and the model must
+  // never see that spliced into this turn's context as if it happened.
+  const windowed = await buildHistoryWindow(id, getActivePath(id));
   const history = windowed.history;
 
   // Real image data is only ever sent for the live turn it was attached to —
@@ -94,6 +114,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     // The message just sent — not derived from history, which may have had its
     // last entry swapped for a multimodal version above.
     query: content,
+    excludeRefIds: [userMessage.id],
+    retrieval,
+    parentId: userMessage.id,
     conversationSummary: windowed.summary
       ? { text: windowed.summary, messageCount: windowed.summarizedCount }
       : null,

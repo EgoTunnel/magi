@@ -106,7 +106,7 @@ function blockToNode(node: RootContent, key: string): ReactNode {
   }
 }
 
-export function renderMarkdown(markdown: string): ReactNode {
+function parseToNodes(markdown: string): ReactNode {
   const tree = unified().use(remarkParse).use(remarkGfm).parse(markdown) as Root;
   return tree.children.map((node, i) => {
     try {
@@ -115,4 +115,36 @@ export function renderMarkdown(markdown: string): ReactNode {
       return null;
     }
   });
+}
+
+// A conversation re-renders its whole message list whenever anything about it
+// changes — a scroll position, an open branch panel, a finished turn — and
+// every assistant message in it calls this. Parsing a hundred replies again to
+// produce elements identical to the ones already on screen was the single
+// most expensive thing the conversation view did.
+//
+// Keyed by the markdown itself, so a message that hasn't changed is free and
+// an edited one re-parses on its own. The elements handed back are React
+// elements — immutable by contract — so returning the same ones is not just
+// safe but the point: React sees the identical element reference and skips
+// re-rendering that subtree entirely.
+const RENDER_CACHE_LIMIT = 400;
+const renderCache = new Map<string, ReactNode>();
+
+export function renderMarkdown(markdown: string): ReactNode {
+  const cached = renderCache.get(markdown);
+  if (cached !== undefined) {
+    // Re-insert to make this the most recently used entry — a long
+    // conversation being scrolled must not evict the messages in view.
+    renderCache.delete(markdown);
+    renderCache.set(markdown, cached);
+    return cached;
+  }
+  const rendered = parseToNodes(markdown);
+  renderCache.set(markdown, rendered);
+  if (renderCache.size > RENDER_CACHE_LIMIT) {
+    const oldest = renderCache.keys().next();
+    if (!oldest.done) renderCache.delete(oldest.value);
+  }
+  return rendered;
 }

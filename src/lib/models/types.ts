@@ -17,7 +17,7 @@ export interface ModelMessage {
 
 export interface ModelInfo {
   id: string;
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "chutes";
   label: string;
   description: string;
   speed: "fast" | "balanced" | "deep";
@@ -52,8 +52,17 @@ export interface ModelCapabilities {
 }
 
 export interface TokenUsage {
+  // Every input token the call was billed for, cached ones included — so this
+  // stays comparable across a conversation whether or not the prefix was a
+  // cache hit. What each portion *costs* differs; see estimateCost.
   promptTokens: number;
   completionTokens: number;
+  // The parts of promptTokens that were served from, or written to, the
+  // provider's prompt cache. Absent for providers that don't report it (and
+  // for every call that didn't ask to be cached), which prices exactly as
+  // before.
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 }
 
 // A tool Magi's model layer can call mid-turn. The model only ever sees

@@ -41,6 +41,68 @@ const MODELS: ModelInfo[] = [
 // as one iteration. This bounds runaway loops if a model keeps calling tools.
 const MAX_TOOL_ITERATIONS = 10;
 
+// Below this, a cache breakpoint is not worth placing: Anthropic ignores a
+// cached prefix shorter than its per-model minimum (1,024 tokens on most
+// models, 2,048 on the smaller ones) and bills the whole prompt normally. This
+// is that ceiling in characters, with margin — roughly 3.5 characters per
+// token, deliberately conservative so a marked prefix is really over the line.
+const CACHE_MIN_CHARS = 9000;
+
+// The three functions below are exported for tests only. Nothing outside this
+// module should call them: caching is a property of how this provider builds a
+// request, not something a caller configures.
+export function contentLength(content: Anthropic.MessageParam["content"]): number {
+  if (typeof content === "string") return content.length;
+  return content.reduce((n, block) => n + (block.type === "text" ? block.text.length : 0), 0);
+}
+
+// Marks a message as the end of a cacheable prefix, in place. Everything from
+// the start of the request up to and including this message is then stored by
+// the provider and re-read on the next call instead of being reprocessed —
+// which for a conversation means its whole history, since Magi sends the
+// earlier turns byte-identical every time (this turn's retrieved passages ride
+// on the *last* message, deliberately: see withTurnContext in chatTurn.ts).
+export function markCacheBreakpoint(message: Anthropic.MessageParam) {
+  const cacheControl = { type: "ephemeral" as const };
+  if (typeof message.content === "string") {
+    // An empty text block is rejected outright, so a message with no text is
+    // simply left unmarked — the next call just misses the cache.
+    if (!message.content) return;
+    message.content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+    return;
+  }
+  const last = message.content[message.content.length - 1];
+  if (last) Object.assign(last, { cache_control: cacheControl });
+}
+
+// The system prompt as a cacheable block when it is big enough to be worth
+// caching, and as a plain string when it isn't. Magi's system prompt carries
+// the Project, its memory, its roster and the conversation's rolling summary —
+// identical from one turn to the next, and thousands of tokens of it.
+export function systemParam(
+  system: string | undefined,
+  cache: boolean
+): string | Anthropic.TextBlockParam[] | undefined {
+  if (!system) return undefined;
+  if (!cache || system.length < CACHE_MIN_CHARS) return system;
+  return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+}
+
+export function usageOf(usage: Anthropic.Usage) {
+  const cacheRead = usage.cache_read_input_tokens ?? 0;
+  const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+  return {
+    // input_tokens excludes both cache figures, so they are added back: the
+    // turn really did put that many tokens in front of the model, and a
+    // conversation's token counts shouldn't appear to collapse just because
+    // the prefix started being cached.
+    promptTokens: usage.input_tokens + cacheRead + cacheWrite,
+    completionTokens: usage.output_tokens,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+  };
+}
+
 function client() {
   const apiKey = getAnthropicApiKey();
   if (!apiKey) throw new Error("NO_API_KEY");
@@ -109,7 +171,7 @@ export const anthropicProvider: ModelProvider = {
 
       // Every iteration is a real, separately-billed API call — including tool-use
       // round trips — so usage is recorded here, not just on the final answer.
-      opts.usage?.push({ promptTokens: res.usage.input_tokens, completionTokens: res.usage.output_tokens });
+      opts.usage?.push(usageOf(res.usage));
 
       if (res.stop_reason === "tool_use") {
         const toolResults = await resolveToolCalls(opts, res.content);
@@ -128,11 +190,26 @@ export const anthropicProvider: ModelProvider = {
     const tools = toAnthropicTools(opts.tools);
     const working: Anthropic.MessageParam[] = toWorkingMessages(opts.messages);
 
+    // Conversation turns, and only conversation turns, reach this method — the
+    // one workload where the same enormous prefix is sent over and over. Two
+    // breakpoints: the end of the system prompt, and the end of the last
+    // message before the live one. Marked once, on the prefix, so they survive
+    // as tool results grow `working` below.
+    //
+    // The marks are advisory. A prefix that has changed, or that falls under
+    // the provider's minimum, is simply a cache miss and costs what it always
+    // did — there is no failure mode here beyond paying the old price.
+    const prefix = working.slice(0, -1);
+    if (prefix.length && prefix.reduce((n, m) => n + contentLength(m.content), 0) >= CACHE_MIN_CHARS) {
+      markCacheBreakpoint(prefix[prefix.length - 1]);
+    }
+    const system = systemParam(opts.system, true);
+
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const stream = c.messages.stream(
         {
           model: opts.model,
-          system: opts.system,
+          system,
           max_tokens: opts.maxTokens ?? 4096,
           messages: working,
           tools,
@@ -146,7 +223,7 @@ export const anthropicProvider: ModelProvider = {
       }
 
       const final = await stream.finalMessage();
-      opts.usage?.push({ promptTokens: final.usage.input_tokens, completionTokens: final.usage.output_tokens });
+      opts.usage?.push(usageOf(final.usage));
       if (final.stop_reason === "tool_use") {
         const toolUseBlocks = final.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
         for (const block of toolUseBlocks) yield { type: "tool_start", name: block.name } satisfies StreamEvent;

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { attachArtifactsToMessage } from "@/lib/repo/artifacts";
 import { addMessage } from "@/lib/repo/conversations";
 import { buildSystemPrompt } from "@/lib/contextBuilder";
+import type { RetrievedChunk } from "@/lib/retrieval";
 import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
 import type { ModelInfo, ModelMessage, ModelProvider, ModelRoleId, StreamEvent, TokenUsage, ToolCallRecord } from "@/lib/models/types";
 import { resolveTools, executeTool } from "@/lib/tools/registry";
@@ -16,7 +17,7 @@ export interface ResolvedTurnModel {
   autoSelectedRole?: string;
   classifierUsage: TokenUsage[];
   classifierModelId: string;
-  classifierProviderId: "anthropic" | "openrouter";
+  classifierProviderId: "anthropic" | "openrouter" | "chutes";
 }
 
 // Picks the model for this turn (resolving "auto" via the classifier) and
@@ -36,7 +37,7 @@ export async function resolveTurnModel(
   let autoSelectedRole: string | undefined;
   let classifierUsage: TokenUsage[] = [];
   let classifierModelId = "";
-  let classifierProviderId: "anthropic" | "openrouter" = "anthropic";
+  let classifierProviderId: "anthropic" | "openrouter" | "chutes" = "anthropic";
   if (requestedRole === "auto") {
     const classified = await classifyModelRole(classifierText);
     modelRole = classified.role;
@@ -73,6 +74,36 @@ export async function resolveTurnModel(
   };
 }
 
+// Attaches this turn's retrieved passages to the message they were retrieved
+// for — the last user message in the history — leaving every earlier message
+// exactly as it was sent last turn. Returns the history untouched when there's
+// nothing to attach, or nothing to attach it to.
+function withTurnContext(history: ModelMessage[], turnContext: string): ModelMessage[] {
+  if (!turnContext) return history;
+  let at = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === "user") {
+      at = i;
+      break;
+    }
+  }
+  if (at === -1) return history;
+
+  const target = history[at];
+  // "The user's message follows" is doing real work: without it a model can
+  // read the passages as something the user wrote, and answer the extracts
+  // rather than the question.
+  const preamble = `${turnContext}\n\n---\n\nThe user's message follows.\n\n`;
+  const rewritten: ModelMessage =
+    typeof target.content === "string"
+      ? { role: "user", content: `${preamble}${target.content}` }
+      : { role: "user", content: [{ type: "text", text: preamble }, ...target.content] };
+
+  const out = history.slice();
+  out[at] = rewritten;
+  return out;
+}
+
 // The shared core of "run one assistant turn and stream it back," used by
 // both the normal chat route (a new user message was just added) and the
 // regenerate route (no new user message — the prior assistant reply was
@@ -91,12 +122,31 @@ export async function runChatTurn(opts: {
   // actually bears on it. Defaults to the last user message in history, which
   // is the right answer for both callers (chat and regenerate).
   query?: string;
+  // The message this turn is answering, so retrieval can leave it out. It was
+  // written and indexed moments ago and is a perfect match for the query —
+  // because it *is* the query — so without this it retrieves itself.
+  excludeRefIds?: string[];
+  // Retrieval the caller already started (see prefetchRetrieval), so it can
+  // run alongside the caller's own pre-flight work instead of after it.
+  // Omitted means "retrieve here", which is what a caller with nothing to
+  // overlap should do.
+  retrieval?: Promise<RetrievedChunk[]>;
   // The rolling summary standing in for turns no longer in `history`, produced
   // by buildHistoryWindow() in the caller — which is where the raw Message
   // rows, and so the message ids that fold tracks, are available.
   conversationSummary?: { text: string; messageCount: number } | null;
   // Spend from generating that summary, recorded alongside this turn's own.
-  summaryUsage?: { usage: TokenUsage[]; modelId: string | null; providerId: "anthropic" | "openrouter" | null };
+  summaryUsage?: { usage: TokenUsage[]; modelId: string | null; providerId: "anthropic" | "openrouter" | "chutes" | null };
+  // Which message the reply this turn produces should attach under — the new
+  // user message for a plain send, a newly-created sibling for an edit, or
+  // the original user message's id for a regenerate. Captured by the caller
+  // *before* streaming starts and passed through explicitly rather than
+  // letting addMessage() below default to "the conversation's current head":
+  // that default is read live, and this call fires seconds later once
+  // streaming finishes — long enough for the user to have switched branches
+  // (or started another edit/regenerate) in the meantime, which would attach
+  // this reply to the wrong node and hijack their view.
+  parentId: string | null;
 }): Promise<Response> {
   const { conversationId, projectId, turnModel } = opts;
   const { modelRole, modelId, resolved, autoSelectedRole, classifierUsage, classifierModelId, classifierProviderId } =
@@ -109,19 +159,27 @@ export async function runChatTurn(opts: {
       ? lastUser.content
       : (lastUser?.content?.find((p) => p.type === "text")?.text ?? ""));
 
-  const { system, provenance } = await buildSystemPrompt({
+  const { system, turnContext, provenance } = await buildSystemPrompt({
     projectId,
     skillId: opts.skillId,
     query,
     conversationSummary: opts.conversationSummary,
+    excludeRefIds: opts.excludeRefIds,
+    retrieval: opts.retrieval,
   });
+
+  // The passages retrieved for this message ride along with it rather than
+  // sitting in the system prompt — see buildSystemPrompt. Everything before
+  // this message is then identical to what the previous turn sent, which is
+  // what the provider's prompt cache needs to be able to hit.
+  const messages = withTurnContext(opts.history, turnContext);
 
   const encoder = new TextEncoder();
   let full = "";
   const toolLog: ToolCallRecord[] = [];
   const createdArtifactIds: string[] = [];
   const usage: TokenUsage[] = [];
-  const providerId = resolved.provider.id as "anthropic" | "openrouter";
+  const providerId = resolved.provider.id as "anthropic" | "openrouter" | "chutes";
 
   if (classifierUsage.length) {
     recordUsage({
@@ -150,6 +208,11 @@ export async function runChatTurn(opts: {
   function finalProvenance() {
     const totalPrompt = usage.reduce((sum, u) => sum + u.promptTokens, 0);
     const totalCompletion = usage.reduce((sum, u) => sum + u.completionTokens, 0);
+    // Carried into the aggregate, not just summed away: cached input is priced
+    // differently from fresh input, so a total that drops them would overstate
+    // what this turn cost — see estimateCost.
+    const totalCacheRead = usage.reduce((sum, u) => sum + (u.cacheReadTokens ?? 0), 0);
+    const totalCacheWrite = usage.reduce((sum, u) => sum + (u.cacheWriteTokens ?? 0), 0);
     recordUsage({
       projectId,
       source: "conversation",
@@ -170,6 +233,8 @@ export async function runChatTurn(opts: {
             costUsd: estimateCost(providerId, modelId, {
               promptTokens: totalPrompt,
               completionTokens: totalCompletion,
+              cacheReadTokens: totalCacheRead,
+              cacheWriteTokens: totalCacheWrite,
             }),
           }
         : undefined,
@@ -213,7 +278,7 @@ export async function runChatTurn(opts: {
         const generator = resolved.provider.stream({
           model: modelId,
           system,
-          messages: opts.history,
+          messages,
           tools,
           onToolCall: (name, input) =>
             executeTool(name, input, {
@@ -237,6 +302,7 @@ export async function runChatTurn(opts: {
           content: full || "(no response)",
           model: modelId,
           provenance: finalProvenance(),
+          parentId: opts.parentId,
         });
         if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
         safeClose();
@@ -257,6 +323,7 @@ export async function runChatTurn(opts: {
             content: full,
             model: modelId,
             provenance: finalProvenance(),
+            parentId: opts.parentId,
           });
           if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
         }

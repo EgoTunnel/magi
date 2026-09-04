@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteMemory, setMemoryStatus, updateMemory } from "@/lib/repo/memory";
+import { deleteMemory, setMemoryStatus, supersedeMemory, updateMemory } from "@/lib/repo/memory";
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -9,6 +9,9 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   // Promoting a suggestion to established — the deliberate act that makes a
   // proposed memory item actually reach a prompt.
   if (body.status === "established" || body.status === "suggested") item = setMemoryStatus(id, body.status);
+  // Retiring a fact that has stopped being true, optionally naming the one that
+  // replaced it. Kept as history, inert everywhere else.
+  if (body.status === "superseded") item = supersedeMemory(id, body.supersededBy ?? null);
   return NextResponse.json({ item });
 }
 

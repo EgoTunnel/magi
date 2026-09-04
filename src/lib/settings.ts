@@ -26,6 +26,13 @@ export function getOpenRouterApiKey(): string | null {
   return getSetting("openrouter_api_key") || process.env.OPENROUTER_API_KEY || null;
 }
 
+// Manual fallback provider — see chutes.ts and registry.ts. Configuring this
+// never changes what Magi does on its own; it only makes Chutes models
+// available to assign to a role in Settings.
+export function getChutesApiKey(): string | null {
+  return getSetting("chutes_api_key") || process.env.CHUTES_API_KEY || null;
+}
+
 // Backs the web_search/web_fetch tools (src/lib/tools/webSearch.ts). When this
 // isn't set, OpenRouter-routed models fall back to OpenRouter's own built-in
 // web plugin instead — see requestExtras() in models/openrouter.ts — but

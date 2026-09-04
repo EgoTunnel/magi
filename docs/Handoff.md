@@ -312,7 +312,7 @@ src/
     the shape of the evidence — verified live, and it correctly refused to manufacture an arc, concluding
     of one topic that it "never developed — it was *repurposed*", and naming the gap that made a
     development narrative unsupportable.
-- **A test layer** — `npm test` (vitest, the only new dependency). 139 tests, ~7 seconds, no network and no
+- **A test layer** — `npm test` (vitest, the only new dependency). 154 tests, ~7 seconds, no network and no
   API key. **Its blind spot is worth knowing**: no embedding model is configured, so the semantic half of
   retrieval is always empty under test. Two real trajectory bugs lived behind exactly that gap (see
   People phase 3) — anything whose behaviour changes once vectors exist has to be checked live. Two small production seams make it possible: `MAGI_DATA_DIR` in `db.ts` (each test file gets a
@@ -479,6 +479,58 @@ src/
     Project's material "doesn't mention print production, event collateral, or vendors at all" rather
     than reaching for a link. Both searched the archive before answering. Everything created was deleted
     afterwards and the database re-checked clean.
+- **People — review pass** (three retrieval fixes, and six changes to People itself).
+  - **Retrieval, three findings that everything else sits on:**
+    1. **A turn retrieved its own question.** `addMessage()` indexes the user's message before
+       `buildSystemPrompt()` runs, and that message is a perfect lexical match for the query — because it
+       *is* the query — so it came back as the top passage and spent budget telling the model what the
+       user had just said. `RetrieveOptions.excludeRefIds` now threads from both chat routes through
+       `runChatTurn`. Regenerate excludes it too, from the message row rather than the windowed history.
+    2. **`chunk_search` indexed its own id column.** `fts5(chunk_id, content)` tokenizes ids like
+       `message:msg_4f3a…:2` into the same term pool as the prose: searchable as text, and counted into
+       the document lengths bm25 normalizes against, quietly distorting every ranking. Now
+       `chunk_id UNINDEXED`. FTS5 columns cannot be altered, so existing databases rebuild the table from
+       `chunks` — **guarded on the stored schema rather than a settings flag**, since the condition *is*
+       the thing being fixed and so can neither run twice nor be skipped by an optimistic flag. Verified
+       on the real database: 16,676 passages rebuilt with no loss and ids no longer matchable.
+    3. **AI-generated passages were called ground truth.** Retrieved passages include Magi's own earlier
+       replies and artifacts, and the block instructed the model to treat all of it as ground truth — so
+       a previous answer confirmed itself. Assistant-authored passages are now labelled ("your own
+       earlier reply") via one batched role lookup, and the instruction tells the model to weigh passages
+       by who produced them and to say so when the only support for a claim is its own earlier reply.
+  - **Facts can acquire provenance after the fact.** Typing a fact by hand was the fastest route and the
+    only one that lost the link, which left the person page claiming provenance most facts didn't have —
+    59 of 59 on the real database. `GET /api/memory/[id]/origin` retrieves against the fact's own text,
+    scoped to the person's Projects, and offers candidate messages; the user picks. It proposes and never
+    links on its own, because a wrong citation is worse than a missing one. Verified live: the top
+    candidate for "Keith has been the main source of friction" was the exact message that said it.
+  - **"Remember about a person"** sits beside "Remember in Project" on every assistant message, so the
+    linked route into a person fact is available where the fact is actually learned.
+  - **Mentions and trajectory are scoped to the person's Projects by default.** Twelve of fifteen real
+    people are recorded under a first name, which matched across 16,000 passages from every Project — a
+    colleague called Anna collided with Anna Karenina. The scope, the count of what the wider search
+    would find, and a toggle are all shown. **With a fallback that matters**: an imported archive puts
+    years of material in one catch-all Project nobody is associated with, so scoping found *nothing* for
+    two real people — worse than the noise. An empty scoped search widens itself and says it did.
+  - **Facts have time semantics.** `memory.status` gains `superseded`, with `superseded_by` /
+    `superseded_at`. A superseded fact keeps its text and date as history but is inert everywhere a
+    model can reach it — unindexed, absent from `lookup_person`, absent from prompts. A new fact can name
+    the one it replaces, so "Beatrix is 8" and "Beatrix is 9" are never both current.
+  - **The rolodex cross-links by exact name.** `linkPersonNames()` renders an exact name or alias inside
+    a fact, summary, or mention as a link to that person — longest-match-first so "Annette Palalas" wins
+    over "Annette". Nothing is stored and nothing is inferred: this is not a relationship graph.
+  - **A drafted summary, as a proposal.** `people.suggested_summary` holds it beside the real one with
+    Keep/discard. **It used the `fast` role first and that was wrong**: `fast` is `qwen/qwen3.8-flash`,
+    the mandatory-reasoning model lesson #9 already names for breaking the role classifier, and it
+    returned `10 d? Let's simpler use known length approx…` *as a person's summary*. Fixed the way the
+    episode closer was — `<<<SUMMARY>>>` delimiters, so reasoning outside them is discarded — plus the
+    `writer` role, since shaped output needs a model that follows the shape. `extractSummary()` is
+    exported and unit-tested.
+  - **Interest discovery is bounded and priced.** `selectCandidates()` skips anyone with neither an
+    association nor a single archive mention — thin material is exactly what produces a manufactured
+    link. The Ask button now shows what it will cost (how many of your people, who is being skipped and
+    why) before spending it, assessments run four at a time rather than sequentially, and both the
+    dashboard and the run view show progress as "n of m".
 - **§25–26 Cross-Project intelligence** — `search_archive` tool with a `scope: this_project | all` param
   gated by a Settings toggle (§25), and the standalone Connections feature for proactive discovery (§26).
 - **§27–31 Model independence** — provider abstraction (`ModelProvider` interface), two providers live,

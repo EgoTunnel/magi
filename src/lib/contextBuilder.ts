@@ -49,6 +49,20 @@ function kindLabel(kind: RetrievedChunk["kind"]): string {
   return kind === "style_guide" ? "style guide" : kind;
 }
 
+// Which retrieved messages Magi wrote itself, in one query. A passage's
+// authority depends on who produced it, and the chunk index doesn't record
+// that — so it is looked up rather than guessed.
+function assistantMessageIds(ids: string[]): Set<string> {
+  const unique = [...new Set(ids)];
+  if (!unique.length) return new Set();
+  const rows = db
+    .prepare(
+      `SELECT id FROM messages WHERE role = 'assistant' AND id IN (${unique.map(() => "?").join(",")})`
+    )
+    .all(...unique) as Array<{ id: string }>;
+  return new Set(rows.map((r) => r.id));
+}
+
 // Titles for the conversations a set of memory items came from, in one query.
 function conversationTitles(ids: string[]): Map<string, string> {
   const unique = [...new Set(ids)];
@@ -110,9 +124,38 @@ export interface ContextProvenance {
   autoSelectedRole?: string;
 }
 
+// Starts the retrieval a turn needs without waiting for it. Retrieval is two
+// round trips deep (embed the query, then score every stored vector against
+// it), and none of it depends on which model is about to answer — so a caller
+// that is also about to make a model call to *choose* that model (the "Auto"
+// classifier) can start both at once and pay for the slower of the two rather
+// than the sum. Never rejects: retrieval is an improvement on the fallback in
+// buildSystemPrompt, never a precondition for answering.
+export function prefetchRetrieval(opts: {
+  projectId: string;
+  query?: string | null;
+  excludeRefIds?: string[];
+}): Promise<RetrievedChunk[]> {
+  const query = opts.query?.trim();
+  if (!query) return Promise.resolve([]);
+  ensureChunkIndex();
+  return retrieveChunks(query, {
+    projectId: familyProjectIds(opts.projectId),
+    limit: RETRIEVAL_LIMIT,
+    excludeRefIds: opts.excludeRefIds,
+  }).catch((err) => {
+    console.error("[contextBuilder] retrieval failed", err instanceof Error ? err.message : err);
+    return [] as RetrievedChunk[];
+  });
+}
+
 export async function buildSystemPrompt(opts: {
   projectId: string;
   skillId?: string | null;
+  // Retrieval already in flight, from prefetchRetrieval() above. Passing one
+  // is how a caller overlaps it with its own work; omitting it retrieves here,
+  // which is what the non-conversation callers do.
+  retrieval?: Promise<RetrievedChunk[]>;
   // The message this turn is answering. When present, the Project's material
   // is *retrieved against it* rather than injected in list order — this is
   // what lets a Project with a million characters of documents put the
@@ -122,7 +165,11 @@ export async function buildSystemPrompt(opts: {
   // A rolling summary of the turns that have aged out of this conversation's
   // live window (src/lib/conversationWindow.ts), with how many it covers.
   conversationSummary?: { text: string; messageCount: number } | null;
-}): Promise<{ system: string; provenance: ContextProvenance }> {
+  // Items to keep out of retrieval — in practice the message this turn is
+  // answering, which is already indexed by the time this runs and would
+  // otherwise come back as its own best match.
+  excludeRefIds?: string[];
+}): Promise<{ system: string; turnContext: string; provenance: ContextProvenance }> {
   const project = getProject(opts.projectId);
   if (!project) throw new Error("Project not found");
   // Root-first: the top-level ancestor first, immediate parent last — read
@@ -143,21 +190,8 @@ export async function buildSystemPrompt(opts: {
   // family (itself, what it inherits from, and what inherits from it) — the
   // same boundary search_archive's default scope uses, so context assembly
   // and the search tool can't disagree about what "this Project" means.
-  ensureChunkIndex();
-  const query = opts.query?.trim();
-  let retrieved: RetrievedChunk[] = [];
-  if (query) {
-    retrieved = await retrieveChunks(query, {
-      projectId: familyProjectIds(opts.projectId),
-      limit: RETRIEVAL_LIMIT,
-    }).catch((err) => {
-      // Retrieval is an improvement on the fallback below, never a
-      // precondition for answering — a failure here costs relevance, not the
-      // turn.
-      console.error("[contextBuilder] retrieval failed", err instanceof Error ? err.message : err);
-      return [] as RetrievedChunk[];
-    });
-  }
+  const retrieved = await (opts.retrieval ??
+    prefetchRetrieval({ projectId: opts.projectId, query: opts.query, excludeRefIds: opts.excludeRefIds }));
 
   let retrievalBudget = RETRIEVAL_BUDGET;
   const passages: RetrievedChunk[] = [];
@@ -284,20 +318,43 @@ export async function buildSystemPrompt(opts: {
 
   const passageLinks = resolveSourceLinks(passages.map((p) => ({ kind: p.kind, refId: p.refId })));
 
+  // Retrieved passages are the one part of a turn's context that is chosen
+  // *for that message* — everything else here (the Project, its memory, its
+  // roster, this conversation's summary) is the same from one turn to the
+  // next. They therefore travel with the message rather than in the system
+  // prompt, which is what lets the whole standing prefix stay byte-identical
+  // across a conversation and be cached by the provider instead of reprocessed
+  // every turn (see the cache breakpoints in src/lib/models/anthropic.ts).
+  let turnContext = "";
   if (passages.length) {
+    // A passage Magi wrote in an earlier turn is not evidence in the way the
+    // user's own words or their documents are — it is a previous answer, which
+    // may have been wrong, superseded, or a draft the user rejected.
+    const ownReplies = assistantMessageIds(
+      passages.filter((p) => p.kind === "message").map((p) => p.refId)
+    );
     const blocks = passages.map((p, i) => {
       const elsewhere = p.projectId && p.projectId !== opts.projectId ? ", from a related Project" : "";
       const date = p.sourceDate.slice(0, 10);
-      return `[P${i + 1}] (${kindLabel(p.kind)}${elsewhere}, ${date}) ${p.title}\n${p.content}`;
+      const origin =
+        p.kind === "message" && ownReplies.has(p.refId)
+          ? "your own earlier reply"
+          : p.kind === "artifact"
+            ? "artifact, likely your own earlier output"
+            : kindLabel(p.kind);
+      return `[P${i + 1}] (${origin}${elsewhere}, ${date}) ${p.title}\n${p.content}`;
     });
-    sections.push(
-      `\n## Retrieved from this Project (selected for this message)\nThese passages were pulled from the Project's ` +
-        `documents, past conversations, artifacts, and memory because they are the closest match to what the user just ` +
-        `asked — they are extracts, not the whole of anything. Treat them as ground truth about this Project and cite ` +
-        `them as [P1], [P2] when you rely on one. This is a selection, not an inventory: if the answer needs material ` +
-        `these passages only gesture at, call search_archive rather than assuming nothing else exists.\n\n` +
-        blocks.join("\n\n")
-    );
+    turnContext =
+      `## Retrieved from this Project (selected for the message below)\nThese passages were pulled from the Project's ` +
+      `documents, past conversations, artifacts, and memory because they are the closest match to what the user is ` +
+      `asking — they are extracts, not the whole of anything. Cite them as [P1], [P2] when you rely on one.\n\n` +
+      `Weigh them by who produced them. The user's own messages, their documents, and their kept memory are what ` +
+      `this Project actually holds. Passages marked as your own earlier reply or output are not independent ` +
+      `evidence: they are things you said before, which may have been wrong, later corrected, or a draft the user ` +
+      `rejected — do not treat one as confirming itself, and say so if the only support for a claim is your own ` +
+      `earlier reply. This is a selection, not an inventory: if the answer needs material these passages only ` +
+      `gesture at, call search_archive rather than assuming nothing else exists.\n\n` +
+      blocks.join("\n\n");
   }
   if (documentBlocks.length) {
     sections.push(`\n## Project documents\n${documentBlocks.join("\n\n")}`);
@@ -329,6 +386,7 @@ export async function buildSystemPrompt(opts: {
 
   return {
     system: sections.join("\n"),
+    turnContext,
     provenance: {
       projectId: project.id,
       projectName: project.name,

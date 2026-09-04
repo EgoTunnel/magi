@@ -3,7 +3,7 @@ import { resetDb } from "../helpers/reset";
 import { db } from "@/lib/db";
 import { createProject } from "@/lib/repo/projects";
 import { addMessage, createConversation } from "@/lib/repo/conversations";
-import { createMemory, listMemory, setMemoryStatus } from "@/lib/repo/memory";
+import { createMemory, listMemory, setMemoryOrigin, setMemoryStatus, supersedeMemory } from "@/lib/repo/memory";
 import {
   addPersonFact,
   associate,
@@ -94,7 +94,7 @@ describe("people repo", () => {
     expect(listMemory().find((m) => m.id === fact.id)).toBeUndefined();
     expect(listPeopleForProject(project.id)).toHaveLength(0);
     // And nothing about them is retrievable any more.
-    expect(await listPersonMentions({ ...person }, 20)).toHaveLength(0);
+    expect((await listPersonMentions({ ...person }, { scope: 'everywhere' })).mentions).toHaveLength(0);
     const stillThere = db
       .prepare(`SELECT COUNT(*) n FROM chunk_search WHERE content LIKE '%accessibility in every review%'`)
       .get() as { n: number };
@@ -261,7 +261,7 @@ describe("people repo", () => {
     addMessage({ conversationId: conversation.id, role: "assistant", content: "Noted — nothing about that here." });
 
     const person = createPerson({ name: "Keith" });
-    const mentions = await listPersonMentions(person);
+    const mentions = (await listPersonMentions(person, { scope: 'everywhere' })).mentions;
 
     expect(mentions.length).toBeGreaterThan(0);
     expect(mentions.some((m) => m.content.includes("accessibility audit"))).toBe(true);
@@ -285,7 +285,7 @@ describe("people repo", () => {
     });
 
     const person = createPerson({ name: "Krystina", aliases: ["Kryssie"] });
-    const mentions = await listPersonMentions(person);
+    const mentions = (await listPersonMentions(person, { scope: 'everywhere' })).mentions;
 
     expect(mentions.length).toBe(2);
     expect(mentions.every((m) => /krystina|kryssie/i.test(m.content))).toBe(true);
@@ -297,13 +297,13 @@ describe("people repo", () => {
     addMessage({ conversationId: conversation.id, role: "user", content: "The syllabus needs a rewrite before Monday." });
 
     const person = createPerson({ name: "Syl" });
-    expect(await listPersonMentions(person)).toHaveLength(0);
+    expect((await listPersonMentions(person, { scope: 'everywhere' })).mentions).toHaveLength(0);
   });
 
   it("excludes a person's own facts from their mentions", async () => {
     const person = createPerson({ name: "Marta" });
     const fact = addPersonFact({ personId: person.id, content: "Marta leads the typography working group." });
-    const mentions = await listPersonMentions(person);
+    const mentions = (await listPersonMentions(person, { scope: 'everywhere' })).mentions;
     expect(mentions.some((m) => m.kind === "memory" && m.refId === fact.id)).toBe(false);
   });
 
@@ -335,6 +335,91 @@ describe("people repo", () => {
     expect((await lookupPerson("Keith"))!.projects).toHaveLength(0);
     setAssociationStatus(project.id, person.id, "established");
     expect((await lookupPerson("Keith"))!.projects).toHaveLength(1);
+  });
+
+  // Twelve of fifteen real people are recorded under a first name, and a first
+  // name matches across every Project in the archive. No-fuzzy-matching stops
+  // wrong merges; it does nothing about wrong mentions.
+  it("scopes mentions to the person's own Projects by default", async () => {
+    const theirs = createProject({ name: "Theirs" });
+    const elsewhere = createProject({ name: "Elsewhere" });
+    const a = createConversation(theirs.id, "Ours");
+    const b = createConversation(elsewhere.id, "Unrelated");
+    addMessage({ conversationId: a.id, role: "user", content: "Anna chased the review board about the audit." });
+    addMessage({ conversationId: b.id, role: "user", content: "Anna Karenina throws herself under the train." });
+
+    const person = createPerson({ name: "Anna" });
+    associate(theirs.id, person.id);
+
+    const scoped = await listPersonMentions(person);
+    expect(scoped.scope).toBe("projects");
+    expect(scoped.mentions).toHaveLength(1);
+    expect(scoped.mentions[0].content).toContain("review board");
+    // The count of what the wider search would find is shown, so the narrowing
+    // is visible rather than silent.
+    expect(scoped.everywhereCount).toBe(2);
+
+    const wide = await listPersonMentions(person, { scope: "everywhere" });
+    expect(wide.mentions).toHaveLength(2);
+  });
+
+  // An imported archive puts years of material in one catch-all Project nobody
+  // is associated with, so scoping can find nothing at all — and "no mentions"
+  // would be a worse lie than the noise scoping removed.
+  it("widens to the whole archive when their own Projects have nothing, and says so", async () => {
+    const theirs = createProject({ name: "Theirs" });
+    const imported = createProject({ name: "Imported archive" });
+    const conversation = createConversation(imported.id, "Old thread");
+    addMessage({ conversationId: conversation.id, role: "user", content: "Erin organised the workshop." });
+
+    const person = createPerson({ name: "Erin" });
+    associate(theirs.id, person.id);
+
+    const result = await listPersonMentions(person);
+    expect(result.fellBack).toBe(true);
+    expect(result.scope).toBe("everywhere");
+    expect(result.mentions).toHaveLength(1);
+  });
+
+  it("searches everywhere for someone on no Project at all", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    addMessage({ conversationId: conversation.id, role: "user", content: "Meghan reached the second interview." });
+
+    const person = createPerson({ name: "Meghan" });
+    const result = await listPersonMentions(person);
+    expect(result.scope).toBe("everywhere");
+    expect(result.mentions).toHaveLength(1);
+  });
+
+  it("supersedes a fact without losing it, and drops it from lookup", async () => {
+    const person = createPerson({ name: "Beatrix" });
+    const old = addPersonFact({ personId: person.id, content: "Is 8 years old." });
+    const replacement = addPersonFact({
+      personId: person.id,
+      content: "Is 9 years old.",
+      supersedesId: old.id,
+    });
+
+    const facts = listPersonFacts(person.id);
+    expect(facts).toHaveLength(2);
+    const retired = facts.find((f) => f.id === old.id)!;
+    expect(retired.status).toBe("superseded");
+    expect(retired.superseded_by).toBe(replacement.id);
+    expect(retired.superseded_at).toBeTruthy();
+
+    // Inert everywhere it could reach a model: not in lookup, not in the index.
+    expect((await lookupPerson("Beatrix"))!.facts.map((f) => f.content)).toEqual(["Is 9 years old."]);
+    expect(indexRows("memory", old.id)).toBe(0);
+    expect(indexRows("memory", replacement.id)).toBe(1);
+  });
+
+  it("keeps a superseded fact out of a person's mentions", async () => {
+    const person = createPerson({ name: "Beatrix" });
+    const old = addPersonFact({ personId: person.id, content: "Beatrix is 8 years old." });
+    supersedeMemory(old.id, null);
+    const result = await listPersonMentions(person, { scope: "everywhere" });
+    expect(result.mentions.some((m) => m.refId === old.id)).toBe(false);
   });
 
   it("exports everything held about one person", () => {

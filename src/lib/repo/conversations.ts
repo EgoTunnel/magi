@@ -9,6 +9,8 @@ export interface Conversation {
   status: "active" | "archived";
   created_at: string;
   updated_at: string;
+  // The leaf of the currently-viewed branch — see addMessage()/getActivePath().
+  head_message_id: string | null;
 }
 
 export interface Message {
@@ -19,6 +21,11 @@ export interface Message {
   model: string | null;
   provenance: string | null;
   created_at: string;
+  // The message this one continues from. NULL for the first message in a
+  // conversation. Editing a user message or regenerating a reply creates a
+  // new sibling (same parent_id) rather than mutating an existing row, so a
+  // conversation is a tree, not a line — see getActivePath().
+  parent_id: string | null;
 }
 
 export function listConversations(projectId: string): Conversation[] {
@@ -149,20 +156,53 @@ export function deleteConversation(id: string) {
 }
 
 export function listMessages(conversationId: string): Message[] {
+  // rowid (SQLite maintains one even for a TEXT primary key) tiebreaks
+  // same-millisecond inserts deterministically — created_at alone doesn't,
+  // since nowIso() has no monotonic counter, and sibling/leaf ordering
+  // (conversationBranches.ts) depends on this being stable.
   return db
-    .prepare(`SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`)
+    .prepare(`SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC`)
     .all(conversationId) as Message[];
 }
 
-// Used by regenerate (chat/regenerate/route.ts) to discard the assistant
-// reply being replaced. Artifacts aren't FK-enforced against messages (see
-// db.ts's migrated message_id column), so any artifact this message produced
-// is detached rather than deleted — the artifact and its version history
-// survive, they just stop showing up as this (deleted) message's attachment.
-export function deleteMessage(id: string) {
-  db.prepare(`UPDATE artifacts SET message_id = NULL WHERE message_id = ?`).run(id);
-  db.prepare(`DELETE FROM messages WHERE id = ?`).run(id);
-  indexRemove("message", id);
+// Repoints which leaf is currently being viewed — used when switching
+// branches (chat/branch/route.ts). Ordinary message creation never needs
+// this directly: addMessage() below already moves the head to whatever it
+// just created.
+export function setHead(conversationId: string, messageId: string) {
+  db.prepare(`UPDATE conversations SET head_message_id = ? WHERE id = ?`).run(messageId, conversationId);
+}
+
+// Walks parent_id from the conversation's current head up to the root and
+// reverses it — the messages the user is actually looking at right now, as
+// opposed to listMessages()'s every-branch flat list. This is what history
+// building, episode closing, and the conversation view should use; raw
+// listMessages() is only for whole-conversation bookkeeping (export, cascade
+// cleanup) where every branch genuinely matters.
+export function getActivePath(conversationId: string): Message[] {
+  const convo = getConversation(conversationId);
+  if (!convo?.head_message_id) return [];
+  const all = listMessages(conversationId);
+  const byId = new Map(all.map((m) => [m.id, m]));
+  const path: Message[] = [];
+  let current: string | null = convo.head_message_id;
+  // Bounded by the conversation's own size — a defensive guard against a
+  // corrupted/cyclic parent chain looping forever, not an expected case.
+  for (let i = 0; current && i <= all.length; i++) {
+    const message: Message | undefined = byId.get(current);
+    if (!message) break;
+    path.push(message);
+    current = message.parent_id;
+  }
+  return path.reverse();
+}
+
+// The id a message will be saved under, before it is saved. Exists so a caller
+// can name the message it is about to add and act on that name first — the
+// chat route starts retrieval, which has to exclude this message, before the
+// message itself is written. Pass the result as addMessage's `id`.
+export function newMessageId(): string {
+  return newId("msg");
 }
 
 export function addMessage(input: {
@@ -171,12 +211,25 @@ export function addMessage(input: {
   content: string;
   model?: string;
   provenance?: unknown;
+  // A pre-allocated id from newMessageId(). Omitted → generated here, which is
+  // what every caller with nothing to say about the message beforehand does.
+  id?: string;
+  // Which message this one continues from. Omitted → defaults to the
+  // conversation's current head, i.e. "append to whatever is currently the
+  // tip" — correct for a plain new turn, since nothing can move the head out
+  // from under a synchronous call like this one. A caller whose insert
+  // happens after an await (chatTurn.ts's assistant-reply persistence, which
+  // runs seconds later once streaming finishes) must pass this explicitly
+  // instead of relying on the default, or a branch switch mid-turn could
+  // attach the reply to the wrong node — see runChatTurn's `parentId`.
+  parentId?: string | null;
 }): Message {
-  const id = newId("msg");
+  const id = input.id ?? newId("msg");
   const ts = nowIso();
+  const parentId = input.parentId !== undefined ? input.parentId : (getConversation(input.conversationId)?.head_message_id ?? null);
   db.prepare(
-    `INSERT INTO messages (id, conversation_id, role, content, model, provenance, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO messages (id, conversation_id, role, content, model, provenance, created_at, parent_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.conversationId,
@@ -184,9 +237,13 @@ export function addMessage(input: {
     input.content,
     input.model ?? null,
     input.provenance ? JSON.stringify(input.provenance) : null,
-    ts
+    ts,
+    parentId
   );
-  db.prepare(`UPDATE conversations SET updated_at = ? WHERE id = ?`).run(ts, input.conversationId);
+  // Every message ever added is meant to become "what you're now looking
+  // at" — a plain new turn, an edited branch, or a regenerated reply all
+  // want the same thing here.
+  db.prepare(`UPDATE conversations SET updated_at = ?, head_message_id = ? WHERE id = ?`).run(ts, id, input.conversationId);
 
   const convo = getConversation(input.conversationId);
   if (convo) {

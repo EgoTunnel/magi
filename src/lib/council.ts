@@ -93,7 +93,7 @@ async function completeAs(
     projectId: opts.projectId,
     source: "council",
     sourceId: opts.runId,
-    provider: resolved.provider.id as "anthropic" | "openrouter",
+    provider: resolved.provider.id as "anthropic" | "openrouter" | "chutes",
     model: modelId,
     role: roleId,
     usage,

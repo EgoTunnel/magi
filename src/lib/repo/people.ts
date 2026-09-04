@@ -20,6 +20,9 @@ export interface Person {
   aliases: string[];
   relationship: string | null;
   summary: string | null;
+  // A drafted replacement waiting to be kept or discarded. Never read by the
+  // roster, the lookup tool, or anything else — only shown on the page.
+  suggested_summary: string | null;
   status: "established" | "suggested";
   closure_id: string | null;
   source_conversation_id: string | null;
@@ -177,6 +180,20 @@ function reindexFacts(personId: string) {
   }
 }
 
+export function setSuggestedSummary(id: string, summary: string | null): Person | null {
+  db.prepare(`UPDATE people SET suggested_summary = ? WHERE id = ?`).run(summary, id);
+  return getPerson(id);
+}
+
+// Keeping a drafted summary is the deliberate act: only then does it become the
+// summary the roster and the lookup tool actually read.
+export function acceptSuggestedSummary(id: string): Person | null {
+  const person = getPerson(id);
+  if (!person?.suggested_summary) return person;
+  const updated = updatePerson(id, { summary: person.suggested_summary });
+  return setSuggestedSummary(id, null) ?? updated;
+}
+
 export function setPersonStatus(id: string, status: Person["status"]): Person | null {
   db.prepare(`UPDATE people SET status = ?, updated_at = ? WHERE id = ?`).run(status, nowIso(), id);
   const person = getPerson(id);
@@ -244,11 +261,14 @@ export function listPersonFacts(personId: string): MemoryItem[] {
 export function addPersonFact(input: {
   personId: string;
   content: string;
-  status?: MemoryItem["status"];
+  // Nothing is created superseded — that state is only ever reached by a later
+  // fact replacing an earlier one.
+  status?: "established" | "suggested";
   source?: string;
   closureId?: string | null;
   sourceMessageId?: string | null;
   sourceConversationId?: string | null;
+  supersedesId?: string | null;
 }): MemoryItem {
   return createMemory({
     scope: "person",
@@ -259,6 +279,7 @@ export function addPersonFact(input: {
     closureId: input.closureId,
     sourceMessageId: input.sourceMessageId,
     sourceConversationId: input.sourceConversationId,
+    supersedesId: input.supersedesId,
   });
 }
 
@@ -487,18 +508,96 @@ export async function lookupPerson(name: string, mentionLimit = 5): Promise<Pers
     person,
     facts: listMemory({ personId: person.id }).filter((f) => f.status === "established"),
     projects: listProjectsForPerson(person.id).filter((p) => p.status === "established"),
-    mentions: await listPersonMentions(person, mentionLimit).catch(() => []),
+    // Scoped by default, like the page: a tool result full of the wrong Anna
+    // is worse than a short one, because the model cannot tell them apart.
+    mentions: await listPersonMentions(person, { limit: mentionLimit })
+      .then((r) => r.mentions)
+      .catch(() => []),
   };
 }
 
-export async function listPersonMentions(person: Person, limit = 20): Promise<RetrievedChunk[]> {
+export interface PersonMentions {
+  mentions: RetrievedChunk[];
+  // What was searched, and what the other option would have found — so the
+  // page can offer the wider search and say what it costs.
+  scope: "projects" | "everywhere";
+  scopedProjectIds: string[];
+  everywhereCount: number;
+  // Set when scoping found nothing and the whole archive was searched instead.
+  // The page says so, because silently widening would be as misleading as
+  // silently narrowing.
+  fellBack: boolean;
+}
+
+// Most people in a rolodex are recorded under a first name, and a first name
+// matches indiscriminately across an archive that spans unrelated Projects —
+// a colleague called Anna collides with Anna Karenina, a dean called Erin with
+// anyone else's Erin. The plan's no-fuzzy-matching rule prevents wrong merges;
+// it does nothing about wrong mentions.
+//
+// So the default search is scoped to the Projects this person is actually
+// associated with, which is information already recorded and costs nothing to
+// use. The whole archive stays one toggle away, with its count shown, because
+// scoping can also hide a genuine mention from somewhere unexpected — which is
+// exactly what the payoff feature is supposed to find.
+export async function listPersonMentions(
+  person: Person,
+  opts: { limit?: number; scope?: "projects" | "everywhere" } = {}
+): Promise<PersonMentions> {
+  const limit = opts.limit ?? 20;
   const names = [person.name, ...person.aliases].filter((n) => n.trim().length > 0);
-  if (!names.length) return [];
+  const scopedProjectIds = listProjectsForPerson(person.id)
+    .filter((p) => p.status === "established")
+    .map((p) => p.id);
+  const empty: PersonMentions = {
+    mentions: [],
+    scope: "everywhere",
+    scopedProjectIds,
+    everywhereCount: 0,
+    fellBack: false,
+  };
+  if (!names.length) return empty;
+
+  // Scoping is only meaningful if they are on a Project at all.
+  const scope = opts.scope ?? (scopedProjectIds.length ? "projects" : "everywhere");
+
+  const everywhere = await search(person, names, limit, undefined);
+  const wide = (fellBack: boolean): PersonMentions => ({
+    mentions: everywhere,
+    scope: "everywhere",
+    scopedProjectIds,
+    everywhereCount: everywhere.length,
+    fellBack,
+  });
+  if (scope === "everywhere" || !scopedProjectIds.length) return wide(false);
+
+  const scoped = await search(person, names, limit, scopedProjectIds);
+  // Someone's Projects are often not where they are actually written about —
+  // an imported archive puts years of conversation in one catch-all Project
+  // nobody is associated with. Scoping to nothing and reporting "no mentions"
+  // would be a worse lie than the noise it was meant to remove, so an empty
+  // scoped search widens itself and says it did.
+  if (!scoped.length && everywhere.length) return wide(true);
+  return {
+    mentions: scoped,
+    scope: "projects",
+    scopedProjectIds,
+    everywhereCount: everywhere.length,
+    fellBack: false,
+  };
+}
+
+async function search(
+  person: Person,
+  names: string[],
+  limit: number,
+  projectId: string[] | undefined
+): Promise<RetrievedChunk[]> {
   const ownFacts = new Set(listMemory({ personId: person.id }).map((f) => f.id));
 
   // Over-fetch, because the filter below discards a lot for a rarely-mentioned
   // person and the shortfall has to come from somewhere.
-  const chunks = await retrieveChunks(names.join(" "), { limit: limit * 4 });
+  const chunks = await retrieveChunks(names.join(" "), { limit: limit * 4, projectId });
 
   return chunks
     .filter((c) => !(c.kind === "person" && c.refId === person.id))

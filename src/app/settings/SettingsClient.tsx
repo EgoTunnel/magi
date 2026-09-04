@@ -5,7 +5,7 @@ import { Button, Input, Label, Panel } from "@/components/ui";
 
 interface ModelInfo {
   id: string;
-  provider: "anthropic" | "openrouter";
+  provider: "anthropic" | "openrouter" | "chutes";
   label: string;
   description: string;
   speed: string;
@@ -57,6 +57,7 @@ function formatTokens(totals: SpendTotals): string {
 const PROVIDER_LABEL: Record<ModelInfo["provider"], string> = {
   anthropic: "Anthropic",
   openrouter: "OpenRouter",
+  chutes: "Chutes",
 };
 
 export function SettingsClient() {
@@ -73,6 +74,18 @@ export function SettingsClient() {
   const [openRouterFetchedAt, setOpenRouterFetchedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [openRouterError, setOpenRouterError] = useState<string | null>(null);
+
+  // A manual fallback provider, not an automatic one — see registry.ts.
+  // Configuring it only makes its models available to assign to a role
+  // below; nothing here routes to it on its own.
+  const [chutesKeySet, setChutesKeySet] = useState(false);
+  const [chutesKeyPreview, setChutesKeyPreview] = useState<string | null>(null);
+  const [chutesInput, setChutesInput] = useState("");
+  const [savingChutes, setSavingChutes] = useState(false);
+  const [chutesModelCount, setChutesModelCount] = useState(0);
+  const [chutesFetchedAt, setChutesFetchedAt] = useState<string | null>(null);
+  const [refreshingChutes, setRefreshingChutes] = useState(false);
+  const [chutesError, setChutesError] = useState<string | null>(null);
 
   const [tavilyKeySet, setTavilyKeySet] = useState(false);
   const [tavilyKeyPreview, setTavilyKeyPreview] = useState<string | null>(null);
@@ -118,6 +131,10 @@ export function SettingsClient() {
     setOpenRouterKeyPreview(settings.openRouterKeyPreview);
     setOpenRouterModelCount(settings.openRouterModelCount);
     setOpenRouterFetchedAt(settings.openRouterModelsFetchedAt);
+    setChutesKeySet(settings.chutesKeySet);
+    setChutesKeyPreview(settings.chutesKeyPreview);
+    setChutesModelCount(settings.chutesModelCount);
+    setChutesFetchedAt(settings.chutesModelsFetchedAt);
     setTavilyKeySet(settings.tavilyKeySet);
     setTavilyKeyPreview(settings.tavilyKeyPreview);
     setCrossProjectSearch(settings.crossProjectSearchEnabled);
@@ -186,6 +203,30 @@ export function SettingsClient() {
     loadAll();
   }
 
+  async function saveChutesKey() {
+    setSavingChutes(true);
+    setChutesError(null);
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chutesApiKey: chutesInput }),
+    });
+    const data = await res.json();
+    if (data.chutesRefreshError) setChutesError(data.chutesRefreshError);
+    setChutesInput("");
+    setSavingChutes(false);
+    loadAll();
+  }
+
+  async function removeChutesKey() {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chutesApiKey: "" }),
+    });
+    loadAll();
+  }
+
   async function saveTavilyKey() {
     setSavingTavily(true);
     await fetch("/api/settings", {
@@ -210,10 +251,28 @@ export function SettingsClient() {
   async function refreshModels() {
     setRefreshing(true);
     setOpenRouterError(null);
-    const res = await fetch("/api/models/refresh", { method: "POST" });
+    const res = await fetch("/api/models/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "openrouter" }),
+    });
     const data = await res.json();
     if (!data.ok) setOpenRouterError(data.error ?? "Could not refresh the model list.");
     setRefreshing(false);
+    loadAll();
+  }
+
+  async function refreshChutesModelsList() {
+    setRefreshingChutes(true);
+    setChutesError(null);
+    const res = await fetch("/api/models/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "chutes" }),
+    });
+    const data = await res.json();
+    if (!data.ok) setChutesError(data.error ?? "Could not refresh the model list.");
+    setRefreshingChutes(false);
     loadAll();
   }
 
@@ -306,6 +365,7 @@ export function SettingsClient() {
   const modelsByProvider = {
     anthropic: models.filter((m) => m.provider === "anthropic"),
     openrouter: models.filter((m) => m.provider === "openrouter"),
+    chutes: models.filter((m) => m.provider === "chutes"),
   };
 
   return (
@@ -391,6 +451,53 @@ export function SettingsClient() {
 
         <Panel className="mt-3 px-4 py-4">
           <div className="mb-3 flex items-center justify-between">
+            <div className="text-[13.5px] font-medium text-[var(--color-text)]">Chutes</div>
+            {chutesKeySet && (
+              <Button variant="ghost" onClick={refreshChutesModelsList} disabled={refreshingChutes}>
+                {refreshingChutes ? "Refreshing…" : "Refresh models"}
+              </Button>
+            )}
+          </div>
+          {chutesKeySet && (
+            <div className="mb-3 flex items-center justify-between text-[13px]">
+              <span className="text-[var(--color-text-muted)] font-technical">
+                Current key: {chutesKeyPreview ?? "configured via environment"} — {chutesModelCount} models
+                {chutesFetchedAt ? `, updated ${new Date(chutesFetchedAt).toLocaleString()}` : ""}
+              </span>
+              <Button variant="danger" onClick={removeChutesKey}>
+                Remove
+              </Button>
+            </div>
+          )}
+          {chutesError && (
+            <div className="mb-3 rounded-[4px] border border-[var(--color-danger)] px-3 py-2 text-[12.5px] text-[var(--color-danger)]">
+              {chutesError}
+            </div>
+          )}
+          <Label>API key</Label>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder="cpk_…"
+              value={chutesInput}
+              onChange={(e) => setChutesInput(e.target.value)}
+            />
+            <Button variant="accent" onClick={saveChutesKey} disabled={!chutesInput || savingChutes}>
+              {savingChutes ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+            A manual fallback, not an automatic one — Magi never switches to Chutes on its own. It&apos;s a
+            decentralized, OpenAI-compatible inference marketplace (Bittensor Subnet 64) rather than a
+            company running its own datacenters, so it fails independently of OpenRouter — worth having
+            configured only so a role assignment below still has somewhere to go if OpenRouter itself ever
+            becomes unusable. Reasoning-effort control isn&apos;t available for Chutes models, since their
+            catalog doesn&apos;t document selectable effort levels the way OpenRouter&apos;s does.
+          </p>
+        </Panel>
+
+        <Panel className="mt-3 px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
             <div className="text-[13.5px] font-medium text-[var(--color-text)]">Tavily (web search)</div>
           </div>
           {tavilyKeySet && (
@@ -430,7 +537,7 @@ export function SettingsClient() {
           critic&quot; — rather than a hardcoded model. Reassign a role here and every caller upgrades at
           once, whichever provider it comes from. This is how Magi survives a model becoming obsolete.
           Reasoning effort only applies to OpenRouter models and is automatically adjusted to whatever the
-          assigned model actually supports; Anthropic&apos;s API has no equivalent control here.
+          assigned model actually supports; Anthropic and Chutes have no equivalent control here.
         </p>
         <Panel className="divide-y divide-[var(--color-border)]">
           {roles.map((role) => (
@@ -472,6 +579,17 @@ export function SettingsClient() {
                   {modelsByProvider.openrouter.length > 0 && (
                     <optgroup label={PROVIDER_LABEL.openrouter}>
                       {modelsByProvider.openrouter.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                          {m.supportsTools === false ? " — no tool use" : ""}
+                          {m.supportsVision === false ? " — no vision" : ""}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {modelsByProvider.chutes.length > 0 && (
+                    <optgroup label={PROVIDER_LABEL.chutes}>
+                      {modelsByProvider.chutes.map((m) => (
                         <option key={m.id} value={m.id}>
                           {m.label}
                           {m.supportsTools === false ? " — no tool use" : ""}
@@ -709,7 +827,8 @@ export function SettingsClient() {
           someone really deletes them.
         </p>
         <p className="mt-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
-          Anthropic is supported directly, along with every model OpenRouter proxies. The provider
+          Anthropic is supported directly, along with every model OpenRouter proxies and Chutes&apos;
+          decentralized catalog — a manual fallback for OpenRouter, not an automatic one. The provider
           layer is built to add more without touching the rest of the app.
         </p>
       </section>

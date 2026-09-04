@@ -1,5 +1,6 @@
 import { getSetting, setSetting } from "@/lib/settings";
 import { getOpenRouterCapabilities } from "@/lib/models/openrouter";
+import { getChutesCapabilities } from "@/lib/models/chutes";
 import type { TokenUsage } from "@/lib/models/types";
 
 const ANTHROPIC_PRICING_KEY = "anthropic_pricing";
@@ -28,12 +29,12 @@ export function setAnthropicPricing(pricing: Record<string, AnthropicModelPrice>
 
 // Returns null whenever the rate isn't known, rather than fabricating a cost.
 export function estimateCost(
-  provider: "anthropic" | "openrouter",
+  provider: "anthropic" | "openrouter" | "chutes",
   modelId: string,
   usage: TokenUsage
 ): number | null {
-  if (provider === "openrouter") {
-    const caps = getOpenRouterCapabilities(modelId);
+  if (provider === "openrouter" || provider === "chutes") {
+    const caps = provider === "openrouter" ? getOpenRouterCapabilities(modelId) : getChutesCapabilities(modelId);
     // Loose nullish checks on purpose: a capabilities cache written before
     // these fields existed has them simply absent (undefined), not null —
     // both mean "unknown," never treat either as zero.
@@ -42,5 +43,15 @@ export function estimateCost(
   }
   const rate = getAnthropicPricing()[modelId];
   if (!rate) return null;
-  return (usage.promptTokens * rate.promptPerM) / 1_000_000 + (usage.completionTokens * rate.completionPerM) / 1_000_000;
+  // Cached input isn't billed at the input rate: writing a cache entry costs
+  // more than sending the tokens plainly, and reading one costs a fraction.
+  // These are Anthropic's published multipliers for the default (5-minute)
+  // cache lifetime. Usage with neither field set reduces to plain input
+  // tokens at the plain rate, exactly as before caching existed.
+  const cacheRead = usage.cacheReadTokens ?? 0;
+  const cacheWrite = usage.cacheWriteTokens ?? 0;
+  const uncached = Math.max(usage.promptTokens - cacheRead - cacheWrite, 0);
+  const promptCost =
+    (uncached * rate.promptPerM + cacheWrite * rate.promptPerM * 1.25 + cacheRead * rate.promptPerM * 0.1) / 1_000_000;
+  return promptCost + (usage.completionTokens * rate.completionPerM) / 1_000_000;
 }

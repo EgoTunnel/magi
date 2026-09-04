@@ -306,6 +306,11 @@ function ftsOrQuery(query: string): string | null {
   return terms.map((t) => `"${t.replace(/"/g, '""')}"*`).join(" OR ");
 }
 
+function excludeClause(refIds: string[] | undefined, column: string): { sql: string; params: string[] } {
+  if (!refIds?.length) return { sql: "", params: [] };
+  return { sql: ` AND ${column} NOT IN (${refIds.map(() => "?").join(",")})`, params: refIds };
+}
+
 function projectClause(projectId: string | string[] | undefined, column: string): { sql: string; params: string[] } {
   if (Array.isArray(projectId)) {
     if (!projectId.length) return { sql: "", params: [] };
@@ -326,21 +331,36 @@ interface ChunkRow {
   source_date: string;
 }
 
+// Everything about a passage except the passage. The semantic half reads this
+// shape rather than ChunkRow: ranking never looks at the text, and reading it
+// for every stored passage on every turn was most of what that scan cost.
+type ChunkMeta = Omit<ChunkRow, "content">;
+
+// Fills in the text for passages that were selected without it.
+function chunkContents(ids: string[]): Map<string, string> {
+  if (!ids.length) return new Map();
+  const rows = db
+    .prepare(`SELECT id, content FROM chunks WHERE id IN (${ids.map(() => "?").join(",")})`)
+    .all(...ids) as Array<{ id: string; content: string }>;
+  return new Map(rows.map((r) => [r.id, r.content]));
+}
+
 function keywordChunks(query: string, opts: RetrieveOptions, limit: number): ChunkRow[] {
   const match = ftsOrQuery(query);
   if (!match) return [];
   const project = projectClause(opts.projectId, "c.project_id");
   const kinds = opts.kinds?.length ? ` AND c.kind IN (${opts.kinds.map(() => "?").join(",")})` : "";
+  const exclude = excludeClause(opts.excludeRefIds, "c.ref_id");
   return db
     .prepare(
       `SELECT c.id, c.kind, c.ref_id, c.project_id, c.title, c.chunk_index, c.content, c.source_date
        FROM chunk_search
        JOIN chunks c ON c.id = chunk_search.chunk_id
-       WHERE chunk_search MATCH ?${project.sql}${kinds}
+       WHERE chunk_search MATCH ?${project.sql}${kinds}${exclude.sql}
        ORDER BY bm25(chunk_search)
        LIMIT ?`
     )
-    .all(match, ...project.params, ...(opts.kinds ?? []), limit) as ChunkRow[];
+    .all(match, ...project.params, ...(opts.kinds ?? []), ...exclude.params, limit) as ChunkRow[];
 }
 
 // Uncapped counts of keyword-matching passages, grouped by date. Retrieval
@@ -388,12 +408,13 @@ async function semanticChunks(
   query: string,
   opts: RetrieveOptions,
   limit: number
-): Promise<Array<ChunkRow & { similarity: number }>> {
+): Promise<Array<ChunkMeta & { similarity: number }>> {
   const modelId = getEmbeddingModelId();
   if (!modelId || !getOpenRouterApiKey()) return [];
 
   const project = projectClause(opts.projectId, "project_id");
   const kinds = opts.kinds?.length ? ` AND kind IN (${opts.kinds.map(() => "?").join(",")})` : "";
+  const exclude = excludeClause(opts.excludeRefIds, "ref_id");
 
   const [queryVector] = await embedTexts(modelId, [query]);
   const q = new Float32Array(queryVector);
@@ -402,15 +423,23 @@ async function semanticChunks(
   // of passages, and materializing every vector (a few KB apiece) to sort them
   // would mean a nine-figure allocation per turn on a cross-Project search.
   // Scoring as rows arrive keeps peak memory at `limit` candidates instead.
+  //
+  // `content` is deliberately absent from this select. Nothing here reads it —
+  // ranking is the vector's job — and at ~1,200 characters per passage it was
+  // the bulk of what this scan pulled off disk, for tens of thousands of rows,
+  // to end up using twenty of them. The winners get their text in one query
+  // afterwards (see chunkContents).
   const cursor = db
     .prepare(
-      `SELECT id, kind, ref_id, project_id, title, chunk_index, content, source_date, vector
+      `SELECT id, kind, ref_id, project_id, title, chunk_index, source_date, vector
        FROM chunks
-       WHERE model = ? AND vector IS NOT NULL${project.sql}${kinds}`
+       WHERE model = ? AND vector IS NOT NULL${project.sql}${kinds}${exclude.sql}`
     )
-    .iterate(modelId, ...project.params, ...(opts.kinds ?? [])) as IterableIterator<ChunkRow & { vector: Buffer }>;
+    .iterate(modelId, ...project.params, ...(opts.kinds ?? []), ...exclude.params) as IterableIterator<
+    ChunkMeta & { vector: Buffer }
+  >;
 
-  const best: Array<ChunkRow & { similarity: number }> = [];
+  const best: Array<ChunkMeta & { similarity: number }> = [];
   for (const row of cursor) {
     const similarity = cosineSimilarity(q, unpackVector(row.vector));
     if (best.length === limit && similarity <= best[best.length - 1].similarity) continue;
@@ -426,7 +455,6 @@ async function semanticChunks(
       project_id: row.project_id,
       title: row.title,
       chunk_index: row.chunk_index,
-      content: row.content,
       source_date: row.source_date,
       similarity,
     });
@@ -439,6 +467,12 @@ export interface RetrieveOptions {
   projectId?: string | string[];
   kinds?: SearchKind[];
   limit?: number;
+  // Items whose passages must not be returned. The turn's own user message is
+  // the case this exists for: it is indexed before the prompt is built, and it
+  // is a perfect lexical match for the query, which is that query, so without
+  // this it reliably retrieves itself as the top passage and spends the budget
+  // telling the model what the user just said.
+  excludeRefIds?: string[];
   // Overrides MAX_PER_SOURCE. Trajectory tracing raises it deliberately: when
   // the question is how a topic developed over time, a long conversation that
   // returned to it repeatedly *should* contribute more than three passages,
@@ -459,14 +493,23 @@ export async function retrieveChunks(query: string, opts: RetrieveOptions = {}):
   // discard candidates, and the shortfall has to come from somewhere.
   const pool = limit * 4;
 
+  // The lexical half first, and synchronously: it is a single indexed query
+  // against a snapshot of the passage table taken before the embedding round
+  // trip below, which is what lets a caller start retrieval before the message
+  // it excludes has been written (see prefetchRetrieval).
+  const keyword = keywordChunks(trimmed, opts, pool);
   const semantic = await semanticChunks(trimmed, opts, pool).catch((err) => {
     console.error("[retrieval] semantic half failed", err instanceof Error ? err.message : err);
-    return [] as Array<ChunkRow & { similarity: number }>;
+    return [] as Array<ChunkMeta & { similarity: number }>;
   });
-  const keyword = keywordChunks(trimmed, opts, pool);
 
-  const scores = new Map<string, { row: ChunkRow; score: number; similarity?: number; semantic: boolean; lexical: boolean }>();
-  const add = (row: ChunkRow, rank: number, half: "semantic" | "lexical", similarity?: number) => {
+  // The lexical half already read the text it matched on; the semantic half
+  // deliberately didn't. Either way, only the passages that survive fusion and
+  // the per-source cap need it.
+  const contents = new Map<string, string>(keyword.map((r) => [r.id, r.content]));
+
+  const scores = new Map<string, { row: ChunkMeta; score: number; similarity?: number; semantic: boolean; lexical: boolean }>();
+  const add = (row: ChunkMeta, rank: number, half: "semantic" | "lexical", similarity?: number) => {
     const existing = scores.get(row.id);
     const contribution = 1 / (RRF_K + rank + 1);
     if (existing) {
@@ -491,25 +534,32 @@ export async function retrieveChunks(query: string, opts: RetrieveOptions = {}):
 
   const perSourceCap = opts.maxPerSource ?? MAX_PER_SOURCE;
   const perSource = new Map<string, number>();
-  const out: RetrievedChunk[] = [];
+  const selected: typeof ranked = [];
   for (const entry of ranked) {
-    if (out.length >= limit) break;
+    if (selected.length >= limit) break;
     const sourceKey = `${entry.row.kind}:${entry.row.ref_id}`;
     const used = perSource.get(sourceKey) ?? 0;
     if (used >= perSourceCap) continue;
     perSource.set(sourceKey, used + 1);
-    out.push({
-      chunkId: entry.row.id,
-      kind: entry.row.kind,
-      refId: entry.row.ref_id,
-      projectId: entry.row.project_id,
-      title: entry.row.title,
-      chunkIndex: entry.row.chunk_index,
-      content: entry.row.content,
-      sourceDate: entry.row.source_date,
-      similarity: entry.similarity,
-      matchedBy: entry.semantic && entry.lexical ? "both" : entry.semantic ? "meaning" : "keyword",
-    });
+    selected.push(entry);
   }
-  return out;
+
+  const missing = selected.filter((e) => !contents.has(e.row.id)).map((e) => e.row.id);
+  for (const [id, content] of chunkContents(missing)) contents.set(id, content);
+
+  return selected.map((entry) => ({
+    chunkId: entry.row.id,
+    kind: entry.row.kind,
+    refId: entry.row.ref_id,
+    projectId: entry.row.project_id,
+    title: entry.row.title,
+    chunkIndex: entry.row.chunk_index,
+    // A passage whose row vanished between the scan and here (a delete landing
+    // mid-turn) has nothing to show; empty content costs the caller a wasted
+    // slot rather than a broken turn.
+    content: contents.get(entry.row.id) ?? "",
+    sourceDate: entry.row.source_date,
+    similarity: entry.similarity,
+    matchedBy: entry.semantic && entry.lexical ? "both" : entry.semantic ? "meaning" : "keyword",
+  }));
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { bullets, extractDelimited, parsePersonLine, splitSections } from "@/lib/episodeClose";
+import { extractSummary } from "@/lib/personSummary";
 
 describe("splitSections", () => {
   // Regression: the original heading matcher used a pattern that tried to
@@ -80,6 +81,33 @@ describe("bullets", () => {
   it("returns nothing for an absent or empty section", () => {
     expect(bullets(undefined)).toEqual([]);
     expect(bullets("   \n  ")).toEqual([]);
+  });
+});
+
+// Same failure class as the episode closer's, hit a third time: the assigned
+// fast model has mandatory reasoning that lands in the visible reply, and
+// returned a page of "Let's count the characters…" where a summary should be.
+describe("extractSummary", () => {
+  it("keeps only what is between the delimiters", () => {
+    const reply =
+      "Let me think. Under 140 chars? Counting: L-o-o…\n<<<SUMMARY>>>\nRuns the review process at KRG.\n<<<END>>>\nThat should do it.";
+    expect(extractSummary(reply)).toBe("Runs the review process at KRG.");
+  });
+
+  it("unwraps the quotation marks models add anyway", () => {
+    expect(extractSummary('<<<SUMMARY>>>\n"Handles session logistics."\n<<<END>>>')).toBe(
+      "Handles session logistics."
+    );
+    expect(extractSummary("<<<SUMMARY>>>\n“Curly ones too.”\n<<<END>>>")).toBe("Curly ones too.");
+  });
+
+  it("returns nothing when the model ignored the markers, rather than its reasoning", () => {
+    expect(extractSummary("We need to answer. Let's count: Looped(6) + space…")).toBeNull();
+    expect(extractSummary("<<<SUMMARY>>>\n\n<<<END>>>")).toBeNull();
+  });
+
+  it("survives a reply cut off before the closing marker", () => {
+    expect(extractSummary("<<<SUMMARY>>>\nRuns the review process.")).toBe("Runs the review process.");
   });
 });
 

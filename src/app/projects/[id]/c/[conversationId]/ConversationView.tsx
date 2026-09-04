@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, Input, Tag } from "@/components/ui";
-import { IconAttach, IconChevronDown, IconChevronRight, IconDocument, IconDownload, IconRefresh, IconSend, IconStop, IconTrash } from "@/components/icons";
+import { Button, Input, Tag, Textarea } from "@/components/ui";
+import { IconAttach, IconChevronDown, IconChevronRight, IconDocument, IconDownload, IconEdit, IconRefresh, IconSend, IconStop, IconTrash } from "@/components/icons";
 import type { ContextProvenance } from "@/lib/contextBuilder";
 import { renderMarkdown } from "@/lib/markdownToReact";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
@@ -13,6 +13,11 @@ import { MagiSpinner } from "@/components/MagiSpinner";
 import { MoveConversationControl } from "@/components/MoveConversationControl";
 import { EpisodeClosePanel, type ClosureDraft } from "@/components/EpisodeClosePanel";
 
+interface Sibling {
+  id: string;
+  preview: string;
+  created_at: string;
+}
 interface Message {
   id: string;
   role: "user" | "assistant" | "system";
@@ -20,6 +25,18 @@ interface Message {
   model: string | null;
   provenance: string | null;
   created_at: string;
+  parent_id: string | null;
+  // Present only when this message has siblings (an edited or regenerated
+  // branch point) — see annotateBranches() in src/lib/conversationBranches.ts.
+  branchIndex?: number;
+  branchTotal?: number;
+  siblings?: Sibling[];
+  hasAttachments?: boolean;
+}
+interface PersonOption {
+  id: string;
+  name: string;
+  relationship: string | null;
 }
 interface Skill {
   id: string;
@@ -49,8 +66,6 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [toolStatus, setToolStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillId, setSkillId] = useState<string>("");
@@ -59,6 +74,9 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const [contextOpen, setContextOpen] = useState(false);
   const [savingArtifactFor, setSavingArtifactFor] = useState<string | null>(null);
   const [artifactTitleDraft, setArtifactTitleDraft] = useState("");
+  const [people, setPeople] = useState<PersonOption[]>([]);
+  const [rememberPersonFor, setRememberPersonFor] = useState<string | null>(null);
+  const [rememberPersonId, setRememberPersonId] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -71,10 +89,21 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   // Set when this page was opened by a link to a specific message — from the
   // Context panel's retrieved passages, or from a memory item's source.
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [expandedBranchFor, setExpandedBranchFor] = useState<string | null>(null);
+  const [switchingBranch, setSwitchingBranch] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastMessageRef = useRef<HTMLDivElement>(null);
   const attachFileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // The live reply's text does NOT live in this component's state. It arrives a
+  // token at a time, and holding it here re-rendered every message in the
+  // conversation on every token — each assistant message re-parsing its own
+  // markdown — so a long reply got visibly slower the longer it got. It lives
+  // in <StreamingMessage> instead, driven imperatively through this handle, and
+  // nothing above it re-renders while a reply streams.
+  const streamRef = useRef<StreamHandle>(null);
   // Landing scroll (jump straight to the latest messages) fires once per
   // conversation visit; every load() after that (post-turn refresh) must NOT
   // re-trigger it, or it'd yank the view back down right as a long response
@@ -82,11 +111,12 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   const initialScrollDoneRef = useRef(false);
 
   async function load() {
-    const [convRes, skillsRes, modelsRes, artifactsRes] = await Promise.all([
+    const [convRes, skillsRes, modelsRes, artifactsRes, peopleRes] = await Promise.all([
       fetch(`/api/conversations/${conversationId}`),
       fetch(`/api/skills?projectId=${projectId}`),
       fetch(`/api/models`),
       fetch(`/api/artifacts?conversationId=${conversationId}`),
+      fetch(`/api/people?status=established`),
     ]);
     const convData = await convRes.json();
     setTitle(convData.conversation?.title ?? "");
@@ -94,10 +124,28 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     setSkills((await skillsRes.json()).skills ?? []);
     setRoles((await modelsRes.json()).roles ?? []);
     setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
+    setPeople((await peopleRes.json()).people ?? []);
 
     const projRes = await fetch(`/api/projects/${projectId}`);
     const projData = await projRes.json();
     setProjectName(projData.project?.name ?? "");
+  }
+
+  // Branch-switching, editing, and regenerating never change
+  // skills/models/people/the Project — refetching those on every click (what
+  // load() does) would make stepping through sibling answers to compare them
+  // needlessly slow. Artifacts still need a refresh: an edited or
+  // regenerated turn can produce a new one via tool use, same as a normal
+  // send.
+  async function reloadMessages() {
+    const [convRes, artifactsRes] = await Promise.all([
+      fetch(`/api/conversations/${conversationId}`),
+      fetch(`/api/artifacts?conversationId=${conversationId}`),
+    ]);
+    const data = await convRes.json();
+    setTitle(data.conversation?.title ?? "");
+    setMessages(data.messages ?? []);
+    setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
   }
 
   // An existing draft is fetched, never re-drafted: reopening a conversation
@@ -157,18 +205,24 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
 
   // "Jump to latest" only shows once there's actually somewhere to jump to —
   // recomputed both on manual scroll and as streamed content grows the page
-  // out from under a scroll position that used to be at the bottom.
+  // out from under a scroll position that used to be at the bottom. Stable
+  // across renders so the streaming block can call it as it grows without
+  // dragging this component into a re-render per token: setState with an
+  // unchanged boolean is a no-op, so this only costs anything when the answer
+  // actually flips.
+  const recomputeJumpToLatest = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setShowJumpToLatest(el.scrollHeight - el.scrollTop - el.clientHeight > 160);
+  }, []);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const update = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowJumpToLatest(distanceFromBottom > 160);
-    };
-    update();
-    el.addEventListener("scroll", update);
-    return () => el.removeEventListener("scroll", update);
-  }, [messages, streamingText]);
+    recomputeJumpToLatest();
+    el.addEventListener("scroll", recomputeJumpToLatest);
+    return () => el.removeEventListener("scroll", recomputeJumpToLatest);
+  }, [messages, recomputeJumpToLatest]);
 
   function scrollToLatest() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -222,11 +276,14 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       }
       if (event.type === "text" && event.text) {
         full += event.text;
-        setStreamingText(full);
+        // Always the whole accumulated reply, never a delta — so a call that
+        // lands before the streaming block has mounted costs nothing beyond
+        // itself; the next token carries everything anyway.
+        streamRef.current?.setText(full);
       } else if (event.type === "tool_start" && event.name) {
-        setToolStatus(event.name);
+        streamRef.current?.setTool(event.name);
       } else if (event.type === "tool_end") {
-        setToolStatus(null);
+        streamRef.current?.setTool(null);
       }
     };
     for (;;) {
@@ -250,10 +307,9 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     setError(null);
     setMessages((m) => [
       ...m,
-      { id: `local-${Date.now()}`, role: "user", content, model: null, provenance: null, created_at: new Date().toISOString() },
+      { id: `local-${Date.now()}`, role: "user", content, model: null, provenance: null, created_at: new Date().toISOString(), parent_id: null },
     ]);
-    setStreamingText("");
-    setToolStatus(null);
+    streamRef.current?.reset();
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -282,11 +338,13 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
         setError("Connection interrupted.");
       }
     } finally {
-      setStreamingText("");
-      setToolStatus(null);
+      streamRef.current?.reset();
       setSending(false);
       abortRef.current = null;
-      await load();
+      // Not load(): a turn can't change the Project's skills, the model roles,
+      // or the people roster, so refetching those five endpoints only delayed
+      // the finished reply appearing.
+      await reloadMessages();
     }
   }
 
@@ -294,15 +352,21 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     abortRef.current?.abort();
   }
 
-  async function regenerate() {
+  // messageId defaults to the last message (today's simple "Regenerate"
+  // button); an explicit id — passed when the button is clicked on an
+  // earlier reply — regenerates that one instead, branching from there.
+  async function regenerate(messageId?: string) {
     if (sending) return;
-    const last = messages[messages.length - 1];
-    if (!last || last.role !== "assistant") return;
-    setMessages((m) => m.slice(0, -1));
+    const targetId = messageId ?? messages[messages.length - 1]?.id;
+    const index = messages.findIndex((m) => m.id === targetId);
+    if (index === -1 || messages[index].role !== "assistant") return;
+    // Truncate to right before the reply being replaced — otherwise, once
+    // this can target an earlier message, the live streaming block would
+    // render below later messages that are about to disappear.
+    setMessages((m) => m.slice(0, index));
     setSending(true);
     setError(null);
-    setStreamingText("");
-    setToolStatus(null);
+    streamRef.current?.reset();
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -310,7 +374,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       const res = await fetch(`/api/conversations/${conversationId}/chat/regenerate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skillId: skillId || undefined, modelRole }),
+        body: JSON.stringify({ messageId: targetId, skillId: skillId || undefined, modelRole }),
         signal: controller.signal,
       });
       if (res.status === 412) {
@@ -328,12 +392,122 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
         setError("Connection interrupted.");
       }
     } finally {
-      setStreamingText("");
-      setToolStatus(null);
+      streamRef.current?.reset();
       setSending(false);
       abortRef.current = null;
-      await load();
+      await reloadMessages();
     }
+  }
+
+  function startEdit(messageId: string, content: string) {
+    setEditingMessageId(messageId);
+    setEditDraft(content);
+  }
+
+  function cancelEdit() {
+    setEditingMessageId(null);
+    setEditDraft("");
+  }
+
+  async function saveEdit() {
+    const messageId = editingMessageId;
+    const content = editDraft.trim();
+    if (!messageId || !content || sending) return;
+    const index = messages.findIndex((m) => m.id === messageId);
+    if (index === -1) return;
+    setEditingMessageId(null);
+    setSending(true);
+    setError(null);
+    // Show the edited text immediately and drop everything after it — that's
+    // the new branch's tip until the reply streams in, so the live block
+    // lands right after it instead of after messages about to disappear.
+    setMessages((m) => [
+      ...m.slice(0, index),
+      { ...m[index], content, branchIndex: undefined, branchTotal: undefined, siblings: undefined },
+    ]);
+    streamRef.current?.reset();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(`/api/conversations/${conversationId}/messages/${messageId}/edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, skillId: skillId || undefined, modelRole }),
+        signal: controller.signal,
+      });
+      if (res.status === 412) {
+        const data = await res.json();
+        setError(data.message ?? "No API key configured.");
+        return;
+      }
+      if (!res.ok || !res.body) {
+        setError("Something went wrong reaching the model.");
+        return;
+      }
+      await streamChatResponse(res);
+    } catch (err) {
+      if (!(err instanceof DOMException && err.name === "AbortError")) {
+        setError("Connection interrupted.");
+      }
+    } finally {
+      streamRef.current?.reset();
+      setSending(false);
+      abortRef.current = null;
+      await reloadMessages();
+    }
+  }
+
+  async function switchBranch(messageId: string) {
+    if (sending || switchingBranch) return;
+    setSwitchingBranch(true);
+    await fetch(`/api/conversations/${conversationId}/branch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId }),
+    });
+    setExpandedBranchFor(null);
+    await reloadMessages();
+    setSwitchingBranch(false);
+  }
+
+  // Branch pills are only visible once you've scrolled to the exact message
+  // that has one — this is what makes branch points discoverable without
+  // reading the whole conversation top to bottom.
+  const branchPointIds = useMemo(
+    () => messages.filter((m) => (m.branchTotal ?? 1) > 1).map((m) => m.id),
+    [messages]
+  );
+
+  // Grouped once rather than re-filtered per message: the list render was
+  // walking the whole artifact list once for every message in the
+  // conversation, which is quadratic in a Project that generates a lot of them.
+  const artifactsByMessage = useMemo(() => {
+    const map = new Map<string, ArtifactFile[]>();
+    for (const file of artifactFiles) {
+      if (!file.message_id) continue;
+      const list = map.get(file.message_id);
+      if (list) list.push(file);
+      else map.set(file.message_id, [file]);
+    }
+    return map;
+  }, [artifactFiles]);
+
+  function jumpToNextBranchPoint() {
+    const container = scrollRef.current;
+    if (!container || branchPointIds.length === 0) return;
+    const containerTop = container.getBoundingClientRect().top;
+    const positioned = branchPointIds
+      .map((id) => {
+        const el = document.getElementById(id);
+        return el ? { id, top: el.getBoundingClientRect().top - containerTop } : null;
+      })
+      .filter((p): p is { id: string; top: number } => !!p)
+      .sort((a, b) => a.top - b.top);
+    const next = positioned.find((p) => p.top > 20) ?? positioned[0];
+    if (!next) return;
+    document.getElementById(next.id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMessageId(next.id);
   }
 
   async function rememberMessage(content: string, scope: "global" | "project", messageId: string) {
@@ -351,6 +525,29 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
         sourceConversationId: conversationId,
       }),
     });
+  }
+
+  function startRememberPerson(messageId: string) {
+    setRememberPersonFor(messageId);
+    setRememberPersonId("");
+  }
+
+  async function confirmRememberPerson(content: string) {
+    if (!rememberPersonId || !rememberPersonFor) return;
+    await fetch(`/api/people/${rememberPersonId}/facts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content,
+        source: "conversation",
+        // The whole reason this action exists — the fact keeps the message it
+        // came from, so the person's page can link back to it.
+        sourceMessageId: rememberPersonFor,
+        sourceConversationId: conversationId,
+      }),
+    });
+    setRememberPersonFor(null);
+    setRememberPersonId("");
   }
 
   function startSaveArtifact(messageId: string) {
@@ -376,8 +573,18 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     await load();
   }
 
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  const provenance: ContextProvenance | null = lastAssistant?.provenance ? JSON.parse(lastAssistant.provenance) : null;
+  // Parsed once per message list rather than on every render: a turn's
+  // provenance carries every retrieved passage, so this is a real parse, not a
+  // trivial one.
+  const provenance: ContextProvenance | null = useMemo(() => {
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+    if (!lastAssistant?.provenance) return null;
+    try {
+      return JSON.parse(lastAssistant.provenance) as ContextProvenance;
+    } catch {
+      return null;
+    }
+  }, [messages]);
 
   return (
     <div className="flex h-full flex-col">
@@ -395,6 +602,15 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
             currentProjectId={projectId}
             onMoved={(newProjectId) => router.push(`/projects/${newProjectId}/c/${conversationId}`)}
           />
+          {branchPointIds.length > 0 && (
+            <button
+              onClick={jumpToNextBranchPoint}
+              className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors"
+              title="Jump to the next branch point"
+            >
+              {branchPointIds.length} branch point{branchPointIds.length === 1 ? "" : "s"}
+            </button>
+          )}
           <button
             onClick={() => (closeOpen ? setCloseOpen(false) : openClose())}
             disabled={messages.length === 0}
@@ -435,7 +651,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                 >
                   <MessageBlock
                     message={m}
-                    files={artifactFiles.filter((a) => a.message_id === m.id)}
+                    files={artifactsByMessage.get(m.id)}
                     onRemember={rememberMessage}
                     onStartSaveArtifact={startSaveArtifact}
                     savingArtifact={savingArtifactFor === m.id}
@@ -444,19 +660,29 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                     onConfirmSaveArtifact={confirmSaveArtifact}
                     onCancelSaveArtifact={cancelSaveArtifact}
                     onArtifactRestored={load}
-                    isLast={i === messages.length - 1}
-                    onRegenerate={regenerate}
+                    people={people}
+                    rememberingPerson={rememberPersonFor === m.id}
+                    rememberPersonId={rememberPersonId}
+                    onStartRememberPerson={startRememberPerson}
+                    onRememberPersonChange={setRememberPersonId}
+                    onConfirmRememberPerson={confirmRememberPerson}
+                    onCancelRememberPerson={() => setRememberPersonFor(null)}
+                    onRegenerate={() => regenerate(m.id)}
                     sending={sending}
+                    isEditing={editingMessageId === m.id}
+                    editDraft={editDraft}
+                    onEditDraftChange={setEditDraft}
+                    onStartEdit={() => startEdit(m.id, m.content)}
+                    onSaveEdit={saveEdit}
+                    onCancelEdit={cancelEdit}
+                    branchExpanded={expandedBranchFor === m.id}
+                    onToggleBranchPanel={() => setExpandedBranchFor((cur) => (cur === m.id ? null : m.id))}
+                    onSwitchBranch={switchBranch}
+                    switchingBranch={switchingBranch}
                   />
                 </div>
               ))}
-              {sending && (
-                <MessageBlock
-                  message={{ id: "streaming", role: "assistant", content: streamingText, model: null, provenance: null, created_at: "" }}
-                  streaming
-                  toolStatus={toolStatus}
-                />
-              )}
+              {sending && <StreamingMessage ref={streamRef} onGrow={recomputeJumpToLatest} />}
               {error && (
                 <div className="rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3 text-[13px] text-[var(--color-text)]">
                   {error}{" "}
@@ -710,10 +936,66 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   );
 }
 
+// The live reply, and the only thing on the page that re-renders while one is
+// streaming. It owns its own text so that arriving tokens never touch
+// ConversationView's state — see streamRef there. The handle is imperative for
+// the same reason: a prop would put the text back in the parent.
+export interface StreamHandle {
+  setText: (text: string) => void;
+  setTool: (name: string | null) => void;
+  reset: () => void;
+}
+
+const StreamingMessage = forwardRef<StreamHandle, { onGrow?: () => void }>(function StreamingMessage(
+  { onGrow },
+  ref
+) {
+  const [text, setText] = useState("");
+  const [tool, setTool] = useState<string | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      setText,
+      setTool,
+      reset: () => {
+        setText("");
+        setTool(null);
+      },
+    }),
+    []
+  );
+
+  // Growing text pushes the page out from under a scroll position that used to
+  // be at the bottom, so "jump to latest" has to be reconsidered as it arrives.
+  useEffect(() => {
+    onGrow?.();
+  }, [text, onGrow]);
+
+  return (
+    <div className="group">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+          Magi
+        </span>
+        <span className="flex items-center gap-1.5 text-[10.5px] text-[var(--color-accent)] font-technical">
+          <MagiSpinner />
+          {tool ? `using ${tool}…` : text ? "writing…" : "thinking…"}
+        </span>
+      </div>
+      {/* Deliberately not parsed as markdown and deliberately not split into
+          per-line elements: both cost the whole reply's length on every token,
+          which is what made a long answer slow down as it wrote itself. The
+          finished message re-renders as real markdown a moment later. */}
+      <div className="prose-magi">
+        <p className="whitespace-pre-wrap">{text}</p>
+      </div>
+    </div>
+  );
+});
+
 function MessageBlock({
   message,
-  streaming,
-  toolStatus,
   files,
   onRemember,
   onStartSaveArtifact,
@@ -723,13 +1005,27 @@ function MessageBlock({
   onConfirmSaveArtifact,
   onCancelSaveArtifact,
   onArtifactRestored,
-  isLast,
   onRegenerate,
   sending,
+  people,
+  rememberingPerson,
+  rememberPersonId,
+  onStartRememberPerson,
+  onRememberPersonChange,
+  onConfirmRememberPerson,
+  onCancelRememberPerson,
+  isEditing,
+  editDraft,
+  onEditDraftChange,
+  onStartEdit,
+  onSaveEdit,
+  onCancelEdit,
+  branchExpanded,
+  onToggleBranchPanel,
+  onSwitchBranch,
+  switchingBranch,
 }: {
   message: Message;
-  streaming?: boolean;
-  toolStatus?: string | null;
   files?: ArtifactFile[];
   onRemember?: (content: string, scope: "global" | "project", messageId: string) => void;
   onStartSaveArtifact?: (messageId: string) => void;
@@ -739,11 +1035,35 @@ function MessageBlock({
   onConfirmSaveArtifact?: (content: string) => void;
   onCancelSaveArtifact?: () => void;
   onArtifactRestored?: () => void;
-  isLast?: boolean;
   onRegenerate?: () => void;
   sending?: boolean;
+  people?: PersonOption[];
+  rememberingPerson?: boolean;
+  rememberPersonId?: string;
+  onStartRememberPerson?: (messageId: string) => void;
+  onRememberPersonChange?: (id: string) => void;
+  onConfirmRememberPerson?: (content: string) => void;
+  onCancelRememberPerson?: () => void;
+  isEditing?: boolean;
+  editDraft?: string;
+  onEditDraftChange?: (content: string) => void;
+  onStartEdit?: () => void;
+  onSaveEdit?: () => void;
+  onCancelEdit?: () => void;
+  branchExpanded?: boolean;
+  onToggleBranchPanel?: () => void;
+  onSwitchBranch?: (messageId: string) => void;
+  switchingBranch?: boolean;
 }) {
   const isUser = message.role === "user";
+  const branchTotal = message.branchTotal ?? 1;
+  const branchIndex = message.branchIndex ?? 0;
+  const siblings = message.siblings ?? [];
+  const stepBranch = (delta: number) => {
+    if (!siblings.length || !onSwitchBranch) return;
+    const target = siblings[(branchIndex + delta + siblings.length) % siblings.length];
+    onSwitchBranch(target.id);
+  };
   return (
     <div className="group">
       <div className="mb-1.5 flex items-center gap-2">
@@ -751,18 +1071,85 @@ function MessageBlock({
           {isUser ? "You" : "Magi"}
         </span>
         {message.model && <Tag>{message.model}</Tag>}
-        {streaming && (
-          <span className="flex items-center gap-1.5 text-[10.5px] text-[var(--color-accent)] font-technical">
-            <MagiSpinner />
-            {toolStatus ? `using ${toolStatus}…` : message.content ? "writing…" : "thinking…"}
+        {branchTotal > 1 && (
+          <span className="flex items-center gap-0.5 text-[10.5px] text-[var(--color-text-faint)] font-technical">
+            <button
+              onClick={() => stepBranch(-1)}
+              disabled={switchingBranch}
+              aria-label="Previous branch"
+              className="focus-ring rounded-[2px] hover:text-[var(--color-accent)] disabled:opacity-40"
+            >
+              <IconChevronRight style={{ transform: "rotate(180deg)" }} />
+            </button>
+            <button
+              onClick={onToggleBranchPanel}
+              className="focus-ring rounded-[2px] px-0.5 hover:text-[var(--color-accent)]"
+              title="See what's in each branch"
+            >
+              {branchIndex + 1}/{branchTotal}
+            </button>
+            <button
+              onClick={() => stepBranch(1)}
+              disabled={switchingBranch}
+              aria-label="Next branch"
+              className="focus-ring rounded-[2px] hover:text-[var(--color-accent)] disabled:opacity-40"
+            >
+              <IconChevronRight />
+            </button>
           </span>
         )}
       </div>
+      {isEditing ? (
+        <div className="flex flex-col gap-2">
+          <Textarea
+            autoFocus
+            rows={3}
+            value={editDraft ?? ""}
+            onChange={(e) => onEditDraftChange?.(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSaveEdit?.();
+              }
+              if (e.key === "Escape") onCancelEdit?.();
+            }}
+            className="text-[15px]"
+          />
+          <div className="flex gap-2">
+            <Button variant="accent" onClick={onSaveEdit} disabled={!editDraft?.trim() || sending}>
+              Save &amp; regenerate
+            </Button>
+            <Button variant="ghost" onClick={onCancelEdit}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
       <div className={isUser ? "text-[15px] leading-relaxed text-[var(--color-text)]" : "prose-magi"}>
-        {!isUser && !streaming ? renderMarkdown(message.content) : message.content.split("\n").map((line, i) => (
+        {!isUser ? renderMarkdown(message.content) : message.content.split("\n").map((line, i) => (
           <p key={i}>{line || " "}</p>
         ))}
       </div>
+      )}
+      {branchExpanded && siblings.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)] p-2">
+          {siblings.map((s, i) => (
+            <button
+              key={s.id}
+              onClick={() => onSwitchBranch?.(s.id)}
+              disabled={switchingBranch}
+              className={`flex flex-col items-start gap-0.5 rounded-[3px] px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-surface-2)] disabled:opacity-60 ${
+                i === branchIndex ? "border border-[var(--color-accent)]" : "border border-transparent"
+              }`}
+            >
+              <span className="text-[10px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical">
+                {i === branchIndex ? "Current" : `Branch ${i + 1}`}
+              </span>
+              <span className="text-[12px] text-[var(--color-text-muted)]">{s.preview || "(empty)"}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {files && files.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {files.map((f) => (
@@ -793,7 +1180,7 @@ function MessageBlock({
           ))}
         </div>
       )}
-      {!isUser && !streaming && onRemember && (
+      {!isUser && onRemember && (
         <div className="mt-2 flex gap-3 opacity-0 transition-opacity group-hover:opacity-100">
           <button
             onClick={() => onRemember(message.content, "project", message.id)}
@@ -807,13 +1194,21 @@ function MessageBlock({
           >
             Remember globally
           </button>
+          {people && people.length > 0 && (
+            <button
+              onClick={() => onStartRememberPerson?.(message.id)}
+              className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
+            >
+              Remember about a person
+            </button>
+          )}
           <button
             onClick={() => onStartSaveArtifact?.(message.id)}
             className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
           >
             Save as artifact
           </button>
-          {isLast && onRegenerate && (
+          {onRegenerate && (
             <button
               onClick={onRegenerate}
               disabled={sending}
@@ -822,6 +1217,17 @@ function MessageBlock({
               <IconRefresh /> Regenerate
             </button>
           )}
+        </div>
+      )}
+      {isUser && !isEditing && onStartEdit && !message.hasAttachments && (
+        <div className="mt-2 flex gap-3 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            onClick={onStartEdit}
+            disabled={sending}
+            className="flex items-center gap-1 text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors disabled:opacity-40"
+          >
+            <IconEdit /> Edit
+          </button>
         </div>
       )}
       {savingArtifact && (
@@ -841,6 +1247,37 @@ function MessageBlock({
             Save
           </Button>
           <Button variant="ghost" onClick={onCancelSaveArtifact}>
+            Cancel
+          </Button>
+        </div>
+      )}
+      {/* The point of this route is the link: a fact recorded here carries the
+          exact message it came from, which is the one thing typing it on the
+          person's page loses. */}
+      {rememberingPerson && (
+        <div className="mt-2 flex items-center gap-2">
+          <select
+            autoFocus
+            value={rememberPersonId ?? ""}
+            onChange={(e) => onRememberPersonChange?.(e.target.value)}
+            className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1.5 text-[13px] text-[var(--color-text)]"
+          >
+            <option value="">Who is this about?</option>
+            {people?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.relationship ? ` — ${p.relationship}` : ""}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="accent"
+            onClick={() => onConfirmRememberPerson?.(message.content)}
+            disabled={!rememberPersonId}
+          >
+            Remember
+          </Button>
+          <Button variant="ghost" onClick={onCancelRememberPerson}>
             Cancel
           </Button>
         </div>

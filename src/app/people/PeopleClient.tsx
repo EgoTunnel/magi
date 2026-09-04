@@ -196,6 +196,10 @@ export function PeopleClient() {
                   {person.relationship && <Tag>{person.relationship}</Tag>}
                 </div>
                 {person.summary && (
+                  // Plain text, not linkPersonNames: this whole card is
+                  // already an <a> to this person, and nesting an <a> for a
+                  // named-mention inside it is invalid HTML (and would just
+                  // navigate to the outer link's target anyway).
                   <p className="mt-1 text-[13px] leading-relaxed text-[var(--color-text-muted)]">{person.summary}</p>
                 )}
                 {person.aliases.length > 0 && (

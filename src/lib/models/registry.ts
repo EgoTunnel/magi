@@ -1,13 +1,17 @@
 import { db } from "@/lib/db";
 import { anthropicProvider } from "@/lib/models/anthropic";
-import { openRouterProvider } from "@/lib/models/openrouter";
+import { openRouterProvider, getOpenRouterCapabilities } from "@/lib/models/openrouter";
+import { chutesProvider } from "@/lib/models/chutes";
 import type { ModelInfo, ModelProvider, ModelRoleId, ReasoningEffort, TokenUsage } from "@/lib/models/types";
 import { MODEL_ROLES, DEFAULT_ROLE_REASONING_EFFORT } from "@/lib/models/types";
 
 // Every provider Magi knows about. Adding a new provider means writing one
 // adapter and registering it here — nothing else in the app should ever
-// import a provider SDK directly.
-const DEFAULT_PROVIDERS: ModelProvider[] = [anthropicProvider, openRouterProvider];
+// import a provider SDK directly. Chutes is a manual fallback: it competes
+// for role assignments in Settings exactly like any other configured
+// provider (see pickDefaultModel() below), but nothing here auto-prefers or
+// auto-fails-over to it — the user points a role at it by hand.
+const DEFAULT_PROVIDERS: ModelProvider[] = [anthropicProvider, openRouterProvider, chutesProvider];
 let PROVIDERS: ModelProvider[] = DEFAULT_PROVIDERS;
 
 // Test seam. The pipelines (agent, council, chat turn, episode closing) are the
@@ -57,7 +61,21 @@ function pickDefaultModel(role: ModelRoleId): string {
   const configuredModels = PROVIDERS.filter((p) => p.isConfigured()).flatMap((p) => p.models);
   if (configuredModels.length === 0) return FALLBACK_ROLE_ASSIGNMENTS[role];
   const bySpeed = (speed: ModelInfo["speed"]) => configuredModels.find((m) => m.speed === speed);
-  if (role === "fast") return (bySpeed("fast") ?? configuredModels[0]).id;
+  if (role === "fast") {
+    // "fast" means short, cheap, often shape-constrained turns (the role
+    // classifier, the conversation-summary fold) — exactly the workload a
+    // mandatory-reasoning model is worst at, since it spends the tight budget
+    // on hidden deliberation before any visible answer. guessSpeed() picks
+    // "fast" purely from the model id (flash/mini/8b/...), with no idea which
+    // of those have mandatory reasoning — so among the fast-speed candidates,
+    // prefer one that doesn't. A model with no cached OpenRouter capabilities
+    // (Anthropic's own models, or one whose catalog entry hasn't been fetched
+    // yet) is treated as fine, matching the fail-open posture requestExtras()
+    // already uses for the same missing-data case in openrouter.ts.
+    const fastCandidates = configuredModels.filter((m) => m.speed === "fast");
+    const nonMandatory = fastCandidates.find((m) => getOpenRouterCapabilities(m.id)?.reasoningMandatory !== true);
+    return (nonMandatory ?? fastCandidates[0] ?? configuredModels[0]).id;
+  }
   if (role === "reasoner" || role === "synthesizer") return (bySpeed("deep") ?? configuredModels[0]).id;
   return (bySpeed("balanced") ?? configuredModels[0]).id;
 }
@@ -143,10 +161,10 @@ const CLASSIFIER_SYSTEM_PROMPT =
 // no API key, network error) falls back to "default" rather than throwing.
 export async function classifyModelRole(
   text: string
-): Promise<{ role: ModelRoleId; usage: TokenUsage[]; modelId: string; providerId: "anthropic" | "openrouter" }> {
+): Promise<{ role: ModelRoleId; usage: TokenUsage[]; modelId: string; providerId: "anthropic" | "openrouter" | "chutes" }> {
   const modelId = modelForRole("fast");
   const resolved = getModel(modelId);
-  const providerId = (resolved?.provider.id as "anthropic" | "openrouter" | undefined) ?? "anthropic";
+  const providerId = (resolved?.provider.id as "anthropic" | "openrouter" | "chutes" | undefined) ?? "anthropic";
   const usage: TokenUsage[] = [];
   if (!resolved || !resolved.provider.isConfigured()) {
     return { role: "default", usage, modelId, providerId };
@@ -160,9 +178,16 @@ export async function classifyModelRole(
       // learned" in docs/Handoff.md) and will spend a small budget entirely
       // on hidden reasoning tokens, never reaching the actual word. Verified
       // live — 10 tokens produced empty answers on qwen3.8-flash; one call
-      // at 200 used the entire budget on reasoning alone. Cost is a fraction
-      // of a cent either way, so the margin is cheap insurance.
-      maxTokens: 300,
+      // at 200 used the entire budget on reasoning alone. Raised again after
+      // verifying meta/muse-spark-1.2-contributor live: it spent 297 of a
+      // 300-token budget on reasoning and returned nothing in either content
+      // or the reasoning field (worse than qwen3.8-flash, which at least left
+      // text in the reasoning field for extractText()'s fallback to catch);
+      // the same prompt needed ~800 reasoning tokens to reach a real answer.
+      // No budget is guaranteed safe forever against mandatory reasoning of
+      // unknown length, but cost is a fraction of a cent either way, so a
+      // wide margin over what was actually measured is cheap insurance.
+      maxTokens: 1000,
       messages: [{ role: "user", content: text.slice(0, 2000) }],
       usage,
     });
