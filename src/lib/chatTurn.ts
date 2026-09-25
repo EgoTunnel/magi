@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { attachArtifactsToMessage } from "@/lib/repo/artifacts";
-import { addMessage } from "@/lib/repo/conversations";
-import { buildSystemPrompt } from "@/lib/contextBuilder";
+import { addMessage, type Message } from "@/lib/repo/conversations";
+import { buildSystemPrompt, type ContextProvenance } from "@/lib/contextBuilder";
 import type { RetrievedChunk } from "@/lib/retrieval";
 import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
 import type { ModelInfo, ModelMessage, ModelProvider, ModelRoleId, StreamEvent, TokenUsage, ToolCallRecord } from "@/lib/models/types";
@@ -9,6 +9,14 @@ import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
 import { estimateCost } from "@/lib/models/pricing";
 import { composeSkill } from "@/lib/skillComposition";
+
+// What a chat turn's response streams, one JSON object per line: the model's
+// own events, plus two of the turn's — a `status` line sent before the model
+// is called (while context is gathered), and `done` carrying the saved reply.
+export type TurnEvent =
+  | StreamEvent
+  | { type: "status"; text: string }
+  | { type: "done"; message: Message };
 
 export interface ResolvedTurnModel {
   modelRole: ModelRoleId;
@@ -159,21 +167,6 @@ export async function runChatTurn(opts: {
       ? lastUser.content
       : (lastUser?.content?.find((p) => p.type === "text")?.text ?? ""));
 
-  const { system, turnContext, provenance } = await buildSystemPrompt({
-    projectId,
-    skillId: opts.skillId,
-    query,
-    conversationSummary: opts.conversationSummary,
-    excludeRefIds: opts.excludeRefIds,
-    retrieval: opts.retrieval,
-  });
-
-  // The passages retrieved for this message ride along with it rather than
-  // sitting in the system prompt — see buildSystemPrompt. Everything before
-  // this message is then identical to what the previous turn sent, which is
-  // what the provider's prompt cache needs to be able to hit.
-  const messages = withTurnContext(opts.history, turnContext);
-
   const encoder = new TextEncoder();
   let full = "";
   const toolLog: ToolCallRecord[] = [];
@@ -204,6 +197,9 @@ export async function runChatTurn(opts: {
       usage: opts.summaryUsage.usage,
     });
   }
+
+  // Assigned once the prompt is built, inside the stream below.
+  let provenance: ContextProvenance;
 
   function finalProvenance() {
     const totalPrompt = usage.reduce((sum, u) => sum + u.promptTokens, 0);
@@ -259,7 +255,7 @@ export async function runChatTurn(opts: {
       // Once the client has disconnected (Stop was pressed) the controller
       // may already be closed by the runtime — writes past that point would
       // throw and crash this callback, so every enqueue/close is guarded.
-      const safeEnqueue = (event: StreamEvent) => {
+      const safeEnqueue = (event: TurnEvent) => {
         try {
           controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
         } catch {
@@ -275,6 +271,28 @@ export async function runChatTurn(opts: {
       };
 
       try {
+        // Building the prompt waits on retrieval (embedding the question, then
+        // ranking the archive against it). It happens here, after the response
+        // has started, rather than before it: the browser gets a first line
+        // immediately and can say what Magi is doing instead of sitting on a
+        // request that hasn't answered yet.
+        safeEnqueue({ type: "status", text: "Reading your Project" });
+        const built = await buildSystemPrompt({
+          projectId,
+          skillId: opts.skillId,
+          query,
+          conversationSummary: opts.conversationSummary,
+          excludeRefIds: opts.excludeRefIds,
+          retrieval: opts.retrieval,
+        });
+        provenance = built.provenance;
+        const system = built.system;
+        // The passages retrieved for this message ride along with it rather
+        // than sitting in the system prompt — see buildSystemPrompt. Everything
+        // before this message is then identical to what the previous turn sent,
+        // which is what the provider's prompt cache needs to be able to hit.
+        const messages = withTurnContext(opts.history, built.turnContext);
+
         const generator = resolved.provider.stream({
           model: modelId,
           system,
@@ -305,6 +323,9 @@ export async function runChatTurn(opts: {
           parentId: opts.parentId,
         });
         if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
+        // The saved reply, so the page can put it in place the moment the
+        // stream ends instead of clearing the live text and refetching.
+        safeEnqueue({ type: "done", message: assistantMessage });
         safeClose();
       } catch (err) {
         // Stop was pressed: the SDK call was cancelled via turnAbort.signal
@@ -316,7 +337,7 @@ export async function runChatTurn(opts: {
           const message = err instanceof Error ? err.message : "Unknown error";
           safeEnqueue({ type: "text", text: `\n\n[Magi encountered an error: ${message}]` });
         }
-        if (full) {
+        if (full && provenance) {
           const assistantMessage = addMessage({
             conversationId,
             role: "assistant",
@@ -326,6 +347,10 @@ export async function runChatTurn(opts: {
             parentId: opts.parentId,
           });
           if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
+          // Reaches the page only when it's still listening — a failure, not
+          // a Stop, which has already hung up (the page waits for this save
+          // itself in that case).
+          safeEnqueue({ type: "done", message: assistantMessage });
         }
         safeClose();
       }
@@ -341,9 +366,6 @@ export async function runChatTurn(opts: {
   });
 
   return new Response(stream, {
-    headers: {
-      "Content-Type": "text/plain; charset=utf-8",
-      "X-Magi-Provenance": encodeURIComponent(JSON.stringify(provenance)),
-    },
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }

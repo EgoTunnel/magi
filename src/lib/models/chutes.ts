@@ -12,6 +12,7 @@ import type { CompleteOptions, ModelCapabilities, ModelInfo, ModelProvider, Stre
 import {
   DEFAULT_MAX_TOOL_ITERATIONS,
   extractText,
+  reasoningOf,
   resolveToolCalls,
   toOpenAITools,
   toWorkingMessages,
@@ -205,6 +206,8 @@ export const chutesProvider: ModelProvider = {
       );
       let emitted = "";
       for await (const chunk of stream) {
+        const reasoningDelta = reasoningOf(chunk.choices[0]?.delta);
+        if (reasoningDelta) yield { type: "reasoning", text: reasoningDelta } satisfies StreamEvent;
         const delta = chunk.choices[0]?.delta?.content;
         if (delta) {
           emitted += delta;

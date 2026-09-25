@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { listProjects } from "@/lib/repo/projects";
 import { listRecentConversations } from "@/lib/repo/conversations";
 import {
@@ -27,7 +28,12 @@ const NAV = [
   { href: "/skills", label: "Skills", icon: IconSkills },
 ];
 
-export function Sidebar() {
+// Rendered by the root layout, so it is on every page — which makes it the
+// place that keeps every page out of build-time prerendering. better-sqlite3
+// is synchronous, so without connection() a production build happily runs
+// these queries once, at build time, and serves that snapshot forever.
+export async function Sidebar() {
+  await connection();
   const projects = listProjects().slice(0, 8);
   const conversations = listRecentConversations(5);
 

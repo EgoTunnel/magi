@@ -45,6 +45,15 @@ export function toWorkingMessages(opts: CompleteOptions): ChatCompletionMessageP
 // `reasoning` / `reasoning_content` field when they spend their whole turn
 // "thinking" — especially under a tight max_tokens budget. Treat that as the
 // answer rather than showing the user nothing.
+// The same two fields, read off one streamed delta. OpenRouter names it
+// `reasoning`, most self-hosted OpenAI-compatible servers `reasoning_content`.
+export function reasoningOf(delta: unknown): string {
+  if (!delta || typeof delta !== "object") return "";
+  const loose = delta as { reasoning?: unknown; reasoning_content?: unknown };
+  const value = loose.reasoning ?? loose.reasoning_content;
+  return typeof value === "string" ? value : "";
+}
+
 export function extractText(message: { content?: string | null }): string {
   const content = message.content;
   if (content && content.trim()) return content;

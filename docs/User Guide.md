@@ -14,10 +14,13 @@ provider you choose to call.
 
 ```bash
 npm install
-npm run dev
+npm run build
+npm start
 ```
 
-Open `http://localhost:3000`. The first thing you'll want is a model. Go to **Settings** and add an
+Open `http://localhost:3000`. (`npm run dev` works too, but it's the slower development server —
+meant for changing Magi, not using it. On Windows, the desktop shortcut from
+`scripts/desktop/Install-Shortcut.ps1` builds and starts Magi for you.) The first thing you'll want is a model. Go to **Settings** and add an
 API key for at least one provider:
 
 - **Anthropic** — a direct integration. One provider, its own models.
@@ -44,6 +47,10 @@ Home · Projects · Archive · Memory · People · Image Lab · Councils · Skil
 **⌘K** (or Ctrl+K) opens a command palette that searches across Projects, conversations, memory,
 documents, artifacts, Skills, Style Guides, Characters, and people — by wording, not just by title. The status
 bar at the bottom always shows where you are and which model is about to answer.
+
+**Ctrl+Shift+O** (⌘+Shift+O) starts a new conversation: in the current Project if you're inside one,
+otherwise it takes you Home. Home has a message box of its own — pick a Project, type, and send; the
+conversation is created with your first message, so an abandoned draft leaves nothing behind.
 
 ---
 
@@ -108,7 +115,11 @@ Open one from inside a Project. Two dropdowns sit above the message box:
   small extra cost to every turn that uses it (both are visible in Settings → Usage & cost, logged
   under role "classifier").
 
-Type and send. Responses stream in. The model can search your archive or do arithmetic mid-answer —
+Type and send. Responses stream in, formatted as they arrive. While Magi gathers context you'll see
+what it's doing ("reading your Project…"), and a model that reasons before answering shows its
+thinking faintly as it goes — folded away under **Reasoning** once the answer starts, and not kept
+afterwards. Stop keeps whatever had already been written. The model can search your archive or do
+arithmetic mid-answer —
 click **Context** in the top right to see exactly what a given reply drew on: which Project
 instructions applied, how much memory was in play, which tools it actually called, and — on an Auto
 turn — which role got picked.

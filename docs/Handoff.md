@@ -704,6 +704,53 @@ src/
   — focus states and `prefers-reduced-motion` are respected, but nothing beyond that has been verified.
   **No dedicated mobile UI (§75)** — responsive layout with a drawer nav, not a from-scratch mobile
   experience.
+- **Responsiveness pass** — the complaint was that Magi felt slow and clunky next to a hosted chat app.
+  What changed, and what to keep true when touching these areas:
+  - **Production build by default.** The desktop launcher (`scripts/desktop/Start-Magi.ps1`) used to run
+    `npm run dev`. It now runs `next build` when anything under `src/`, `public/` or the build config is
+    newer than `.next/BUILD_ID`, then `next start`, falling back to dev if the build fails. This surfaced
+    a real bug: `better-sqlite3` is synchronous, so a production build prerendered Home and the sidebar
+    **at build time** and served that snapshot forever. `Sidebar` (on every page, via the root layout) and
+    Home call `connection()` so every page renders per request. Any new server component that reads the
+    database without a request-time API needs the same, or it will be frozen at build time.
+  - **One database connection per process, in production too** (`db.ts`). Next instantiates server
+    modules once per bundle layer, so production had two connections (pages, and API routes). The
+    vector cache below depends on SQLite's per-connection `data_version`, which only makes sense with one.
+  - **Passage vectors in memory** (`retrieval.ts`). Read once and unit-normalized, so the semantic half is
+    a dot-product scan instead of reading every vector from SQLite on every turn. Measured on 16,000
+    passages × 1536 dimensions: ~185ms → ~40ms per retrieval. Kept current **incrementally** by the
+    write paths (`cacheVectors`, `forgetCachedVectors`, `retargetCachedVectors`), because every turn writes
+    passages and a cache invalidated on every write would be rebuilt every turn. Writes from other processes
+    (the MCP server) change `data_version`, which discards it. It is held on `globalThis`, capped at ~256MB
+    (past that, the old SQL scan), and warmed in the background at server start (`src/instrumentation.ts`).
+    **A new function that writes to `chunks` must update the cache or bump `shared.writes`.**
+  - **No query embedding for trivial follow-ups** (`worthEmbedding`): "thanks", "shorter please" and the
+    like skip the embedding round trip. The keyword half still runs; retrieval is never skipped outright,
+    because an empty result falls back to injecting whole documents.
+  - **The chat stream starts immediately and says what it's doing.** `runChatTurn` returns its response
+    before building the prompt, sends `{type:"status"}` while it waits on retrieval, forwards the model's
+    `{type:"reasoning"}` deltas (OpenRouter `reasoning`, Chutes `reasoning_content`; shown live and never
+    stored), and ends with `{type:"done", message}` carrying the saved reply, so the page puts it in place
+    without a refetch-and-flash. See `TurnEvent` in `chatTurn.ts`.
+  - **Conversation page is server-rendered** with its data (`page.tsx` + `lib/conversationView.ts`,
+    which the GET route shares) instead of six client fetches after a blank page.
+  - **Typing no longer re-renders the conversation.** The draft lives in `Composer`, finished markdown is
+    memoized (`MarkdownBody`), and the box grows with CSS `field-sizing` rather than a resize effect that
+    forced a layout of the whole page per keystroke. Measured in an 80-message conversation at 4× CPU
+    throttle: ~9.5ms → ~2ms of work per keystroke.
+  - **Streaming markdown.** `lib/streamingMarkdown.ts` splits a live reply at its last complete block
+    (never inside an open code fence); finished blocks render once, and only the tail re-parses, batched
+    to one render per animation frame.
+  - **Stop keeps the partial reply on screen.** It's saved as the server's side of the stream unwinds,
+    after the browser has already hung up, so the page keeps the text and retries its refetch until the
+    saved copy appears. Before, the reply vanished until the next reload.
+  - **Prompt caching through OpenRouter.** Claude and Gemini models only cache what a request marks, which
+    the OpenRouter adapter never did. `markOpenRouterCacheBreakpoints` applies the same two breakpoints as
+    the direct Anthropic adapter; cached tokens are read from `prompt_tokens_details` and priced at the
+    catalog's `input_cache_read`/`input_cache_write` rates when it lists them.
+  - **Starting a conversation**: a composer on Home (creates the conversation with the first message and
+    hands it over via `lib/pendingSend.ts`), Ctrl/⌘+Shift+O and a palette entry (`lib/newConversation.ts`),
+    and a **New** button in the conversation header.
 
 ---
 

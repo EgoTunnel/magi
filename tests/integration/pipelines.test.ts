@@ -197,6 +197,39 @@ describe("context assembly", () => {
     expect(call.system).toContain("## Project: P");
   });
 
+  it("streams a status line first and ends with the saved reply", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    const asking = addMessage({ conversationId: conversation.id, role: "user", content: "hello there" });
+    mock.reply("General Kenobi.");
+
+    const turnModel = await resolveTurnModel("default", asking.content, null);
+    if (!turnModel.ok) throw new Error("model did not resolve");
+    const response = await runChatTurn({
+      conversationId: conversation.id,
+      projectId: project.id,
+      history: [{ role: "user", content: asking.content }],
+      skillId: null,
+      turnModel: turnModel.value,
+      signal: new AbortController().signal,
+      excludeRefIds: [asking.id],
+      parentId: asking.id,
+    });
+    const events = (await response.text())
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+    expect(events[0].type).toBe("status");
+    const done = events[events.length - 1];
+    expect(done.type).toBe("done");
+    expect(done.message.content).toBe("General Kenobi.");
+    expect(done.message.parent_id).toBe(asking.id);
+    // The message it carries is the one that was saved, id and all.
+    const saved = listMessages(conversation.id).find((m) => m.role === "assistant");
+    expect(done.message.id).toBe(saved?.id);
+  });
+
   it("falls back to whole documents when nothing matches", async () => {
     const project = createProject({ name: "P" });
     createDocument(project.id, "Doc", "Gardening notes about compost.");

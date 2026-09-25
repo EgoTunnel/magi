@@ -1,7 +1,8 @@
 "use client";
 
-import { ReactNode, useEffect, useState } from "react";
-import { usePathname } from "next/navigation";
+import { ReactNode, useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { isNewConversationShortcut, startNewConversation } from "@/lib/newConversation";
 import { CommandPalette } from "@/components/shell/CommandPalette";
 import { StatusBar } from "@/components/shell/StatusBar";
 import { MagiMark } from "@/components/MagiMark";
@@ -18,17 +19,28 @@ export function WorkspaceShell({ sidebar, children }: { sidebar: ReactNode; chil
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+  // Read by the key handler below, which is registered once.
+  const pathnameRef = useRef(pathname);
+  useEffect(() => {
+    pathnameRef.current = pathname;
+  }, [pathname]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen((o) => !o);
+      }
+      if (isNewConversationShortcut(e)) {
+        e.preventDefault();
+        setPaletteOpen(false);
+        void startNewConversation(router, pathnameRef.current);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [router]);
 
   // Close the mobile drawer on navigation.
   useEffect(() => {

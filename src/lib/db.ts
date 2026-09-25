@@ -29,8 +29,15 @@ function createDb() {
   return db;
 }
 
+// One connection per process, in production too. Next instantiates server
+// modules once per bundle layer (pages and API routes each get their own copy
+// of this file), which without the global meant two connections to the same
+// file in one process. That was harmless until the passage-vector cache in
+// retrieval.ts, which tells its own writes from anyone else's by SQLite's
+// per-connection data_version — two connections in-process would make every
+// write look foreign, or worse, make two unrelated counters look comparable.
 export const db = globalThis.__magiDb ?? createDb();
-if (process.env.NODE_ENV !== "production") globalThis.__magiDb = db;
+globalThis.__magiDb = db;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (

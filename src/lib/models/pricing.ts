@@ -39,7 +39,17 @@ export function estimateCost(
     // these fields existed has them simply absent (undefined), not null —
     // both mean "unknown," never treat either as zero.
     if (!caps || caps.pricePerPromptToken == null || caps.pricePerCompletionToken == null) return null;
-    return usage.promptTokens * caps.pricePerPromptToken + usage.completionTokens * caps.pricePerCompletionToken;
+    // Cached input at the catalog's own cache rates, when it lists them;
+    // otherwise those tokens stay in with the rest at the plain prompt rate.
+    const cacheRead = caps.pricePerCacheReadToken != null ? (usage.cacheReadTokens ?? 0) : 0;
+    const cacheWrite = caps.pricePerCacheWriteToken != null ? (usage.cacheWriteTokens ?? 0) : 0;
+    const uncached = Math.max(usage.promptTokens - cacheRead - cacheWrite, 0);
+    return (
+      uncached * caps.pricePerPromptToken +
+      cacheRead * (caps.pricePerCacheReadToken ?? 0) +
+      cacheWrite * (caps.pricePerCacheWriteToken ?? 0) +
+      usage.completionTokens * caps.pricePerCompletionToken
+    );
   }
   const rate = getAnthropicPricing()[modelId];
   if (!rate) return null;

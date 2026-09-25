@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { resetChunkVectorCache } from "@/lib/retrieval";
 
 // Every table the suite writes to, child-first so foreign keys never block a
 // delete. Tests share one database per file, so this is what keeps them
@@ -38,4 +39,6 @@ export function resetDb() {
   db.pragma("foreign_keys = OFF");
   for (const table of TABLES) db.prepare(`DELETE FROM ${table}`).run();
   db.pragma("foreign_keys = ON");
+  // Emptied on this same connection, which data_version doesn't register.
+  resetChunkVectorCache();
 }
