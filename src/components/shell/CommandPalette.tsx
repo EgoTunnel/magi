@@ -1,11 +1,16 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { startNewConversation } from "@/lib/newConversation";
 import { IconSearch } from "@/components/icons";
 import type { SearchResult } from "@/lib/searchIndex";
 
+// An href starting "action:" runs something instead of navigating — see go().
+const NEW_CONVERSATION = "action:new-conversation";
+
 const STATIC_COMMANDS = [
+  { title: "New conversation", href: NEW_CONVERSATION, hint: "Create · Ctrl+Shift+O" },
   { title: "Home", href: "/", hint: "Workspace" },
   { title: "Projects", href: "/projects", hint: "Workspace" },
   { title: "New Project", href: "/projects?new=1", hint: "Create" },
@@ -63,6 +68,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+  const pathname = usePathname();
+
+  function go(href: string) {
+    if (href === NEW_CONVERSATION) void startNewConversation(router, pathname);
+    else router.push(href);
+    onClose();
+  }
 
   useEffect(() => {
     if (open) {
@@ -125,15 +137,13 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       }
       if (e.key === "Enter") {
         const item = items[index];
-        if (item) {
-          router.push(item.href);
-          onClose();
-        }
+        if (item) go(item.href);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, items, index, onClose, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- go() only closes over what's listed
+  }, [open, items, index, onClose, router, pathname]);
 
   if (!open) return null;
 
@@ -168,10 +178,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           {items.map((item, i) => (
             <button
               key={`${item.type}-${item.href}-${i}`}
-              onClick={() => {
-                router.push(item.href);
-                onClose();
-              }}
+              onClick={() => go(item.href)}
               onMouseEnter={() => setIndex(i)}
               className="flex w-full flex-col items-start gap-0.5 px-4 py-2 text-left transition-colors"
               style={{

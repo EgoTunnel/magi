@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ChatCompletionTool } from "openai/resources/chat/completions";
+import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import { getOpenRouterApiKey, getTavilyApiKey, getSetting, setSetting } from "@/lib/settings";
 import type {
   CompleteOptions,
@@ -8,6 +8,7 @@ import type {
   ModelProvider,
   ReasoningEffort,
   StreamEvent,
+  TokenUsage,
 } from "@/lib/models/types";
 import { REASONING_EFFORTS } from "@/lib/models/types";
 // Type-only: embeddings.ts imports this module's functions at runtime, so a
@@ -17,6 +18,7 @@ import {
   DEFAULT_MAX_TOOL_ITERATIONS,
   embedViaOpenAI,
   extractText,
+  reasoningOf,
   resolveToolCalls,
   toOpenAITools,
   toWorkingMessages,
@@ -45,7 +47,7 @@ interface OpenRouterModelEntry {
   id: string;
   name?: string;
   context_length?: number;
-  pricing?: { prompt?: string; completion?: string };
+  pricing?: { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string };
   architecture?: { input_modalities?: string[]; output_modalities?: string[] };
   supported_parameters?: string[];
   reasoning?: { mandatory?: boolean; supported_efforts?: string[] };
@@ -127,6 +129,8 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
     const supported = m.supported_parameters ?? [];
     const promptPrice = m.pricing?.prompt ? parseFloat(m.pricing.prompt) : NaN;
     const completionPrice = m.pricing?.completion ? parseFloat(m.pricing.completion) : NaN;
+    const cacheReadPrice = m.pricing?.input_cache_read ? parseFloat(m.pricing.input_cache_read) : NaN;
+    const cacheWritePrice = m.pricing?.input_cache_write ? parseFloat(m.pricing.input_cache_write) : NaN;
     capabilities[m.id] = {
       supportsTools: supported.includes("tools"),
       reasoningMandatory: !!m.reasoning?.mandatory,
@@ -136,6 +140,8 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
       maxCompletionTokens: m.top_provider?.max_completion_tokens ?? null,
       pricePerPromptToken: Number.isNaN(promptPrice) ? null : promptPrice,
       pricePerCompletionToken: Number.isNaN(completionPrice) ? null : completionPrice,
+      pricePerCacheReadToken: Number.isNaN(cacheReadPrice) ? null : cacheReadPrice,
+      pricePerCacheWriteToken: Number.isNaN(cacheWritePrice) ? null : cacheWritePrice,
     };
   }
   setSetting(CAPABILITIES_CACHE_KEY, JSON.stringify(capabilities));
@@ -335,6 +341,64 @@ function requestExtras(opts: CompleteOptions): {
   return { tools, reasoning, maxTokens, plugins };
 }
 
+// Prompt caching through OpenRouter. OpenAI, DeepSeek, Grok and most others
+// cache a repeated prefix automatically; Anthropic's models (and Gemini's
+// explicit cache) only cache what a request marks, exactly as when calling
+// Anthropic directly — so a Claude model reached through OpenRouter used to
+// reprocess the whole conversation on every turn. Same threshold and the same
+// two breakpoints as the direct adapter (see anthropic.ts): the end of the
+// system prompt, and the last message before the live one.
+const CACHE_MIN_CHARS = 9000;
+const EXPLICIT_CACHE_PREFIXES = ["anthropic/", "google/gemini"];
+
+export function needsExplicitCacheMarks(modelId: string): boolean {
+  return EXPLICIT_CACHE_PREFIXES.some((p) => modelId.startsWith(p));
+}
+
+function textLength(content: ChatCompletionMessageParam["content"]): number {
+  if (typeof content === "string") return content.length;
+  if (!Array.isArray(content)) return 0;
+  return content.reduce((n, part) => n + (part.type === "text" ? part.text.length : 0), 0);
+}
+
+function markOpenAIBreakpoint(message: ChatCompletionMessageParam) {
+  const cacheControl = { type: "ephemeral" as const };
+  if (typeof message.content === "string") {
+    if (!message.content) return;
+    // cache_control isn't in the OpenAI SDK's types; OpenRouter passes it through.
+    (message as { content: unknown }).content = [{ type: "text", text: message.content, cache_control: cacheControl }];
+    return;
+  }
+  if (!Array.isArray(message.content)) return;
+  const textParts = message.content.filter((part) => part.type === "text");
+  const last = textParts[textParts.length - 1];
+  if (last) Object.assign(last, { cache_control: cacheControl });
+}
+
+// In place, on a freshly built working list — so the marks sit on the stable
+// prefix and survive tool results being appended after it.
+export function markOpenRouterCacheBreakpoints(working: ChatCompletionMessageParam[], modelId: string) {
+  if (!needsExplicitCacheMarks(modelId)) return;
+  const system = working[0]?.role === "system" ? working[0] : null;
+  if (system && textLength(system.content) >= CACHE_MIN_CHARS) markOpenAIBreakpoint(system);
+  const prefix = working.slice(system ? 1 : 0, -1);
+  if (prefix.length && prefix.reduce((n, m) => n + textLength(m.content), 0) >= CACHE_MIN_CHARS) {
+    markOpenAIBreakpoint(prefix[prefix.length - 1]);
+  }
+}
+
+// OpenRouter reports cache hits (and, for providers that bill for it, cache
+// writes) under prompt_tokens_details, normalized across providers.
+export function openRouterUsage(usage: OpenAI.CompletionUsage): TokenUsage {
+  const details = usage.prompt_tokens_details as { cached_tokens?: number; cache_write_tokens?: number } | undefined;
+  return {
+    promptTokens: usage.prompt_tokens,
+    completionTokens: usage.completion_tokens,
+    ...(details?.cached_tokens ? { cacheReadTokens: details.cached_tokens } : {}),
+    ...(details?.cache_write_tokens ? { cacheWriteTokens: details.cache_write_tokens } : {}),
+  };
+}
+
 export const openRouterProvider: ModelProvider = {
   id: "openrouter",
   label: "OpenRouter",
@@ -361,7 +425,7 @@ export const openRouterProvider: ModelProvider = {
       // Every iteration is a real, separately-billed API call — including tool-use
       // round trips — so usage is recorded here, not just on the final answer.
       if (res.usage) {
-        opts.usage?.push({ promptTokens: res.usage.prompt_tokens, completionTokens: res.usage.completion_tokens });
+        opts.usage?.push(openRouterUsage(res.usage));
       }
       const choice = res.choices[0];
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {
@@ -378,6 +442,9 @@ export const openRouterProvider: ModelProvider = {
     const c = client();
     const { tools, reasoning, maxTokens, plugins } = requestExtras(opts);
     const working = toWorkingMessages(opts);
+    // Conversation turns only reach stream() — the workload that resends the
+    // same long prefix every time. See markOpenRouterCacheBreakpoints.
+    markOpenRouterCacheBreakpoints(working, opts.model);
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const stream = c.chat.completions.stream(
@@ -396,6 +463,8 @@ export const openRouterProvider: ModelProvider = {
       );
       let emitted = "";
       for await (const chunk of stream) {
+        const reasoningDelta = reasoningOf(chunk.choices[0]?.delta);
+        if (reasoningDelta) yield { type: "reasoning", text: reasoningDelta } satisfies StreamEvent;
         const delta = chunk.choices[0]?.delta?.content;
         if (delta) {
           emitted += delta;
@@ -405,7 +474,7 @@ export const openRouterProvider: ModelProvider = {
 
       const final = await stream.finalChatCompletion();
       if (final.usage) {
-        opts.usage?.push({ promptTokens: final.usage.prompt_tokens, completionTokens: final.usage.completion_tokens });
+        opts.usage?.push(openRouterUsage(final.usage));
       }
       const choice = final.choices[0];
       if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length) {

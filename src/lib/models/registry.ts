@@ -2,7 +2,8 @@ import { db } from "@/lib/db";
 import { anthropicProvider } from "@/lib/models/anthropic";
 import { openRouterProvider, getOpenRouterCapabilities } from "@/lib/models/openrouter";
 import { chutesProvider } from "@/lib/models/chutes";
-import type { ModelInfo, ModelProvider, ModelRoleId, ReasoningEffort, TokenUsage } from "@/lib/models/types";
+import type { ModelInfo, ModelProvider, ModelRoleId, ReasoningEffort, TokenUsage, UsageProviderId } from "@/lib/models/types";
+import { isJudgmentConfigured, judge, JUDGMENT_PROVIDER } from "@/lib/models/judgment";
 import { MODEL_ROLES, DEFAULT_ROLE_REASONING_EFFORT } from "@/lib/models/types";
 
 // Every provider Magi knows about. Adding a new provider means writing one
@@ -138,16 +139,73 @@ export function isAnyProviderConfigured(): boolean {
   return PROVIDERS.some((p) => p.isConfigured());
 }
 
+// What each role is for, from the router's point of view. One list, read by
+// both classifiers below, so the chat-model prompt and the Jev question can't
+// disagree about what a role means.
+const ROLE_ROUTING: Record<ModelRoleId, string> = {
+  default: "general conversation, no strong fit for the categories below",
+  reasoner: "careful multi-step reasoning, math, logic, planning",
+  writer: "drafting or revising prose, creative writing",
+  critic: "skeptical review, critique, red-teaming something",
+  researcher: "investigation, finding or synthesizing information",
+  synthesizer: "reconciling multiple viewpoints or sources into one answer",
+  fast: "a quick, simple, low-effort question",
+};
+
 const CLASSIFIER_SYSTEM_PROMPT =
   "Classify the task below into exactly one category. Reply with only the category id, nothing else — " +
   "no punctuation, no explanation.\n\n" +
-  "default: general conversation, no strong fit for the categories below\n" +
-  "reasoner: careful multi-step reasoning, math, logic, planning\n" +
-  "writer: drafting or revising prose, creative writing\n" +
-  "critic: skeptical review, critique, red-teaming something\n" +
-  "researcher: investigation, finding or synthesizing information\n" +
-  "synthesizer: reconciling multiple viewpoints or sources into one answer\n" +
-  "fast: a quick, simple, low-effort question";
+  Object.entries(ROLE_ROUTING)
+    .map(([id, description]) => `${id}: ${description}`)
+    .join("\n");
+
+// Below this, Jev isn't sure enough for its pick to override the default —
+// an ambiguous message is exactly the one "general conversation" suits.
+const AUTO_MIN_CONFIDENCE = 0.5;
+
+export interface RoleClassification {
+  role: ModelRoleId;
+  usage: TokenUsage[];
+  modelId: string;
+  providerId: UsageProviderId;
+  // How the role was decided: by Jev (with its confidence), by asking the
+  // fast chat model, or not at all (nothing configured, or both failed).
+  decidedBy: "jev" | "model" | "fallback";
+  confidence?: number;
+}
+
+// The Jev path: one typed choice over the roles, answered in well under a
+// second, with a calibrated confidence — where the chat-model path below
+// spends a whole generation and then searches the reply for a role's name.
+// Returns null on any failure, so the caller can fall through to that path.
+async function classifyWithJudgment(text: string): Promise<RoleClassification | null> {
+  if (!isJudgmentConfigured()) return null;
+  try {
+    const { answers, usage, modelId } = await judge({
+      state: text.slice(0, 2000),
+      questions: {
+        role: {
+          type: "choice",
+          instructions: "Which kind of assistant is best suited to respond to this message?",
+          criteria: ROLE_ROUTING,
+        },
+      },
+    });
+    const { choice, confidence } = answers.role;
+    const confident = confidence >= AUTO_MIN_CONFIDENCE;
+    return {
+      role: confident ? (choice as ModelRoleId) : "default",
+      usage,
+      modelId,
+      providerId: JUDGMENT_PROVIDER,
+      decidedBy: "jev",
+      confidence,
+    };
+  } catch (err) {
+    console.error("[registry] Jev role classification failed; using the chat model", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
 
 // "Automatic model selection" (Product Vision §29), scoped to conversations —
 // Agent pipeline stages and Council roles already get task-appropriate
@@ -157,17 +215,21 @@ const CLASSIFIER_SYSTEM_PROMPT =
 // rest of this codebase makes judgment calls (Skill/Council selection,
 // memory promotion) — never a pattern-matching stand-in for one.
 //
+// Jev first when a TypeSafe key is set (classifyWithJudgment above); the fast
+// chat model otherwise, or when Jev fails.
+//
 // Must never be able to break a conversation turn: any failure (bad reply,
 // no API key, network error) falls back to "default" rather than throwing.
-export async function classifyModelRole(
-  text: string
-): Promise<{ role: ModelRoleId; usage: TokenUsage[]; modelId: string; providerId: "anthropic" | "openrouter" | "chutes" }> {
+export async function classifyModelRole(text: string): Promise<RoleClassification> {
+  const judged = await classifyWithJudgment(text);
+  if (judged) return judged;
+
   const modelId = modelForRole("fast");
   const resolved = getModel(modelId);
   const providerId = (resolved?.provider.id as "anthropic" | "openrouter" | "chutes" | undefined) ?? "anthropic";
   const usage: TokenUsage[] = [];
   if (!resolved || !resolved.provider.isConfigured()) {
-    return { role: "default", usage, modelId, providerId };
+    return { role: "default", usage, modelId, providerId, decidedBy: "fallback" };
   }
   try {
     const reply = await resolved.provider.complete({
@@ -196,9 +258,9 @@ export async function classifyModelRole(
     // in the reply.
     const lower = reply.toLowerCase();
     const role = MODEL_ROLES.find((r) => new RegExp(`\\b${r.id}\\b`).test(lower))?.id;
-    return { role: role ?? "default", usage, modelId, providerId };
+    return { role: role ?? "default", usage, modelId, providerId, decidedBy: role ? "model" : "fallback" };
   } catch {
-    return { role: "default", usage, modelId, providerId };
+    return { role: "default", usage, modelId, providerId, decidedBy: "fallback" };
   }
 }
 

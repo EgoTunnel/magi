@@ -24,10 +24,15 @@ abstraction built to add more without touching the rest of the app.
 
 ```bash
 npm install
-npm run dev
+npm run build
+npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000). On first run, go to **Settings** and add an
+Open [http://localhost:3000](http://localhost:3000). `npm run dev` also works and is what you want
+while changing Magi's code, but it compiles each page on first visit and ships React's development
+build, so it is noticeably slower to use day to day. Rebuild after pulling new code. On Windows,
+`scripts/desktop/Install-Shortcut.ps1` creates a desktop shortcut that does this for you: it rebuilds
+only when the code has changed, starts the server, and opens Magi in its own window. On first run, go to **Settings** and add an
 API key for at least one provider — Magi needs one before it can think. Anthropic is a direct
 integration; OpenRouter is a one-stop shop for most other providers' models, with its catalog fetched
 live from OpenRouter's own API rather than hardcoded. Keys are stored locally in Magi's own SQLite
@@ -45,7 +50,7 @@ told it. On `localhost` that is exactly right. On a public host it means anyone 
 read your archive and spend your money.
 
 Because it is a Next.js app and deploying those is a reflex, Magi refuses any request that did not
-arrive on a loopback address (`src/middleware.ts`). If you genuinely want to run it on a home server
+arrive on a loopback address (`src/proxy.ts`). If you genuinely want to run it on a home server
 behind your own authentication, set `MAGI_ALLOW_REMOTE=1` — but that is a deliberate decision to make
 yourself, not a default.
 

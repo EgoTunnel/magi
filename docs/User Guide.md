@@ -14,10 +14,13 @@ provider you choose to call.
 
 ```bash
 npm install
-npm run dev
+npm run build
+npm start
 ```
 
-Open `http://localhost:3000`. The first thing you'll want is a model. Go to **Settings** and add an
+Open `http://localhost:3000`. (`npm run dev` works too, but it's the slower development server —
+meant for changing Magi, not using it. On Windows, the desktop shortcut from
+`scripts/desktop/Install-Shortcut.ps1` builds and starts Magi for you.) The first thing you'll want is a model. Go to **Settings** and add an
 API key for at least one provider:
 
 - **Anthropic** — a direct integration. One provider, its own models.
@@ -44,6 +47,10 @@ Home · Projects · Archive · Memory · People · Image Lab · Councils · Skil
 **⌘K** (or Ctrl+K) opens a command palette that searches across Projects, conversations, memory,
 documents, artifacts, Skills, Style Guides, Characters, and people — by wording, not just by title. The status
 bar at the bottom always shows where you are and which model is about to answer.
+
+**Ctrl+Shift+O** (⌘+Shift+O) starts a new conversation: in the current Project if you're inside one,
+otherwise it takes you Home. Home has a message box of its own — pick a Project, type, and send; the
+conversation is created with your first message, so an abandoned draft leaves nothing behind.
 
 ---
 
@@ -106,9 +113,14 @@ Open one from inside a Project. Two dropdowns sit above the message box:
   a small, cheap model to classify the task first (a real model call, not a keyword guess) and picks
   the best-fit role for you — it's opt-in, not the default, since it adds one extra round-trip and a
   small extra cost to every turn that uses it (both are visible in Settings → Usage & cost, logged
-  under role "classifier").
+  under role "classifier"). With a TypeSafe key in Settings, Jev makes that choice instead — typically
+  in a fraction of a second, for a fraction of a cent per thousand messages.
 
-Type and send. Responses stream in. The model can search your archive or do arithmetic mid-answer —
+Type and send. Responses stream in, formatted as they arrive. While Magi gathers context you'll see
+what it's doing ("reading your Project…"), and a model that reasons before answering shows its
+thinking faintly as it goes — folded away under **Reasoning** once the answer starts, and not kept
+afterwards. Stop keeps whatever had already been written. The model can search your archive or do
+arithmetic mid-answer —
 click **Context** in the top right to see exactly what a given reply drew on: which Project
 instructions applied, how much memory was in play, which tools it actually called, and — on an Auto
 turn — which role got picked.
@@ -413,6 +425,12 @@ The Projects never merge. Only the connection between them becomes visible, and 
   Councils, and Connections. Below that, the cross-Project search toggle: whether `search_archive` may
   look beyond the current Project. Skills and individual Agent runs can narrow these further for
   themselves, but never turn something back on that's off here.
+- **TypeSafe (Jev)** — optional. Jev is a "System One" model: it doesn't write text, it answers typed
+  questions (yes/no, pick one of these, rate on this scale) in well under a second, with a confidence
+  for each answer. With a key set, **Auto** in a conversation is decided by Jev instead of by an extra
+  call to your Fast model — quick and cheap enough to leave on. If Jev is less than 50% sure, the turn
+  stays on Default; if Jev fails, Magi asks the Fast model as before. The Context panel shows which
+  one decided and how confident it was. The text of your message is sent to TypeSafe AI to decide.
 - **Semantic search** — requires an OpenRouter key (Anthropic has no embeddings API). Pick an embedding
   model, then click **Build index** once to cover everything already in your archive — new and edited
   content is embedded automatically from then on. Switching the embedding model later doesn't delete

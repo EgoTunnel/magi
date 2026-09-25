@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type Anthropic from "@anthropic-ai/sdk";
 import { contentLength, markCacheBreakpoint, systemParam, usageOf } from "@/lib/models/anthropic";
 import { estimateCost, setAnthropicPricing } from "@/lib/models/pricing";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import { markOpenRouterCacheBreakpoints, openRouterUsage } from "@/lib/models/openrouter";
+import { setSetting } from "@/lib/settings";
 import { resetDb } from "../helpers/reset";
 
 const usage = (fields: Partial<Anthropic.Usage>): Anthropic.Usage =>
@@ -98,5 +101,92 @@ describe("cached token accounting", () => {
       0.018,
       6
     );
+  });
+});
+
+describe("prompt caching through OpenRouter", () => {
+  const long = "x".repeat(20000);
+  const conversation = (): ChatCompletionMessageParam[] => [
+    { role: "system", content: long },
+    { role: "user", content: long },
+    { role: "assistant", content: "An earlier answer." },
+    { role: "user", content: "The live question." },
+  ];
+
+  it("marks the system prompt and the end of the history for a Claude model", () => {
+    const working = conversation();
+    markOpenRouterCacheBreakpoints(working, "anthropic/claude-sonnet-5");
+    expect(working[0].content).toEqual([{ type: "text", text: long, cache_control: { type: "ephemeral" } }]);
+    expect(working[2].content).toEqual([
+      { type: "text", text: "An earlier answer.", cache_control: { type: "ephemeral" } },
+    ]);
+    // The live message changes every turn; marking it would only ever miss.
+    expect(working[3].content).toBe("The live question.");
+    expect(working[1].content).toBe(long);
+  });
+
+  it("leaves models that cache on their own untouched", () => {
+    const working = conversation();
+    markOpenRouterCacheBreakpoints(working, "deepseek/deepseek-v4-pro");
+    expect(working).toEqual(conversation());
+  });
+
+  it("leaves a conversation too short to be worth caching unmarked", () => {
+    const working: ChatCompletionMessageParam[] = [
+      { role: "system", content: "Short." },
+      { role: "user", content: "Hi" },
+      { role: "assistant", content: "Hello" },
+      { role: "user", content: "Now what?" },
+    ];
+    markOpenRouterCacheBreakpoints(working, "anthropic/claude-sonnet-5");
+    expect(working[0].content).toBe("Short.");
+    expect(working[2].content).toBe("Hello");
+  });
+
+  it("reports cache hits and writes from OpenRouter's usage", () => {
+    expect(
+      openRouterUsage({
+        prompt_tokens: 5000,
+        completion_tokens: 40,
+        total_tokens: 5040,
+        prompt_tokens_details: { cached_tokens: 4500, cache_write_tokens: 0 } as never,
+      })
+    ).toEqual({ promptTokens: 5000, completionTokens: 40, cacheReadTokens: 4500 });
+    expect(openRouterUsage({ prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 })).toEqual({
+      promptTokens: 10,
+      completionTokens: 2,
+    });
+  });
+
+  it("prices cached input at the catalog's cache rate when it lists one", () => {
+    resetDb();
+    setSetting(
+      "openrouter_capabilities_cache",
+      JSON.stringify({
+        "anthropic/claude-sonnet-5": {
+          supportsTools: true,
+          reasoningMandatory: false,
+          reasoningEfforts: [],
+          maxCompletionTokens: null,
+          pricePerPromptToken: 0.000003,
+          pricePerCompletionToken: 0.000015,
+          pricePerCacheReadToken: 0.0000003,
+          pricePerCacheWriteToken: 0.00000375,
+        },
+        "old/model": {
+          supportsTools: true,
+          reasoningMandatory: false,
+          reasoningEfforts: [],
+          maxCompletionTokens: null,
+          pricePerPromptToken: 0.000003,
+          pricePerCompletionToken: 0.000015,
+        },
+      })
+    );
+    const usageWithHit = { promptTokens: 10000, completionTokens: 0, cacheReadTokens: 10000 };
+    expect(estimateCost("openrouter", "anthropic/claude-sonnet-5", usageWithHit)).toBeCloseTo(0.003, 6);
+    // A capabilities cache from before cache rates were read prices it all
+    // at the plain rate, as before.
+    expect(estimateCost("openrouter", "old/model", usageWithHit)).toBeCloseTo(0.03, 6);
   });
 });

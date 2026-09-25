@@ -122,6 +122,9 @@ export interface ContextProvenance {
   // Set only when the turn used "Auto" model selection — which real role the
   // classifier picked (see classifyModelRole in src/lib/models/registry.ts).
   autoSelectedRole?: string;
+  // How that role was picked — Jev with its confidence, the fast chat model,
+  // or a fallback to Default when neither could decide.
+  autoSelection?: { decidedBy: "jev" | "model" | "fallback"; confidence?: number };
 }
 
 // Starts the retrieval a turn needs without waiting for it. Retrieval is two

@@ -21,7 +21,7 @@ function hostnameOf(host: string): string {
   return host.split(":")[0]!.toLowerCase();
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   if (process.env.MAGI_ALLOW_REMOTE === "1") return NextResponse.next();
 
   const host = request.headers.get("host");

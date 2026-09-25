@@ -1,7 +1,12 @@
 import { getSetting, setSetting } from "@/lib/settings";
 import { getOpenRouterCapabilities } from "@/lib/models/openrouter";
 import { getChutesCapabilities } from "@/lib/models/chutes";
-import type { TokenUsage } from "@/lib/models/types";
+import type { TokenUsage, UsageProviderId } from "@/lib/models/types";
+
+// TypeSafe (Jev) bills input only — output is free. Its published early-access
+// rate; there is no pricing endpoint to read it from. Estimates only, like
+// every other number on the Usage page.
+const TYPESAFE_DOLLARS_PER_INPUT_TOKEN = 0.042 / 1_000_000;
 
 const ANTHROPIC_PRICING_KEY = "anthropic_pricing";
 
@@ -29,17 +34,28 @@ export function setAnthropicPricing(pricing: Record<string, AnthropicModelPrice>
 
 // Returns null whenever the rate isn't known, rather than fabricating a cost.
 export function estimateCost(
-  provider: "anthropic" | "openrouter" | "chutes",
+  provider: UsageProviderId,
   modelId: string,
   usage: TokenUsage
 ): number | null {
+  if (provider === "typesafe") return usage.promptTokens * TYPESAFE_DOLLARS_PER_INPUT_TOKEN;
   if (provider === "openrouter" || provider === "chutes") {
     const caps = provider === "openrouter" ? getOpenRouterCapabilities(modelId) : getChutesCapabilities(modelId);
     // Loose nullish checks on purpose: a capabilities cache written before
     // these fields existed has them simply absent (undefined), not null —
     // both mean "unknown," never treat either as zero.
     if (!caps || caps.pricePerPromptToken == null || caps.pricePerCompletionToken == null) return null;
-    return usage.promptTokens * caps.pricePerPromptToken + usage.completionTokens * caps.pricePerCompletionToken;
+    // Cached input at the catalog's own cache rates, when it lists them;
+    // otherwise those tokens stay in with the rest at the plain prompt rate.
+    const cacheRead = caps.pricePerCacheReadToken != null ? (usage.cacheReadTokens ?? 0) : 0;
+    const cacheWrite = caps.pricePerCacheWriteToken != null ? (usage.cacheWriteTokens ?? 0) : 0;
+    const uncached = Math.max(usage.promptTokens - cacheRead - cacheWrite, 0);
+    return (
+      uncached * caps.pricePerPromptToken +
+      cacheRead * (caps.pricePerCacheReadToken ?? 0) +
+      cacheWrite * (caps.pricePerCacheWriteToken ?? 0) +
+      usage.completionTokens * caps.pricePerCompletionToken
+    );
   }
   const rate = getAnthropicPricing()[modelId];
   if (!rate) return null;
