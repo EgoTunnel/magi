@@ -16,6 +16,7 @@ import { isAnyProviderConfigured } from "@/lib/models/registry";
 import { refreshOpenRouterModels, getCachedOpenRouterModels } from "@/lib/models/openrouter";
 import { refreshChutesModels, getCachedChutesModels } from "@/lib/models/chutes";
 import { TOOL_SPECS } from "@/lib/tools/registry";
+import { judgmentModelId } from "@/lib/models/judgment";
 
 function preview(key: string | null): string | null {
   return key ? `${"•".repeat(Math.max(key.length - 4, 0))}${key.slice(-4)}` : null;
@@ -26,6 +27,7 @@ export async function GET() {
   const openRouterKey = getSetting("openrouter_api_key");
   const chutesKey = getSetting("chutes_api_key");
   const tavilyKey = getSetting("tavily_api_key");
+  const typesafeKey = getSetting("typesafe_api_key");
   const { models, fetchedAt } = getCachedOpenRouterModels();
   const { models: chutesModels, fetchedAt: chutesFetchedAt } = getCachedChutesModels();
   return NextResponse.json({
@@ -37,6 +39,9 @@ export async function GET() {
     chutesKeyPreview: preview(chutesKey),
     tavilyKeySet: !!tavilyKey || !!process.env.TAVILY_API_KEY,
     tavilyKeyPreview: preview(tavilyKey),
+    typesafeKeySet: !!typesafeKey || !!process.env.TYPESAFE_API_KEY,
+    typesafeKeyPreview: preview(typesafeKey),
+    typesafeModel: judgmentModelId(),
     openRouterModelCount: models.length,
     openRouterModelsFetchedAt: fetchedAt,
     chutesModelCount: chutesModels.length,
@@ -96,6 +101,14 @@ export async function POST(req: NextRequest) {
       setSetting("tavily_api_key", body.tavilyApiKey.trim());
     } else {
       deleteSetting("tavily_api_key");
+    }
+  }
+
+  if (typeof body.typesafeApiKey === "string") {
+    if (body.typesafeApiKey.trim()) {
+      setSetting("typesafe_api_key", body.typesafeApiKey.trim());
+    } else {
+      deleteSetting("typesafe_api_key");
     }
   }
 

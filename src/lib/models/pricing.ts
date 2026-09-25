@@ -1,7 +1,12 @@
 import { getSetting, setSetting } from "@/lib/settings";
 import { getOpenRouterCapabilities } from "@/lib/models/openrouter";
 import { getChutesCapabilities } from "@/lib/models/chutes";
-import type { TokenUsage } from "@/lib/models/types";
+import type { TokenUsage, UsageProviderId } from "@/lib/models/types";
+
+// TypeSafe (Jev) bills input only — output is free. Its published early-access
+// rate; there is no pricing endpoint to read it from. Estimates only, like
+// every other number on the Usage page.
+const TYPESAFE_DOLLARS_PER_INPUT_TOKEN = 0.042 / 1_000_000;
 
 const ANTHROPIC_PRICING_KEY = "anthropic_pricing";
 
@@ -29,10 +34,11 @@ export function setAnthropicPricing(pricing: Record<string, AnthropicModelPrice>
 
 // Returns null whenever the rate isn't known, rather than fabricating a cost.
 export function estimateCost(
-  provider: "anthropic" | "openrouter" | "chutes",
+  provider: UsageProviderId,
   modelId: string,
   usage: TokenUsage
 ): number | null {
+  if (provider === "typesafe") return usage.promptTokens * TYPESAFE_DOLLARS_PER_INPUT_TOKEN;
   if (provider === "openrouter" || provider === "chutes") {
     const caps = provider === "openrouter" ? getOpenRouterCapabilities(modelId) : getChutesCapabilities(modelId);
     // Loose nullish checks on purpose: a capabilities cache written before

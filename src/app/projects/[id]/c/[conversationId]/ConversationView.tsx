@@ -853,6 +853,24 @@ export function ConversationView({
                 {provenance.autoSelectedRole && (
                   <div>
                     Auto-selected: {roles.find((r) => r.id === provenance.autoSelectedRole)?.label ?? provenance.autoSelectedRole}
+                    {provenance.autoSelection && (
+                      <div className="text-[11.5px] text-[var(--color-text-faint)]">
+                        {provenance.autoSelection.decidedBy === "jev"
+                          ? `by Jev${
+                              provenance.autoSelection.confidence !== undefined
+                                ? `, ${Math.round(provenance.autoSelection.confidence * 100)}% confident`
+                                : ""
+                            }${
+                              provenance.autoSelectedRole === "default" &&
+                              (provenance.autoSelection.confidence ?? 1) < 0.5
+                                ? " — too unsure to override Default"
+                                : ""
+                            }`
+                          : provenance.autoSelection.decidedBy === "model"
+                            ? "by the Fast model"
+                            : "couldn't classify — used Default"}
+                      </div>
+                    )}
                   </div>
                 )}
                 {provenance.usage && (

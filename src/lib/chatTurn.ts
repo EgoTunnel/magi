@@ -4,7 +4,16 @@ import { addMessage, type Message } from "@/lib/repo/conversations";
 import { buildSystemPrompt, type ContextProvenance } from "@/lib/contextBuilder";
 import type { RetrievedChunk } from "@/lib/retrieval";
 import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
-import type { ModelInfo, ModelMessage, ModelProvider, ModelRoleId, StreamEvent, TokenUsage, ToolCallRecord } from "@/lib/models/types";
+import type {
+  ModelInfo,
+  ModelMessage,
+  ModelProvider,
+  ModelRoleId,
+  StreamEvent,
+  TokenUsage,
+  ToolCallRecord,
+  UsageProviderId,
+} from "@/lib/models/types";
 import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
 import { estimateCost } from "@/lib/models/pricing";
@@ -23,9 +32,11 @@ export interface ResolvedTurnModel {
   modelId: string;
   resolved: { provider: ModelProvider; model: ModelInfo };
   autoSelectedRole?: string;
+  // How Auto decided, and how sure it was — shown in the Context panel.
+  autoSelection?: { decidedBy: "jev" | "model" | "fallback"; confidence?: number };
   classifierUsage: TokenUsage[];
   classifierModelId: string;
-  classifierProviderId: "anthropic" | "openrouter" | "chutes";
+  classifierProviderId: UsageProviderId;
 }
 
 // Picks the model for this turn (resolving "auto" via the classifier) and
@@ -45,7 +56,8 @@ export async function resolveTurnModel(
   let autoSelectedRole: string | undefined;
   let classifierUsage: TokenUsage[] = [];
   let classifierModelId = "";
-  let classifierProviderId: "anthropic" | "openrouter" | "chutes" = "anthropic";
+  let classifierProviderId: UsageProviderId = "anthropic";
+  let autoSelection: ResolvedTurnModel["autoSelection"];
   if (requestedRole === "auto") {
     const classified = await classifyModelRole(classifierText);
     modelRole = classified.role;
@@ -53,6 +65,7 @@ export async function resolveTurnModel(
     classifierUsage = classified.usage;
     classifierModelId = classified.modelId;
     classifierProviderId = classified.providerId;
+    autoSelection = { decidedBy: classified.decidedBy, confidence: classified.confidence };
   } else if (requestedRole === "default") {
     // Only when the user left the composer alone. An explicitly picked role,
     // and a classifier's answer on an Auto turn, both outrank the Skill —
@@ -78,7 +91,16 @@ export async function resolveTurnModel(
 
   return {
     ok: true,
-    value: { modelRole, modelId, resolved, autoSelectedRole, classifierUsage, classifierModelId, classifierProviderId },
+    value: {
+      modelRole,
+      modelId,
+      resolved,
+      autoSelectedRole,
+      autoSelection,
+      classifierUsage,
+      classifierModelId,
+      classifierProviderId,
+    },
   };
 }
 
@@ -157,8 +179,16 @@ export async function runChatTurn(opts: {
   parentId: string | null;
 }): Promise<Response> {
   const { conversationId, projectId, turnModel } = opts;
-  const { modelRole, modelId, resolved, autoSelectedRole, classifierUsage, classifierModelId, classifierProviderId } =
-    turnModel;
+  const {
+    modelRole,
+    modelId,
+    resolved,
+    autoSelectedRole,
+    autoSelection,
+    classifierUsage,
+    classifierModelId,
+    classifierProviderId,
+  } = turnModel;
 
   const lastUser = [...opts.history].reverse().find((m) => m.role === "user");
   const query =
@@ -222,6 +252,7 @@ export async function runChatTurn(opts: {
       ...provenance,
       toolCalls: toolLog,
       autoSelectedRole,
+      autoSelection,
       usage: usage.length
         ? {
             promptTokens: totalPrompt,

@@ -1,7 +1,8 @@
-﻿import { afterEach, beforeEach, describe, expect, it } from "vitest";
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDb } from "../helpers/reset";
 import { installMockProvider, type MockProvider } from "../helpers/provider";
 import { db } from "@/lib/db";
+import { setSetting } from "@/lib/settings";
 import { createProject } from "@/lib/repo/projects";
 import { addMessage, createConversation, listMessages, type Message } from "@/lib/repo/conversations";
 import { createDocument } from "@/lib/repo/documents";
@@ -195,6 +196,47 @@ describe("context assembly", () => {
     // turn to the next for the provider's cache to hit it.
     expect(call.system).not.toContain("migration runs on Tuesday");
     expect(call.system).toContain("## Project: P");
+  });
+
+  it("routes an Auto turn through Jev when it's configured, and says so in the provenance", async () => {
+    setSetting("typesafe_api_key", "ts-test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ answers: { role: { choice: "reasoner", confidence: 0.9 } }, usage: { input_tokens: 25 } })
+      )
+    );
+    try {
+      const project = createProject({ name: "P" });
+      const conversation = createConversation(project.id, "Talk");
+      const asking = addMessage({ conversationId: conversation.id, role: "user", content: "Plan the migration in steps" });
+      mock.reply("Step one.");
+
+      const turnModel = await resolveTurnModel("auto", asking.content, null);
+      if (!turnModel.ok) throw new Error("model did not resolve");
+      expect(turnModel.value.modelRole).toBe("reasoner");
+      const response = await runChatTurn({
+        conversationId: conversation.id,
+        projectId: project.id,
+        history: [{ role: "user", content: asking.content }],
+        skillId: null,
+        turnModel: turnModel.value,
+        signal: new AbortController().signal,
+        parentId: asking.id,
+      });
+      await response.text();
+
+      const saved = listMessages(conversation.id).find((m) => m.role === "assistant");
+      const provenance = JSON.parse(saved!.provenance!);
+      expect(provenance.autoSelectedRole).toBe("reasoner");
+      expect(provenance.autoSelection).toEqual({ decidedBy: "jev", confidence: 0.9 });
+      const classifierRow = db
+        .prepare(`SELECT provider, model, prompt_tokens, completion_tokens FROM usage_events WHERE role = 'classifier'`)
+        .get();
+      expect(classifierRow).toEqual({ provider: "typesafe", model: "jev-latest", prompt_tokens: 25, completion_tokens: 0 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("streams a status line first and ends with the saved reply", async () => {

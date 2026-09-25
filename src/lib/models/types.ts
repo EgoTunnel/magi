@@ -56,6 +56,11 @@ export interface ModelCapabilities {
   pricePerCacheWriteToken?: number | null;
 }
 
+// Who a usage row is billed to: the chat providers, plus TypeSafe for the
+// typed judgment calls in judgment.ts (which has no ModelProvider — it doesn't
+// generate text).
+export type UsageProviderId = "anthropic" | "openrouter" | "chutes" | "typesafe";
+
 export interface TokenUsage {
   // Every input token the call was billed for, cached ones included — so this
   // stays comparable across a conversation whether or not the prefix was a

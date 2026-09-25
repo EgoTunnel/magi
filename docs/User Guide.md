@@ -113,7 +113,8 @@ Open one from inside a Project. Two dropdowns sit above the message box:
   a small, cheap model to classify the task first (a real model call, not a keyword guess) and picks
   the best-fit role for you — it's opt-in, not the default, since it adds one extra round-trip and a
   small extra cost to every turn that uses it (both are visible in Settings → Usage & cost, logged
-  under role "classifier").
+  under role "classifier"). With a TypeSafe key in Settings, Jev makes that choice instead — typically
+  in a fraction of a second, for a fraction of a cent per thousand messages.
 
 Type and send. Responses stream in, formatted as they arrive. While Magi gathers context you'll see
 what it's doing ("reading your Project…"), and a model that reasons before answering shows its
@@ -424,6 +425,12 @@ The Projects never merge. Only the connection between them becomes visible, and 
   Councils, and Connections. Below that, the cross-Project search toggle: whether `search_archive` may
   look beyond the current Project. Skills and individual Agent runs can narrow these further for
   themselves, but never turn something back on that's off here.
+- **TypeSafe (Jev)** — optional. Jev is a "System One" model: it doesn't write text, it answers typed
+  questions (yes/no, pick one of these, rate on this scale) in well under a second, with a confidence
+  for each answer. With a key set, **Auto** in a conversation is decided by Jev instead of by an extra
+  call to your Fast model — quick and cheap enough to leave on. If Jev is less than 50% sure, the turn
+  stays on Default; if Jev fails, Magi asks the Fast model as before. The Context panel shows which
+  one decided and how confident it was. The text of your message is sent to TypeSafe AI to decide.
 - **Semantic search** — requires an OpenRouter key (Anthropic has no embeddings API). Pick an embedding
   model, then click **Build index** once to cover everything already in your archive — new and edited
   content is embedded automatically from then on. Switching the embedding model later doesn't delete

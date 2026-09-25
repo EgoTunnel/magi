@@ -748,6 +748,21 @@ src/
     the OpenRouter adapter never did. `markOpenRouterCacheBreakpoints` applies the same two breakpoints as
     the direct Anthropic adapter; cached tokens are read from `prompt_tokens_details` and priced at the
     catalog's `input_cache_read`/`input_cache_write` rates when it lists them.
+  - **Jev judgment layer** (`src/lib/models/judgment.ts`). TypeSafe AI's Jev is a "System One" model:
+    typed questions in (`noul` yes/no, `choice`, `score`), typed answers out with calibrated
+    probabilities and a confidence, ~70–500ms, input-priced only. It is deliberately *not* a
+    `ModelProvider` — it doesn't generate text — but a separate `judge({ state, questions })` call.
+    Opt-in on a TypeSafe key (Settings, or `TYPESAFE_API_KEY`); usage is recorded under provider
+    `typesafe` and priced at the launch rate in `pricing.ts`. **Answers are validated against the
+    question, never trusted**: a choice outside the offered options, a probability outside 0–1, or a
+    missing answer is a `JudgmentError`, and every caller falls back to its chat-model path. The
+    response reader accepts several plausible field spellings because it was written from the launch
+    description, not the API reference (the docs host was unreachable from the build environment) —
+    if the real shape differs, `readAnswers` is the one place to change, and a mismatch fails closed.
+    First consumer: **Auto** (`classifyModelRole`) asks Jev a `choice` over `ROLE_ROUTING` and keeps
+    Default below 50% confidence; provenance records `autoSelection: { decidedBy, confidence }`, shown
+    in the Context panel. Next candidates: Council consensus (a `score`), a Decision Matrix mode,
+    whether a turn needs retrieval (replacing `worthEmbedding`), and "worth remembering?" suggestions.
   - **Starting a conversation**: a composer on Home (creates the conversation with the first message and
     hands it over via `lib/pendingSend.ts`), Ctrl/⌘+Shift+O and a palette entry (`lib/newConversation.ts`),
     and a **New** button in the conversation header.
