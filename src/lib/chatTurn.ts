@@ -5,6 +5,7 @@ import { judgeMemoryWorth } from "@/lib/memorySuggestions";
 import { buildSystemPrompt, type ContextProvenance } from "@/lib/contextBuilder";
 import type { RetrievedChunk } from "@/lib/retrieval";
 import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
+import { CHAT_REPLY_MAX_TOKENS } from "@/lib/models/types";
 import type {
   ModelInfo,
   ModelMessage,
@@ -329,6 +330,9 @@ export async function runChatTurn(opts: {
           model: modelId,
           system,
           messages,
+          // Room for a long answer (and a reasoning model's thinking); each
+          // provider clamps it to what the model can produce.
+          maxTokens: CHAT_REPLY_MAX_TOKENS,
           tools,
           onToolCall: (name, input) =>
             executeTool(name, input, {

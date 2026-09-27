@@ -69,7 +69,13 @@ you actually have when you open one: what's unresolved, what's settled, and what
 - **Open questions** and **Decisions** — closing a conversation proposes these, and they arrive tagged
   `PROPOSED` with **Keep** and discard beside them. You can also write either by hand with the **+**;
   anything you type yourself skips the proposal step, since writing it is already the deliberate part.
-  Resolve a question when it stops being open.
+  Resolve a question when it stops being open. A Council's conclusion can be recorded here too (see
+  Magi Council) — those carry a **from a Council** link back to the deliberation.
+
+  Kept decisions and open questions aren't just a list on this page: every conversation in the Project
+  sees them, as the Project's standing agreements and unresolved questions, so Magi builds on what's been
+  settled instead of relitigating it — and says so if something new seems to contradict a decision.
+  Proposals only join once you keep them. The Context panel counts how many were in play for a reply.
 - **Recent activity** — the last dozen things that happened here, of any kind, each a link. No single
   kind can flood it: an afternoon of image generation shows up as an afternoon of image generation, not
   as the entire history of the Project.
@@ -116,7 +122,9 @@ Open one from inside a Project. Two dropdowns sit above the message box:
   under role "classifier"). With a TypeSafe key in Settings, Jev makes that choice instead — typically
   in a fraction of a second, for a fraction of a cent per thousand messages.
 
-Type and send. Responses stream in, formatted as they arrive. While Magi gathers context you'll see
+Type and send. Responses stream in, formatted as they arrive, and can run long — a reply is allowed
+up to 64,000 tokens (less where the model's own limit is lower), so a long document or a reasoning
+model's thinking doesn't get cut off mid-sentence. While Magi gathers context you'll see
 what it's doing ("reading your Project…"), and a model that reasons before answering shows its
 thinking faintly as it goes — folded away under **Reasoning** once the answer starts, and not kept
 afterwards. Stop keeps whatever had already been written. The model can search your archive or do
@@ -384,6 +392,13 @@ Project's documents, and deliberates in the background — a card in the thread 
 you can keep talking meanwhile. When it's done, your question and the Council's conclusion (consensus,
 where it disagreed, and a link to the full deliberation) are added to the conversation, so what you
 say next builds on it.
+
+**Record a Council's conclusion as a decision.** On a finished deliberation that ran in a Project, **Record
+as a decision…** drafts the decision it reached as a sentence or two — plus, if the Council left
+something unresolved, an open question. Edit both, then **Record in** the Project: the decision is
+settled and the question open straight away, both linked back to the deliberation, and from then on
+part of every conversation there (see Where the work stands). A Council's answer in a conversation has
+a **Record as a decision** link that takes you straight there.
 
 You can also save a named Council configuration (custom roles, custom system prompts, each assigned a
 model role) to reuse later, instead of a default preset — any saved Council can be run through any of

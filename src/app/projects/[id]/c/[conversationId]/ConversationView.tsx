@@ -855,6 +855,12 @@ export function ConversationView({
                 <div>{provenance.usedBrandGuide ? "Brand Guide applied" : "No Brand Guide set"}</div>
                 <div>{provenance.globalMemoryCount} global memory item(s)</div>
                 <div>{provenance.projectMemoryCount} Project memory item(s)</div>
+                {(provenance.decisionsInContext ?? 0) + (provenance.openQuestionsInContext ?? 0) > 0 && (
+                  <div>
+                    {provenance.decisionsInContext ?? 0} settled decision(s), {provenance.openQuestionsInContext ?? 0} open
+                    question(s)
+                  </div>
+                )}
                 {provenance.peopleOnProject > 0 && (
                   <div>
                     {provenance.peopleOnProject} person/people named on this Project (names only — facts come from
@@ -1479,6 +1485,14 @@ function MessageBlock({
           >
             Save as artifact
           </button>
+          {isCouncilAnswer && parsedProvenance?.councilRunId && (
+            <Link
+              href={`/councils/runs/${parsedProvenance.councilRunId}#decision`}
+              className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
+            >
+              Record as a decision
+            </Link>
+          )}
           {conversationId && onCouncilStarted && (
             <button
               onClick={() => setAskingCouncil((v) => !v)}

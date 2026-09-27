@@ -54,7 +54,17 @@ export interface ModelCapabilities {
   // cost then falls back to pricing every prompt token at the plain rate.
   pricePerCacheReadToken?: number | null;
   pricePerCacheWriteToken?: number | null;
+  // The model's whole context window (prompt + output), where the catalog
+  // says. Optional for the same reason as the cache rates above.
+  contextLength?: number | null;
 }
+
+// What a conversation reply may run to. Replies stream, so a large ceiling
+// costs nothing unless it's used — and it has to be large: a reasoning
+// model's thinking counts against it too, and the old 4,096 cut long answers
+// (and long thoughts) off mid-sentence. Each provider clamps this to what the
+// model can actually produce.
+export const CHAT_REPLY_MAX_TOKENS = 64000;
 
 // Who a usage row is billed to: the chat providers, plus TypeSafe for the
 // typed judgment calls in judgment.ts (which has no ModelProvider — it doesn't

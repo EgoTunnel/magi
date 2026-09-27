@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Panel, Tag } from "@/components/ui";
+import Link from "next/link";
+import { Button, Panel, Tag, Textarea } from "@/components/ui";
 import { renderMarkdown } from "@/lib/markdownToReact";
 import { CouncilSpinner } from "@/components/CouncilSpinner";
 
@@ -225,8 +226,16 @@ const STATUS_LABEL: Record<CouncilRun["status"], string> = {
   error: "Error",
 };
 
+interface RecordedNote {
+  id: string;
+  kind: "decision" | "question";
+  content: string;
+}
+
 export function CouncilRunView({ runId }: { runId: string }) {
   const [run, setRun] = useState<CouncilRun | null>(null);
+  const [project, setProject] = useState<{ id: string; name: string } | null>(null);
+  const [notes, setNotes] = useState<RecordedNote[]>([]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   async function load() {
@@ -234,6 +243,8 @@ export function CouncilRunView({ runId }: { runId: string }) {
     if (!res.ok) return;
     const data = await res.json();
     setRun(data.run);
+    setProject(data.project ?? null);
+    setNotes(data.notes ?? []);
     if (data.run && data.run.status !== "running" && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
@@ -305,6 +316,13 @@ export function CouncilRunView({ runId }: { runId: string }) {
         </Panel>
       )}
 
+      {run.status === "complete" && (
+        // The anchor a Council answer in a conversation links to.
+        <div id="decision" className="scroll-mt-6">
+          <RecordDecision runId={run.id} project={project} notes={notes} onRecorded={setNotes} />
+        </div>
+      )}
+
       {STAGES.map((stage) => {
         const entries = run.transcript.filter((t) => t.stage === stage);
         if (entries.length === 0) return null;
@@ -352,5 +370,153 @@ export function CouncilRunView({ runId }: { runId: string }) {
         </Panel>
       )}
     </div>
+  );
+}
+
+// Recording the conclusion as what the Project has decided — drafted from the
+// synthesis, edited here, and kept as the Project's own decision (and, if the
+// Council left something unresolved, an open question). From then on it's in
+// "Where the work stands" and in every conversation's context in the Project.
+function RecordDecision({
+  runId,
+  project,
+  notes,
+  onRecorded,
+}: {
+  runId: string;
+  project: { id: string; name: string } | null;
+  notes: RecordedNote[];
+  onRecorded: (notes: RecordedNote[]) => void;
+}) {
+  const [draft, setDraft] = useState<{ decision: string; openQuestion: string } | null>(null);
+  const [includeQuestion, setIncludeQuestion] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function call(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(`/api/councils/runs/${runId}/decision`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      setError(data.error ?? "That didn't work.");
+      return null;
+    }
+    return data;
+  }
+
+  const heading = (
+    <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+      Decision
+    </div>
+  );
+
+  if (!project) {
+    return (
+      <Panel className="mb-8 px-5 py-4 text-[12.5px] text-[var(--color-text-muted)]">
+        {heading}
+        This deliberation wasn&apos;t run in a Project, so there&apos;s nowhere to record its conclusion as a decision.
+        Convene the Council with a Project chosen to be able to.
+      </Panel>
+    );
+  }
+
+  if (notes.length) {
+    return (
+      <Panel className="mb-8 px-5 py-4">
+        {heading}
+        <ul className="flex flex-col gap-1.5 text-[13.5px] leading-relaxed text-[var(--color-text)]">
+          {notes.map((n) => (
+            <li key={n.id}>
+              <Tag>{n.kind === "decision" ? "Decided" : "Open question"}</Tag> <span className="ml-1">{n.content}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+          Recorded in{" "}
+          <Link href={`/projects/${project.id}`} className="underline decoration-[var(--color-border-strong)] underline-offset-2 hover:text-[var(--color-accent)]">
+            {project.name}
+          </Link>{" "}
+          — part of every conversation there from now on.
+        </p>
+      </Panel>
+    );
+  }
+
+  if (!draft) {
+    return (
+      <Panel className="mb-8 flex flex-wrap items-center gap-3 px-5 py-4">
+        <div className="min-w-0 flex-1">
+          {heading}
+          <p className="text-[12.5px] text-[var(--color-text-muted)]">
+            Record this conclusion as what {project.name} has decided, so later conversations there build on it.
+          </p>
+        </div>
+        <Button
+          variant="accent"
+          disabled={busy}
+          onClick={async () => {
+            const data = await call({ action: "draft" });
+            if (data) setDraft({ decision: data.decision, openQuestion: data.openQuestion ?? "" });
+          }}
+        >
+          {busy ? "Drafting…" : "Record as a decision…"}
+        </Button>
+        {error && <div className="w-full text-[12px] text-[var(--color-danger)]">{error}</div>}
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel className="mb-8 px-5 py-4">
+      {heading}
+      <Textarea
+        autoFocus
+        rows={2}
+        value={draft.decision}
+        onChange={(e) => setDraft({ ...draft, decision: e.target.value })}
+        aria-label="Decision"
+        className="text-[14px]"
+      />
+      <label className="mt-3 mb-1 flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
+        <input type="checkbox" checked={includeQuestion} onChange={(e) => setIncludeQuestion(e.target.checked)} />
+        Also record what&apos;s still open
+      </label>
+      {includeQuestion && (
+        <Textarea
+          rows={2}
+          value={draft.openQuestion}
+          onChange={(e) => setDraft({ ...draft, openQuestion: e.target.value })}
+          placeholder="The Council didn't leave anything unresolved — or write one here."
+          aria-label="Open question"
+          className="text-[13.5px]"
+        />
+      )}
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <Button variant="ghost" onClick={() => setDraft(null)}>
+          Cancel
+        </Button>
+        <Button
+          variant="accent"
+          disabled={!draft.decision.trim() || busy}
+          onClick={async () => {
+            const data = await call({
+              action: "record",
+              decision: draft.decision,
+              openQuestion: includeQuestion ? draft.openQuestion : "",
+            });
+            if (data) onRecorded(data.notes);
+          }}
+        >
+          Record in {project.name}
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-[var(--color-danger)]">{error}</div>}
+    </Panel>
   );
 }

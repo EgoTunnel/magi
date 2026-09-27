@@ -427,6 +427,9 @@ addColumnIfMissing("council_runs", "matrix", "TEXT");
 addColumnIfMissing("council_runs", "conversation_id", "TEXT REFERENCES conversations(id) ON DELETE SET NULL");
 addColumnIfMissing("council_runs", "source_message_id", "TEXT");
 addColumnIfMissing("council_runs", "result_message_id", "TEXT");
+// A decision or open question recorded from a Council's conclusion — which
+// deliberation it came from, so the note can link back to its reasoning.
+addColumnIfMissing("project_notes", "council_run_id", "TEXT REFERENCES council_runs(id) ON DELETE SET NULL");
 // Rolling summary of the turns that have aged out of a conversation's live
 // window — see src/lib/conversationWindow.ts. through_id is how the fold stays
 // incremental: only messages after it need summarizing again.

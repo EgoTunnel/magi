@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { getAnthropicApiKey } from "@/lib/settings";
 import type { CompleteOptions, ModelInfo, ModelMessage, ModelProvider, StreamEvent, ToolSpec } from "@/lib/models/types";
+import { CHAT_REPLY_MAX_TOKENS } from "@/lib/models/types";
 
 const MODELS: ModelInfo[] = [
   {
@@ -36,6 +37,28 @@ const MODELS: ModelInfo[] = [
     supportsVision: true,
   },
 ];
+
+// The most each model can write in one response. Current models go to 128K
+// output tokens; Haiku 4.5 to 64K. Only reachable when streaming — the SDK
+// refuses a large non-streaming max_tokens rather than risk an HTTP timeout —
+// which is how conversation replies are made (stream() below).
+const MAX_OUTPUT_TOKENS: Record<string, number> = {
+  "claude-opus-4-8": 128000,
+  "claude-sonnet-5": 128000,
+  "claude-fable-5": 128000,
+  "claude-haiku-4-5-20251001": 64000,
+};
+// A model not in the table above gets the smaller of the known ceilings.
+const DEFAULT_MAX_OUTPUT_TOKENS = 64000;
+// Non-streaming calls (everything but conversation replies) default to this:
+// room for a substantial answer while staying well under the SDK's HTTP
+// timeout for a non-streaming request.
+const DEFAULT_COMPLETE_MAX_TOKENS = 16000;
+
+export function maxTokensFor(modelId: string, requested: number | undefined, fallback: number): number {
+  const ceiling = MAX_OUTPUT_TOKENS[modelId] ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  return Math.min(requested ?? fallback, ceiling);
+}
 
 // A tool round-trip (Magi executing a tool and handing the result back) counts
 // as one iteration. This bounds runaway loops if a model keeps calling tools.
@@ -164,7 +187,7 @@ export const anthropicProvider: ModelProvider = {
       const res = await c.messages.create({
         model: opts.model,
         system: opts.system,
-        max_tokens: opts.maxTokens ?? 2048,
+        max_tokens: maxTokensFor(opts.model, opts.maxTokens, DEFAULT_COMPLETE_MAX_TOKENS),
         messages: working,
         tools,
       });
@@ -210,7 +233,7 @@ export const anthropicProvider: ModelProvider = {
         {
           model: opts.model,
           system,
-          max_tokens: opts.maxTokens ?? 4096,
+          max_tokens: maxTokensFor(opts.model, opts.maxTokens, CHAT_REPLY_MAX_TOKENS),
           messages: working,
           tools,
         },

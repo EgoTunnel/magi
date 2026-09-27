@@ -18,6 +18,7 @@ import {
   DEFAULT_MAX_TOOL_ITERATIONS,
   embedViaOpenAI,
   extractText,
+  outputBudget,
   reasoningOf,
   resolveToolCalls,
   toOpenAITools,
@@ -142,6 +143,7 @@ export async function refreshOpenRouterModels(): Promise<ModelInfo[]> {
       pricePerCompletionToken: Number.isNaN(completionPrice) ? null : completionPrice,
       pricePerCacheReadToken: Number.isNaN(cacheReadPrice) ? null : cacheReadPrice,
       pricePerCacheWriteToken: Number.isNaN(cacheWritePrice) ? null : cacheWritePrice,
+      contextLength: m.context_length ?? null,
     };
   }
   setSetting(CAPABILITIES_CACHE_KEY, JSON.stringify(capabilities));
@@ -303,7 +305,7 @@ export async function generateOpenRouterImage(opts: {
 function requestExtras(opts: CompleteOptions): {
   tools: ChatCompletionTool[] | undefined;
   reasoning: { effort: ReasoningEffort } | undefined;
-  maxTokens: number;
+  maxTokens: number | undefined;
   plugins: { id: string }[] | undefined;
 } {
   const capabilities = getOpenRouterCapabilities(opts.model);
@@ -333,10 +335,7 @@ function requestExtras(opts: CompleteOptions): {
     reasoning = { effort };
   }
 
-  const requestedMax = opts.maxTokens ?? 4096;
-  const maxTokens = capabilities?.maxCompletionTokens
-    ? Math.min(requestedMax, capabilities.maxCompletionTokens)
-    : requestedMax;
+  const maxTokens = outputBudget(opts, capabilities);
 
   return { tools, reasoning, maxTokens, plugins };
 }

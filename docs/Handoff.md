@@ -796,6 +796,23 @@ src/
     in the `done` event. Drafting (Fast model, `<<<MEMORY>>>` delimiters so pre-answer reasoning can't be
     drafted into memory) happens only when the user clicks; accepting creates established memory linked
     to the reply. Deliberate memory is unchanged: nothing is kept without the user pressing Keep.
+  - **Council decisions** (`src/lib/councilDecisions.ts`, `POST /api/councils/runs/[id]/decision`). The Fast
+    model drafts a decision and an optional open question from the conclusion (`<<<DECISION>>>` /
+    `<<<OPEN QUESTION>>>` delimiters; "None" means no question); the user edits and records them as
+    `project_notes` — `settled` / `open` straight away, like a hand-written note — with the new
+    `council_run_id` linking back. **Decisions now reach the model**: `buildSystemPrompt` adds a "Where this
+    Project stands" block (latest 15 settled decisions, 10 open questions, 500 chars each, dated, marked
+    when from a Council; proposals and resolved questions excluded — tested). Before this, `project_notes`
+    were display-only. Provenance counts them (`decisionsInContext` / `openQuestionsInContext`).
+  - **Reply length.** Conversation turns ask for `CHAT_REPLY_MAX_TOKENS` (64,000) — they stream, so an
+    unused ceiling costs nothing, and reasoning models' thinking counts against it; the old 4,096 default
+    cut long answers off. Anthropic clamps per model (`maxTokensFor`: 128K for current models, 64K for
+    Haiku 4.5) and non-streaming calls default to 16,000 (the SDK's guidance for staying under HTTP
+    timeouts). OpenRouter/Chutes go through `outputBudget` in `openaiCompatible.ts`: clamped to the
+    catalog's output ceiling and to the context window left after the prompt (now cached as
+    `contextLength`), and **sent as no limit at all** when the model's ceiling is unknown and the request is
+    large — guessing a number a model can't produce is a 400. Council members/Synthesizer went 3,000 → 8,000
+    for the same reason.
   - **Starting a conversation**: a composer on Home (creates the conversation with the first message and
     hands it over via `lib/pendingSend.ts`), Ctrl/⌘+Shift+O and a palette entry (`lib/newConversation.ts`),
     and a **New** button in the conversation header.

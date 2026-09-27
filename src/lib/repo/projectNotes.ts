@@ -12,6 +12,7 @@ export interface ProjectNote {
   status: "proposed" | "open" | "settled" | "resolved";
   conversation_id: string | null;
   closure_id: string | null;
+  council_run_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -35,6 +36,12 @@ export function listProjectNotes(
     .all(...params) as ProjectNote[];
 }
 
+export function listNotesForCouncilRun(councilRunId: string): ProjectNote[] {
+  return db
+    .prepare(`SELECT * FROM project_notes WHERE council_run_id = ? ORDER BY kind ASC, created_at ASC`)
+    .all(councilRunId) as ProjectNote[];
+}
+
 export function listNotesForClosure(closureId: string): ProjectNote[] {
   return db
     .prepare(`SELECT * FROM project_notes WHERE closure_id = ? ORDER BY kind ASC, created_at ASC`)
@@ -48,12 +55,14 @@ export function createProjectNote(input: {
   status?: ProjectNote["status"];
   conversationId?: string | null;
   closureId?: string | null;
+  councilRunId?: string | null;
 }): ProjectNote {
   const id = newId("note");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO project_notes (id, project_id, kind, content, status, conversation_id, closure_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO project_notes
+       (id, project_id, kind, content, status, conversation_id, closure_id, council_run_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     input.projectId,
@@ -62,6 +71,7 @@ export function createProjectNote(input: {
     input.status ?? "proposed",
     input.conversationId ?? null,
     input.closureId ?? null,
+    input.councilRunId ?? null,
     ts,
     ts
   );

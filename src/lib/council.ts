@@ -81,7 +81,10 @@ async function completeAs(
     model: modelId,
     system: `${composeSystemPrompt(skill, role.systemPrompt)}\n\n${COUNCIL_TOOL_GUIDANCE}${opts.contextBlock}`,
     messages: [{ role: "user", content: prompt }],
-    maxTokens: 3000,
+    // A member's analysis, or the Synthesizer's whole conclusion — and, on a
+    // reasoning model, its thinking too, which counts against the same limit.
+    // 3,000 cut long syntheses off mid-section.
+    maxTokens: 8000,
     tools,
     onToolCall: opts.withTools
       ? (name, input) => executeTool(name, input, { projectId: opts.projectId, allowedToolNames })
