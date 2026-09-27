@@ -12,6 +12,8 @@ import type { CompleteOptions, ModelCapabilities, ModelInfo, ModelProvider, Stre
 import {
   DEFAULT_MAX_TOOL_ITERATIONS,
   extractText,
+  outputBudget,
+  reasoningOf,
   resolveToolCalls,
   toOpenAITools,
   toWorkingMessages,
@@ -103,6 +105,7 @@ export async function refreshChutesModels(): Promise<ModelInfo[]> {
       reasoningMandatory: false,
       reasoningEfforts: [],
       maxCompletionTokens: m.max_output_length ?? null,
+      contextLength: m.context_length ?? m.max_model_len ?? null,
       pricePerPromptToken: parsePrice(m.pricing?.prompt) ?? m.price?.input?.usd ?? null,
       pricePerCompletionToken: parsePrice(m.pricing?.completion) ?? m.price?.output?.usd ?? null,
     };
@@ -137,15 +140,11 @@ export function getChutesCapabilities(modelId: string): ModelCapabilities | null
 // Same fail-open posture as openrouter.ts's requestExtras(): an unknown
 // model (capabilities not cached yet) keeps tools on and sends no reasoning
 // override rather than guessing wrong.
-function requestExtras(opts: CompleteOptions): { tools: ChatCompletionTool[] | undefined; maxTokens: number } {
+function requestExtras(opts: CompleteOptions): { tools: ChatCompletionTool[] | undefined; maxTokens: number | undefined } {
   const capabilities = getChutesCapabilities(opts.model);
   const wantsTools = !!opts.tools?.length;
   const tools = wantsTools && capabilities?.supportsTools === false ? undefined : toOpenAITools(opts.tools);
-  const requestedMax = opts.maxTokens ?? 4096;
-  const maxTokens = capabilities?.maxCompletionTokens
-    ? Math.min(requestedMax, capabilities.maxCompletionTokens)
-    : requestedMax;
-  return { tools, maxTokens };
+  return { tools, maxTokens: outputBudget(opts, capabilities) };
 }
 
 export const chutesProvider: ModelProvider = {
@@ -205,6 +204,8 @@ export const chutesProvider: ModelProvider = {
       );
       let emitted = "";
       for await (const chunk of stream) {
+        const reasoningDelta = reasoningOf(chunk.choices[0]?.delta);
+        if (reasoningDelta) yield { type: "reasoning", text: reasoningDelta } satisfies StreamEvent;
         const delta = chunk.choices[0]?.delta?.content;
         if (delta) {
           emitted += delta;

@@ -1,6 +1,6 @@
 import { db, newId, nowIso } from "@/lib/db";
 import { estimateCost } from "@/lib/models/pricing";
-import type { TokenUsage } from "@/lib/models/types";
+import type { TokenUsage, UsageProviderId } from "@/lib/models/types";
 
 export type UsageSource =
   | "conversation"
@@ -34,7 +34,7 @@ export function recordUsage(input: {
   projectId?: string | null;
   source: UsageSource;
   sourceId?: string | null;
-  provider: "anthropic" | "openrouter" | "chutes";
+  provider: UsageProviderId;
   model: string;
   role?: string | null;
   usage?: TokenUsage[];

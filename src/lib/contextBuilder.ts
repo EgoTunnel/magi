@@ -4,6 +4,7 @@ import { listMemory } from "@/lib/repo/memory";
 import { listDocuments } from "@/lib/repo/documents";
 import { getSkill } from "@/lib/repo/skills";
 import { listProjectRoster } from "@/lib/repo/people";
+import { listProjectNotes, type ProjectNote } from "@/lib/repo/projectNotes";
 import { projectTheme } from "@/lib/files/theme";
 import { ensureChunkIndex, retrieveChunks, type RetrievedChunk } from "@/lib/retrieval";
 import { resolveSourceLinks } from "@/lib/sourceLinks";
@@ -38,6 +39,11 @@ const DOCUMENT_BUDGET = 12000;
 // of it was selected for this turn's question, rather than being whatever
 // happened to sit at the top of the first document in the list.
 const RETRIEVAL_BUDGET = 24000;
+// "Where this Project stands": how many settled decisions and open questions
+// ride along on every turn, and how long any one of them may run.
+const DECISION_LIMIT = 15;
+const QUESTION_LIMIT = 10;
+const NOTE_CHARS = 500;
 const RETRIEVAL_LIMIT = 20;
 // An inventory of every document title is always included, retrieval or not,
 // so the model knows what exists in the Project even when a passage from it
@@ -103,6 +109,10 @@ export interface ContextProvenance {
   // How many people were named in the Project roster block. Their facts are
   // not injected — only who they are — so this counts names, not knowledge.
   peopleOnProject: number;
+  // Settled decisions and open questions included in "Where this Project
+  // stands" (optional: provenance saved before they were included lacks them).
+  decisionsInContext?: number;
+  openQuestionsInContext?: number;
   // Set when this conversation is long enough that older turns were replaced
   // by a rolling summary — how many, so the Context panel can say so.
   summarizedMessages?: number;
@@ -122,6 +132,17 @@ export interface ContextProvenance {
   // Set only when the turn used "Auto" model selection — which real role the
   // classifier picked (see classifyModelRole in src/lib/models/registry.ts).
   autoSelectedRole?: string;
+  // How that role was picked — Jev with its confidence, the fast chat model,
+  // or a fallback to Default when neither could decide.
+  autoSelection?: { decidedBy: "jev" | "model" | "fallback"; confidence?: number };
+  // Set when Jev judged this exchange worth remembering — see
+  // src/lib/memorySuggestions.ts. Only ever a suggestion until the user acts.
+  memorySuggestion?: {
+    probability: number;
+    scope: "project" | "global";
+    state: "open" | "accepted" | "dismissed";
+    memoryId?: string;
+  };
 }
 
 // Starts the retrieval a turn needs without waiting for it. Retrieval is two
@@ -185,6 +206,8 @@ export async function buildSystemPrompt(opts: {
   // — see listProjectRoster. A suggested person or a proposed association is
   // an inference, and inferences do not enter a prompt.
   const roster = listProjectRoster(opts.projectId);
+  const decisions = listProjectNotes(opts.projectId, { kind: "decision", status: ["settled"] });
+  const openQuestions = listProjectNotes(opts.projectId, { kind: "question", status: ["open"] });
 
   // Passage retrieval against this turn's question. Scoped to the Project's
   // family (itself, what it inherits from, and what inherits from it) — the
@@ -298,6 +321,33 @@ export async function buildSystemPrompt(opts: {
       `\n## Project memory (established knowledge specific to this Project)\n${projectMemory.map(memoryLine).join("\n")}`
     );
   }
+  // What the Project has settled, and what it's still working out — the
+  // decisions and open questions the user has kept (by hand, from closing a
+  // conversation, or from a Council's conclusion). Proposed drafts stay out,
+  // exactly as suggested memory does. Most recent first, capped: this block is
+  // in every turn, and a Project's newest decisions are the ones in play.
+  const notesBlock = (notes: ProjectNote[], limit: number) =>
+    notes
+      .slice(0, limit)
+      .map((n) => {
+        const content = n.content.length > NOTE_CHARS ? `${n.content.slice(0, NOTE_CHARS)}…` : n.content;
+        return `- (${n.created_at.slice(0, 10)}${n.council_run_id ? ", from a Council deliberation" : ""}) ${content.replace(/\n/g, "\n  ")}`;
+      })
+      .join("\n");
+  if (decisions.length || openQuestions.length) {
+    const parts = [`\n## Where this Project stands`];
+    if (decisions.length) {
+      parts.push(
+        `Decisions the user has settled — treat them as agreed unless the user reopens one; if new information ` +
+          `seems to contradict one, say so rather than quietly working around it:\n${notesBlock(decisions, DECISION_LIMIT)}`
+      );
+    }
+    if (openQuestions.length) {
+      parts.push(`Questions still open:\n${notesBlock(openQuestions, QUESTION_LIMIT)}`);
+    }
+    sections.push(parts.join("\n"));
+  }
+
   // Who this Project involves — names, relationship, one line each, and
   // nothing more. What is *known* about any of them stays out: it would be a
   // per-turn cost paid on every turn for facts most turns don't need, and the
@@ -397,6 +447,8 @@ export async function buildSystemPrompt(opts: {
       projectMemoryCount: projectMemory.length,
       documentsUsed,
       peopleOnProject: Math.min(roster.length, ROSTER_LIMIT),
+      decisionsInContext: Math.min(decisions.length, DECISION_LIMIT),
+      openQuestionsInContext: Math.min(openQuestions.length, QUESTION_LIMIT),
       summarizedMessages: opts.conversationSummary?.messageCount,
       retrievalMode: passages.length ? "retrieval" : documentBlocks.length ? "documents" : "none",
       retrieved: passages.length

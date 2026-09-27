@@ -704,6 +704,118 @@ src/
   — focus states and `prefers-reduced-motion` are respected, but nothing beyond that has been verified.
   **No dedicated mobile UI (§75)** — responsive layout with a drawer nav, not a from-scratch mobile
   experience.
+- **Responsiveness pass** — the complaint was that Magi felt slow and clunky next to a hosted chat app.
+  What changed, and what to keep true when touching these areas:
+  - **Production build by default.** The desktop launcher (`scripts/desktop/Start-Magi.ps1`) used to run
+    `npm run dev`. It now runs `next build` when anything under `src/`, `public/` or the build config is
+    newer than `.next/BUILD_ID`, then `next start`, falling back to dev if the build fails. This surfaced
+    a real bug: `better-sqlite3` is synchronous, so a production build prerendered Home and the sidebar
+    **at build time** and served that snapshot forever. `Sidebar` (on every page, via the root layout) and
+    Home call `connection()` so every page renders per request. Any new server component that reads the
+    database without a request-time API needs the same, or it will be frozen at build time.
+  - **One database connection per process, in production too** (`db.ts`). Next instantiates server
+    modules once per bundle layer, so production had two connections (pages, and API routes). The
+    vector cache below depends on SQLite's per-connection `data_version`, which only makes sense with one.
+  - **Passage vectors in memory** (`retrieval.ts`). Read once and unit-normalized, so the semantic half is
+    a dot-product scan instead of reading every vector from SQLite on every turn. Measured on 16,000
+    passages × 1536 dimensions: ~185ms → ~40ms per retrieval. Kept current **incrementally** by the
+    write paths (`cacheVectors`, `forgetCachedVectors`, `retargetCachedVectors`), because every turn writes
+    passages and a cache invalidated on every write would be rebuilt every turn. Writes from other processes
+    (the MCP server) change `data_version`, which discards it. It is held on `globalThis`, capped at ~256MB
+    (past that, the old SQL scan), and warmed in the background at server start (`src/instrumentation.ts`).
+    **A new function that writes to `chunks` must update the cache or bump `shared.writes`.**
+  - **No query embedding for trivial follow-ups** (`worthEmbedding`): "thanks", "shorter please" and the
+    like skip the embedding round trip. The keyword half still runs; retrieval is never skipped outright,
+    because an empty result falls back to injecting whole documents.
+  - **The chat stream starts immediately and says what it's doing.** `runChatTurn` returns its response
+    before building the prompt, sends `{type:"status"}` while it waits on retrieval, forwards the model's
+    `{type:"reasoning"}` deltas (OpenRouter `reasoning`, Chutes `reasoning_content`; shown live and never
+    stored), and ends with `{type:"done", message}` carrying the saved reply, so the page puts it in place
+    without a refetch-and-flash. See `TurnEvent` in `chatTurn.ts`.
+  - **Conversation page is server-rendered** with its data (`page.tsx` + `lib/conversationView.ts`,
+    which the GET route shares) instead of six client fetches after a blank page.
+  - **Typing no longer re-renders the conversation.** The draft lives in `Composer`, finished markdown is
+    memoized (`MarkdownBody`), and the box grows with CSS `field-sizing` rather than a resize effect that
+    forced a layout of the whole page per keystroke. Measured in an 80-message conversation at 4× CPU
+    throttle: ~9.5ms → ~2ms of work per keystroke.
+  - **Streaming markdown.** `lib/streamingMarkdown.ts` splits a live reply at its last complete block
+    (never inside an open code fence); finished blocks render once, and only the tail re-parses, batched
+    to one render per animation frame.
+  - **Stop keeps the partial reply on screen.** It's saved as the server's side of the stream unwinds,
+    after the browser has already hung up, so the page keeps the text and retries its refetch until the
+    saved copy appears. Before, the reply vanished until the next reload.
+  - **Prompt caching through OpenRouter.** Claude and Gemini models only cache what a request marks, which
+    the OpenRouter adapter never did. `markOpenRouterCacheBreakpoints` applies the same two breakpoints as
+    the direct Anthropic adapter; cached tokens are read from `prompt_tokens_details` and priced at the
+    catalog's `input_cache_read`/`input_cache_write` rates when it lists them.
+  - **Jev judgment layer** (`src/lib/models/judgment.ts`). TypeSafe AI's Jev is a "System One" model:
+    typed questions in (`noul` yes/no, `choice`, `score`), typed answers out with calibrated
+    probabilities and a confidence, ~70–500ms, input-priced only. It is deliberately *not* a
+    `ModelProvider` — it doesn't generate text — but a separate `judge({ state, questions })` call.
+    Opt-in on a TypeSafe key (Settings, or `TYPESAFE_API_KEY`); usage is recorded under provider
+    `typesafe` and priced at the launch rate in `pricing.ts`. **Answers are validated against the
+    question, never trusted**: a choice outside the offered options, a probability outside 0–1, or a
+    missing answer is a `JudgmentError`, and every caller falls back to its chat-model path. The
+    response reader accepts several plausible field spellings because it was written from the launch
+    description, not the API reference (the docs host was unreachable from the build environment) —
+    if the real shape differs, `readAnswers` is the one place to change, and a mismatch fails closed.
+    First consumer: **Auto** (`classifyModelRole`) asks Jev a `choice` over `ROLE_ROUTING` and keeps
+    Default below 50% confidence; provenance records `autoSelection: { decidedBy, confidence }`, shown
+    in the Context panel. Further consumers below; still to do: whether a turn needs retrieval
+    (replacing `worthEmbedding`), and "worth remembering?" suggestions.
+  - **Council consensus, measured** (`src/lib/councilJudgment.ts`, `measureConsensus`). Every mode now
+    finishes through `finishRun()` in `council.ts`, which asks Jev a `score` over None/Weak/Moderate/Strong
+    with a per-mode instruction (Red Team's is "how much of the proposal survived"). The state is the
+    members' own contributions only — the Synthesizer's text is deliberately excluded (a test enforces it),
+    or Jev would be rating a summary of the answer instead of the evidence. `council_runs.consensus` holds
+    the measured level; `consensus_detail` (JSON) keeps the distribution, confidence, and what the
+    Synthesizer said. No key or any failure → the Synthesizer's rating, exactly as before.
+  - **Decision Matrix mode** (`mode: "matrix"`, `council_runs.matrix` JSON). Members write prose
+    assessments with one heading per option (`sectionsByOption` splits them; a member who ignores the
+    structure is judged on their whole assessment). `scoreMatrix` then asks Jev one call per option, all
+    criteria at once, on a five-level scale, giving each option only what was said about *it*. Each cell's
+    value is its level averaged over Jev's distribution (`expectedScore`), so an unsure rating weighs less;
+    totals and "decisive criteria" (drop one, re-rank, see if the leader changes) are arithmetic in
+    `computeMatrixTotals`. Without Jev, the Synthesizer-role model returns the grid as JSON, validated as
+    strictly as a typed answer (`readModelScores`) — an incomplete or invented rating fails the run with a
+    clear reason rather than rendering a guessed table. Input limits (2–6 options, 1–6 criteria, weights
+    1–5) live in `readMatrixInput`.
+  - **Ask the Council from a conversation** (`src/lib/councilInConversation.ts`,
+    `POST /api/conversations/[id]/council`). The run records `conversation_id` / `source_message_id`; the
+    conversation up to the asked-about message (plus its rolling summary) goes in as a `RunAttachment`.
+    When deliberation completes, `postCouncilResult` appends a user message ("Asked the Magi Council
+    (mode): …") and the conclusion as an assistant message (`model: "magi-council"`), and sets
+    `result_message_id` — once. **It waits while the head is a user message** (a chat reply in flight):
+    posting then would put the Council's pair between that message and its reply, which is saved against
+    its user message explicitly and would land on a hidden side branch. Pending runs come with the
+    conversation (`pendingCouncils` in `loadConversationView`) and the page polls them. Default members per
+    mode now live in `src/lib/councilRoles.ts`, shared with the Councils page.
+  - **"Worth remembering?"** (`src/lib/memorySuggestions.ts`). After each reply is saved, `runChatTurn`
+    asks Jev a `noul` (durable fact/preference/decision?) and a `choice` (Project or global), capped at
+    1.5s so it never slows a turn; ≥0.7 puts `memorySuggestion` on the message's provenance, which ships
+    in the `done` event. Drafting (Fast model, `<<<MEMORY>>>` delimiters so pre-answer reasoning can't be
+    drafted into memory) happens only when the user clicks; accepting creates established memory linked
+    to the reply. Deliberate memory is unchanged: nothing is kept without the user pressing Keep.
+  - **Council decisions** (`src/lib/councilDecisions.ts`, `POST /api/councils/runs/[id]/decision`). The Fast
+    model drafts a decision and an optional open question from the conclusion (`<<<DECISION>>>` /
+    `<<<OPEN QUESTION>>>` delimiters; "None" means no question); the user edits and records them as
+    `project_notes` — `settled` / `open` straight away, like a hand-written note — with the new
+    `council_run_id` linking back. **Decisions now reach the model**: `buildSystemPrompt` adds a "Where this
+    Project stands" block (latest 15 settled decisions, 10 open questions, 500 chars each, dated, marked
+    when from a Council; proposals and resolved questions excluded — tested). Before this, `project_notes`
+    were display-only. Provenance counts them (`decisionsInContext` / `openQuestionsInContext`).
+  - **Reply length.** Conversation turns ask for `CHAT_REPLY_MAX_TOKENS` (64,000) — they stream, so an
+    unused ceiling costs nothing, and reasoning models' thinking counts against it; the old 4,096 default
+    cut long answers off. Anthropic clamps per model (`maxTokensFor`: 128K for current models, 64K for
+    Haiku 4.5) and non-streaming calls default to 16,000 (the SDK's guidance for staying under HTTP
+    timeouts). OpenRouter/Chutes go through `outputBudget` in `openaiCompatible.ts`: clamped to the
+    catalog's output ceiling and to the context window left after the prompt (now cached as
+    `contextLength`), and **sent as no limit at all** when the model's ceiling is unknown and the request is
+    large — guessing a number a model can't produce is a 400. Council members/Synthesizer went 3,000 → 8,000
+    for the same reason.
+  - **Starting a conversation**: a composer on Home (creates the conversation with the first message and
+    hands it over via `lib/pendingSend.ts`), Ctrl/⌘+Shift+O and a palette entry (`lib/newConversation.ts`),
+    and a **New** button in the conversation header.
 
 ---
 

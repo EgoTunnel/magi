@@ -1,7 +1,8 @@
-﻿import { afterEach, beforeEach, describe, expect, it } from "vitest";
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDb } from "../helpers/reset";
 import { installMockProvider, type MockProvider } from "../helpers/provider";
 import { db } from "@/lib/db";
+import { setSetting } from "@/lib/settings";
 import { createProject } from "@/lib/repo/projects";
 import { addMessage, createConversation, listMessages, type Message } from "@/lib/repo/conversations";
 import { createDocument } from "@/lib/repo/documents";
@@ -195,6 +196,80 @@ describe("context assembly", () => {
     // turn to the next for the provider's cache to hit it.
     expect(call.system).not.toContain("migration runs on Tuesday");
     expect(call.system).toContain("## Project: P");
+  });
+
+  it("routes an Auto turn through Jev when it's configured, and says so in the provenance", async () => {
+    setSetting("typesafe_api_key", "ts-test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ answers: { role: { choice: "reasoner", confidence: 0.9 } }, usage: { input_tokens: 25 } })
+      )
+    );
+    try {
+      const project = createProject({ name: "P" });
+      const conversation = createConversation(project.id, "Talk");
+      const asking = addMessage({ conversationId: conversation.id, role: "user", content: "Plan the migration in steps" });
+      mock.reply("Step one.");
+
+      const turnModel = await resolveTurnModel("auto", asking.content, null);
+      if (!turnModel.ok) throw new Error("model did not resolve");
+      expect(turnModel.value.modelRole).toBe("reasoner");
+      const response = await runChatTurn({
+        conversationId: conversation.id,
+        projectId: project.id,
+        history: [{ role: "user", content: asking.content }],
+        skillId: null,
+        turnModel: turnModel.value,
+        signal: new AbortController().signal,
+        parentId: asking.id,
+      });
+      await response.text();
+
+      const saved = listMessages(conversation.id).find((m) => m.role === "assistant");
+      const provenance = JSON.parse(saved!.provenance!);
+      expect(provenance.autoSelectedRole).toBe("reasoner");
+      expect(provenance.autoSelection).toEqual({ decidedBy: "jev", confidence: 0.9 });
+      const classifierRow = db
+        .prepare(`SELECT provider, model, prompt_tokens, completion_tokens FROM usage_events WHERE role = 'classifier'`)
+        .get();
+      expect(classifierRow).toEqual({ provider: "typesafe", model: "jev-latest", prompt_tokens: 25, completion_tokens: 0 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("streams a status line first and ends with the saved reply", async () => {
+    const project = createProject({ name: "P" });
+    const conversation = createConversation(project.id, "Talk");
+    const asking = addMessage({ conversationId: conversation.id, role: "user", content: "hello there" });
+    mock.reply("General Kenobi.");
+
+    const turnModel = await resolveTurnModel("default", asking.content, null);
+    if (!turnModel.ok) throw new Error("model did not resolve");
+    const response = await runChatTurn({
+      conversationId: conversation.id,
+      projectId: project.id,
+      history: [{ role: "user", content: asking.content }],
+      skillId: null,
+      turnModel: turnModel.value,
+      signal: new AbortController().signal,
+      excludeRefIds: [asking.id],
+      parentId: asking.id,
+    });
+    const events = (await response.text())
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+
+    expect(events[0].type).toBe("status");
+    const done = events[events.length - 1];
+    expect(done.type).toBe("done");
+    expect(done.message.content).toBe("General Kenobi.");
+    expect(done.message.parent_id).toBe(asking.id);
+    // The message it carries is the one that was saved, id and all.
+    const saved = listMessages(conversation.id).find((m) => m.role === "assistant");
+    expect(done.message.id).toBe(saved?.id);
   });
 
   it("falls back to whole documents when nothing matches", async () => {
@@ -870,6 +945,201 @@ describe("council pipeline", () => {
     expect(first.system).toContain("METHOD_MARKER");
     expect(first.system).toContain("ROLE_MARKER");
     expect(first.model).toBe("mock-researcher");
+  });
+
+  // A stand-in Jev: consensus is always "Weak", and in a matrix, whichever
+  // option's name contains "Postgres" scores Excellent on everything, the
+  // rest Fair. Records every request body so tests can see what was sent.
+  function stubJev() {
+    const bodies: Array<{ state: unknown; questions: Record<string, { type: string; criteria: unknown }> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string);
+        bodies.push(body);
+        const answers: Record<string, unknown> = {};
+        for (const key of Object.keys(body.questions)) {
+          if (key === "consensus") {
+            answers[key] = { score: "Weak", confidence: 0.8, probabilities: { Weak: 0.8, Moderate: 0.2 } };
+          } else {
+            const best = /Postgres/.test(JSON.stringify(body.state));
+            answers[key] = { score: best ? "Excellent" : "Fair", confidence: 0.9 };
+          }
+        }
+        return Response.json({ answers, usage: { input_tokens: 100 } });
+      })
+    );
+    return bodies;
+  }
+
+  it("measures consensus with Jev over the members' words, keeping the Synthesizer's own rating", async () => {
+    setSetting("typesafe_api_key", "ts-test");
+    const bodies = stubJev();
+    try {
+      const project = createProject({ name: "P" });
+      const run = createCouncilRun({ question: "Is it wise?", projectId: project.id, mode: "independent" });
+      mock.setDefaultReply((opts) =>
+        opts.system?.includes("You are the Synthesizer")
+          ? "Consensus: Strong\n\nKey disagreement: None\n\nSynthesis: SYNTHESIS_TEXT"
+          : "A member's own view."
+      );
+
+      await runCouncilDeliberation({
+        runId: run.id,
+        question: "Is it wise?",
+        projectId: project.id,
+        mode: "independent",
+        roles: [
+          { name: "Reasoner", systemPrompt: "Reason.", modelRole: "reasoner" },
+          { name: "Critic", systemPrompt: "Doubt.", modelRole: "critic" },
+        ],
+      });
+
+      const finished = getCouncilRun(run.id)!;
+      expect(finished.consensus).toBe("Weak");
+      expect(finished.consensus_detail).toEqual({
+        source: "jev",
+        level: "Weak",
+        confidence: 0.8,
+        probabilities: { Weak: 0.8, Moderate: 0.2 },
+        synthesizerSaid: "Strong",
+      });
+      // Judged on the members' contributions — never on the Synthesizer's summary.
+      expect(bodies).toHaveLength(1);
+      expect(JSON.stringify(bodies[0].state)).not.toContain("SYNTHESIS_TEXT");
+      expect(bodies[0].questions.consensus.criteria).toEqual(["None", "Weak", "Moderate", "Strong"]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps the Synthesizer's consensus when Jev isn't configured", async () => {
+    const project = createProject({ name: "P" });
+    const run = createCouncilRun({ question: "Q", projectId: project.id, mode: "debate" });
+    mock.setDefaultReply("Consensus: Moderate — mostly\n\nKey disagreement: Values.\n\nSynthesis: Both.");
+
+    await runCouncilDeliberation({
+      runId: run.id,
+      question: "Q",
+      projectId: project.id,
+      mode: "debate",
+      roles: [
+        { name: "Advocate", systemPrompt: "For.", modelRole: "reasoner" },
+        { name: "Skeptic", systemPrompt: "Against.", modelRole: "critic" },
+      ],
+    });
+
+    const finished = getCouncilRun(run.id)!;
+    expect(finished.consensus).toBe("Moderate");
+    expect(finished.consensus_detail).toEqual({ source: "synthesizer", level: "Moderate", synthesizerSaid: "Moderate" });
+  });
+
+  const matrixInput = {
+    options: ["Postgres", "SQLite"],
+    criteria: [
+      { name: "Reliability", weight: 5 },
+      { name: "Simplicity", weight: 2 },
+    ],
+  };
+
+  it("runs a Decision Matrix: prose assessments, typed scores per cell, weighted totals, then synthesis", async () => {
+    setSetting("typesafe_api_key", "ts-test");
+    const bodies = stubJev();
+    try {
+      const project = createProject({ name: "P" });
+      const run = createCouncilRun({ question: "Which database?", projectId: project.id, mode: "matrix", matrix: matrixInput });
+      mock.setDefaultReply((opts) =>
+        opts.system?.includes("Decision Matrix")
+          ? "Consensus: Moderate\n\nKey disagreement: None\n\nSynthesis: Go with Postgres."
+          : "### Postgres\nReliable and proven.\n\n### SQLite\nSimple, single file."
+      );
+
+      await runCouncilDeliberation({
+        runId: run.id,
+        question: "Which database?",
+        projectId: project.id,
+        mode: "matrix",
+        matrix: matrixInput,
+        roles: [
+          { name: "Reasoner", systemPrompt: "Reason.", modelRole: "reasoner" },
+          { name: "Critic", systemPrompt: "Doubt.", modelRole: "critic" },
+        ],
+      });
+
+      const finished = getCouncilRun(run.id)!;
+      expect(finished.status).toBe("complete");
+      expect(finished.transcript.map((t) => t.stage)).toEqual(["assessment", "assessment", "synthesis"]);
+      const matrix = finished.matrix!;
+      expect(matrix.scoredBy).toBe("jev");
+      expect(matrix.cells).toHaveLength(4);
+      expect(matrix.totals).toEqual([
+        { option: "Postgres", score: 10 },
+        { option: "SQLite", score: 5 },
+      ]);
+      // One Jev call per option (every criterion asked at once), plus consensus.
+      expect(bodies).toHaveLength(3);
+      // Each option is judged on what was said about *it*.
+      const sqliteCall = bodies.find((b) => (b.state as { option?: string }).option === "SQLite")!;
+      expect(JSON.stringify(sqliteCall.state)).not.toContain("Reliable and proven");
+      // The Synthesizer writes from the scored grid.
+      const synthesisCall = mock.calls.find((c) => c.system.includes("Decision Matrix"))!;
+      expect(synthesisCall.prompt).toContain("| Postgres | Excellent (90% sure) | Excellent (90% sure) | 10.0 |");
+      expect(finished.synthesis).toContain("Postgres");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("scores a Decision Matrix with the chat model when Jev isn't configured", async () => {
+    const project = createProject({ name: "P" });
+    const run = createCouncilRun({ question: "Which database?", projectId: project.id, mode: "matrix", matrix: matrixInput });
+    mock.setDefaultReply((opts) => {
+      if (opts.system?.includes("Reply with JSON only")) {
+        return JSON.stringify({
+          scores: { Postgres: { Reliability: "Excellent", Simplicity: "Fair" }, SQLite: { Reliability: "Good", Simplicity: "Excellent" } },
+        });
+      }
+      if (opts.system?.includes("Decision Matrix")) return "Consensus: Weak\n\nKey disagreement: Weighting.\n\nSynthesis: Close call.";
+      return "### Postgres\nReliable.\n\n### SQLite\nSimple.";
+    });
+
+    await runCouncilDeliberation({
+      runId: run.id,
+      question: "Which database?",
+      projectId: project.id,
+      mode: "matrix",
+      matrix: matrixInput,
+      roles: [{ name: "Reasoner", systemPrompt: "Reason.", modelRole: "reasoner" }],
+    });
+
+    const matrix = getCouncilRun(run.id)!.matrix!;
+    expect(matrix.scoredBy).toBe("model");
+    // Postgres: (10*5 + 5*2)/7 = 8.6; SQLite: (7.5*5 + 10*2)/7 = 8.2
+    expect(matrix.totals).toEqual([
+      { option: "Postgres", score: 8.6 },
+      { option: "SQLite", score: 8.2 },
+    ]);
+    // Drop Reliability and SQLite wins on Simplicity alone.
+    expect(matrix.decisiveCriteria).toEqual(["Reliability"]);
+  });
+
+  it("fails a Decision Matrix run clearly when the scores can't be read", async () => {
+    const project = createProject({ name: "P" });
+    const run = createCouncilRun({ question: "Q", projectId: project.id, mode: "matrix", matrix: matrixInput });
+    mock.setDefaultReply((opts) => (opts.system?.includes("Reply with JSON only") ? "I'd rate them both highly!" : "### Postgres\nx"));
+
+    await runCouncilDeliberation({
+      runId: run.id,
+      question: "Q",
+      projectId: project.id,
+      mode: "matrix",
+      matrix: matrixInput,
+      roles: [{ name: "Reasoner", systemPrompt: "Reason.", modelRole: "reasoner" }],
+    });
+
+    const finished = getCouncilRun(run.id)!;
+    expect(finished.status).toBe("error");
+    expect(finished.synthesis).toContain("no JSON");
   });
 
   it("reports a failure on the run rather than throwing", async () => {

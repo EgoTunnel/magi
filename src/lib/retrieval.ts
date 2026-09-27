@@ -59,6 +59,7 @@ export function removeChunks(kind: SearchKind, refId: string) {
   // chunks table, which the next statement empties.
   deleteChunkSearchRows.run(kind, refId);
   deleteChunkRows.run(kind, refId);
+  forgetCachedVectors(kind, refId);
 }
 
 // Moves an item's passages to a different Project alongside the item itself
@@ -73,6 +74,7 @@ export function retargetChunks(kind: SearchKind, refIds: string[], projectId: st
     kind,
     ...refIds
   );
+  retargetCachedVectors(kind, refIds, projectId);
 }
 
 // Rebuilds the passage rows for one item. Called from indexUpsert() so every
@@ -153,6 +155,7 @@ export async function embedChunkRows(
       batch.forEach((row, j) => setChunkVector.run(modelId, packVector(vectors[j]), row.id));
     });
     store();
+    cacheVectors(modelId, batch.map((row) => row.id));
     done += batch.length;
     onProgress?.(done);
   }
@@ -404,6 +407,213 @@ export function matchCountsByDate(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Passage vectors, held in memory.
+//
+// The semantic half used to read every stored vector out of SQLite on every
+// turn — for a personal archive, tens of thousands of rows and on the order of
+// a hundred megabytes, which was most of the ~380ms retrieval took once the
+// query had been embedded. They are now read once and kept, unit-normalized
+// so scoring is a plain dot product.
+//
+// Kept current incrementally rather than rebuilt: every turn writes messages
+// (and so passages), and a cache thrown away on every write would be rebuilt on
+// every turn and save nothing. New passages have no vector yet, so they are
+// not in here until embedChunkRows stores one (cacheVectors); a removed item
+// leaves (forgetCachedVectors); a moved one changes Project
+// (retargetCachedVectors). Writes from anywhere else — the MCP server is a
+// separate process on the same database — change SQLite's data_version, which
+// is checked on every use and discards the cache wholesale.
+// ---------------------------------------------------------------------------
+
+interface CachedVector {
+  meta: ChunkMeta;
+  vector: Float32Array;
+}
+
+// Held on globalThis rather than in a module variable: Next can instantiate
+// this module more than once in one server process (each route's bundle, the
+// startup hook in instrumentation.ts), and a module-level cache would mean one
+// copy of every vector per instance — memory multiplied, and a warm-up at
+// startup warming a copy no request ever reads.
+type VectorCacheState = { modelId: string; dataVersion: number; rows: Map<string, CachedVector> } | null;
+const cacheHolder = globalThis as typeof globalThis & {
+  __magiChunkVectors?: { state: VectorCacheState; writes: number };
+};
+// `writes` counts every passage write this process has made, cached or not —
+// how a background warm-up (below) knows whether what it read is still current.
+const shared = (cacheHolder.__magiChunkVectors ??= { state: null, writes: 0 });
+
+// A ceiling on what gets held — about 256MB of floats. An archive past it is
+// scored straight from SQLite as before, rather than taking that much memory.
+const MAX_CACHED_FLOATS = 64_000_000;
+
+function unitVector(v: Float32Array): Float32Array | null {
+  let norm = 0;
+  for (let i = 0; i < v.length; i++) norm += v[i] * v[i];
+  if (norm === 0) return null;
+  const scale = 1 / Math.sqrt(norm);
+  const out = new Float32Array(v.length);
+  for (let i = 0; i < v.length; i++) out[i] = v[i] * scale;
+  return out;
+}
+
+function dataVersion(): number {
+  return db.pragma("data_version", { simple: true }) as number;
+}
+
+// How many passage vectors are held in memory, or null when none are.
+export function cachedVectorCount(): number | null {
+  return shared.state ? shared.state.rows.size : null;
+}
+
+// For tests, whose resetDb() empties tables on this same connection — which,
+// unlike a write from another process, data_version doesn't see.
+export function resetChunkVectorCache() {
+  shared.state = null;
+}
+
+function metaOf(row: ChunkMeta): ChunkMeta {
+  return {
+    id: row.id,
+    kind: row.kind,
+    ref_id: row.ref_id,
+    project_id: row.project_id,
+    title: row.title,
+    chunk_index: row.chunk_index,
+    source_date: row.source_date,
+  };
+}
+
+const selectVectorRows = `SELECT id, kind, ref_id, project_id, title, chunk_index, source_date, vector FROM chunks`;
+
+function loadVectorCache(modelId: string): Map<string, CachedVector> | null {
+  const version = dataVersion();
+  if (shared.state && shared.state.modelId === modelId && shared.state.dataVersion === version) return shared.state.rows;
+
+  shared.state = null;
+  const rows = new Map<string, CachedVector>();
+  let floats = 0;
+  const cursor = db
+    .prepare(`${selectVectorRows} WHERE model = ? AND vector IS NOT NULL`)
+    .iterate(modelId) as IterableIterator<ChunkMeta & { vector: Buffer }>;
+  for (const row of cursor) {
+    const vector = unitVector(unpackVector(row.vector));
+    if (!vector) continue;
+    floats += vector.length;
+    if (floats > MAX_CACHED_FLOATS) return null;
+    rows.set(row.id, { meta: metaOf(row), vector });
+  }
+  shared.state = { modelId, dataVersion: version, rows };
+  return rows;
+}
+
+// Loads the cache ahead of the first turn that needs it — started once at
+// server start (src/instrumentation.ts), so no conversation pays for it. Read
+// in batches with a yield between each, so a request arriving meanwhile isn't
+// stuck behind the whole load; a query that needs the cache before this
+// finishes simply loads it itself, and this then stands down.
+const WARM_BATCH = 2000;
+
+export async function warmChunkVectorCache() {
+  const modelId = getEmbeddingModelId();
+  if (!modelId || !isEmbeddingConfigured() || shared.state) return;
+  const version = dataVersion();
+  const writes = shared.writes;
+  const rows = new Map<string, CachedVector>();
+  let floats = 0;
+  let after = 0;
+  const batch = db.prepare(
+    `SELECT rowid, id, kind, ref_id, project_id, title, chunk_index, source_date, vector FROM chunks
+     WHERE model = ? AND vector IS NOT NULL AND rowid > ? ORDER BY rowid LIMIT ?`
+  );
+  for (;;) {
+    const page = batch.all(modelId, after, WARM_BATCH) as Array<ChunkMeta & { rowid: number; vector: Buffer }>;
+    for (const row of page) {
+      const vector = unitVector(unpackVector(row.vector));
+      if (!vector) continue;
+      floats += vector.length;
+      if (floats > MAX_CACHED_FLOATS) return;
+      rows.set(row.id, { meta: metaOf(row), vector });
+    }
+    if (page.length < WARM_BATCH) break;
+    after = page[page.length - 1].rowid;
+    await new Promise((resolve) => setImmediate(resolve));
+    if (shared.state) return;
+  }
+  // Installed only if nothing moved underneath it: no passage written by this
+  // process and no commit from another since the first batch was read.
+  if (!shared.state && shared.writes === writes && dataVersion() === version) {
+    shared.state = { modelId, dataVersion: version, rows };
+  }
+}
+
+function cacheVectors(modelId: string, ids: string[]) {
+  shared.writes++;
+  if (!shared.state || shared.state.modelId !== modelId || !ids.length) return;
+  const rows = db
+    .prepare(`${selectVectorRows} WHERE model = ? AND vector IS NOT NULL AND id IN (${ids.map(() => "?").join(",")})`)
+    .all(modelId, ...ids) as Array<ChunkMeta & { vector: Buffer }>;
+  for (const row of rows) {
+    const vector = unitVector(unpackVector(row.vector));
+    if (!vector) continue;
+    shared.state.rows.set(row.id, { meta: metaOf(row), vector });
+  }
+}
+
+function forgetCachedVectors(kind: SearchKind, refId: string) {
+  shared.writes++;
+  if (!shared.state) return;
+  for (const [id, entry] of shared.state.rows) {
+    if (entry.meta.kind === kind && entry.meta.ref_id === refId) shared.state.rows.delete(id);
+  }
+}
+
+function retargetCachedVectors(kind: SearchKind, refIds: string[], projectId: string) {
+  shared.writes++;
+  if (!shared.state) return;
+  const moved = new Set(refIds);
+  for (const entry of shared.state.rows.values()) {
+    if (entry.meta.kind === kind && moved.has(entry.meta.ref_id)) entry.meta.project_id = projectId;
+  }
+}
+
+// Keeps the `limit` best in descending order — an insertion into a short list,
+// cheap because after the first few hundred candidates almost everything
+// fails the first comparison.
+function keepBest(
+  best: Array<ChunkMeta & { similarity: number }>,
+  meta: ChunkMeta,
+  similarity: number,
+  limit: number
+) {
+  if (best.length === limit && similarity <= best[best.length - 1].similarity) return;
+  let at = best.length;
+  while (at > 0 && best[at - 1].similarity < similarity) at--;
+  best.splice(at, 0, { ...meta, similarity });
+  if (best.length > limit) best.pop();
+}
+
+// Whether a query carries enough to be worth embedding. "thanks", "go on",
+// "shorter please" — the quick follow-ups that make up much of a real
+// conversation — have nothing for meaning-matching to work with, and embedding
+// them is a network round trip before the reply can start. The keyword half
+// still runs for them; it's local and costs next to nothing.
+export function worthEmbedding(query: string): boolean {
+  const trimmed = query.trim();
+  if (trimmed.length >= 24) return true;
+  const meaningful = trimmed
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t) && !FOLLOW_UP_WORDS.has(t));
+  return meaningful.length >= 2;
+}
+
+const FOLLOW_UP_WORDS = new Set([
+  "thanks", "thank", "yes", "yeah", "yep", "okay", "sure", "great", "good", "nice", "cool", "please",
+  "continue", "more", "shorter", "longer", "again", "try", "keep", "going", "perfect", "sounds",
+]);
+
 async function semanticChunks(
   query: string,
   opts: RetrieveOptions,
@@ -416,8 +626,38 @@ async function semanticChunks(
   const kinds = opts.kinds?.length ? ` AND kind IN (${opts.kinds.map(() => "?").join(",")})` : "";
   const exclude = excludeClause(opts.excludeRefIds, "ref_id");
 
+  if (!worthEmbedding(query)) return [];
+
   const [queryVector] = await embedTexts(modelId, [query]);
   const q = new Float32Array(queryVector);
+
+  const cached = loadVectorCache(modelId);
+  if (cached) {
+    const unitQuery = unitVector(q);
+    if (!unitQuery) return [];
+    const projects = Array.isArray(opts.projectId)
+      ? opts.projectId.length
+        ? new Set(opts.projectId)
+        : null
+      : opts.projectId
+        ? new Set([opts.projectId])
+        : null;
+    const kindSet = opts.kinds?.length ? new Set<string>(opts.kinds) : null;
+    const excluded = opts.excludeRefIds?.length ? new Set(opts.excludeRefIds) : null;
+    const best: Array<ChunkMeta & { similarity: number }> = [];
+    for (const { meta, vector } of cached.values()) {
+      if (projects && (meta.project_id === null || !projects.has(meta.project_id))) continue;
+      if (kindSet && !kindSet.has(meta.kind)) continue;
+      if (excluded && excluded.has(meta.ref_id)) continue;
+      if (vector.length !== unitQuery.length) continue;
+      let dot = 0;
+      for (let i = 0; i < vector.length; i++) dot += vector[i] * unitQuery[i];
+      keepBest(best, meta, dot, limit);
+    }
+    return best;
+  }
+
+  // Past the memory ceiling: score straight from SQLite.
 
   // Iterated, not collected: a personal archive is already tens of thousands
   // of passages, and materializing every vector (a few KB apiece) to sort them
@@ -441,24 +681,8 @@ async function semanticChunks(
 
   const best: Array<ChunkMeta & { similarity: number }> = [];
   for (const row of cursor) {
-    const similarity = cosineSimilarity(q, unpackVector(row.vector));
-    if (best.length === limit && similarity <= best[best.length - 1].similarity) continue;
-    // Insertion sort into a list capped at `limit` — cheap, since after the
-    // first few hundred rows almost everything fails the test above. The
-    // vector itself is deliberately not carried forward; it has done its job.
-    let at = best.length;
-    while (at > 0 && best[at - 1].similarity < similarity) at--;
-    best.splice(at, 0, {
-      id: row.id,
-      kind: row.kind,
-      ref_id: row.ref_id,
-      project_id: row.project_id,
-      title: row.title,
-      chunk_index: row.chunk_index,
-      source_date: row.source_date,
-      similarity,
-    });
-    if (best.length > limit) best.pop();
+    // The vector itself is deliberately not carried forward; it has done its job.
+    keepBest(best, metaOf(row), cosineSimilarity(q, unpackVector(row.vector)), limit);
   }
   return best;
 }

@@ -6,7 +6,7 @@
 // each provider's own file.
 import type OpenAI from "openai";
 import type { ChatCompletionContentPart, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import type { CompleteOptions, ModelMessage, ToolSpec } from "@/lib/models/types";
+import type { CompleteOptions, ModelCapabilities, ModelMessage, ToolSpec } from "@/lib/models/types";
 
 export const DEFAULT_MAX_TOOL_ITERATIONS = 10;
 
@@ -27,6 +27,40 @@ export function toOpenAIContent(content: ModelMessage["content"]): string | Chat
   );
 }
 
+// Above this, a request with no known output ceiling sends no max_tokens at
+// all and lets the provider apply the model's own limit — guessing a large
+// number for a model that can't produce it is a 400, not a longer answer.
+const UNKNOWN_CEILING_MAX = 16000;
+// Kept free between prompt and output so an estimate that runs a little low
+// doesn't overflow the context window.
+const CONTEXT_MARGIN = 1024;
+
+function promptChars(opts: CompleteOptions): number {
+  const text = (content: ModelMessage["content"]) =>
+    typeof content === "string" ? content.length : content.reduce((n, p) => n + (p.type === "text" ? (p.text ?? "").length : 0), 0);
+  return (opts.system?.length ?? 0) + opts.messages.reduce((n, m) => n + text(m.content), 0);
+}
+
+// The max_tokens to send to an OpenAI-compatible provider: what the caller
+// asked for, clamped to the model's output ceiling and to what fits in its
+// context window beside this prompt (≈3 characters a token, deliberately
+// generous to the prompt). Undefined means "send none".
+export function outputBudget(
+  opts: CompleteOptions,
+  capabilities: Pick<ModelCapabilities, "maxCompletionTokens" | "contextLength"> | null,
+  fallback = 4096
+): number | undefined {
+  const requested = opts.maxTokens ?? fallback;
+  let budget = requested;
+  if (capabilities?.maxCompletionTokens) budget = Math.min(budget, capabilities.maxCompletionTokens);
+  else if (requested > UNKNOWN_CEILING_MAX) return undefined;
+  if (capabilities?.contextLength) {
+    const room = capabilities.contextLength - Math.ceil(promptChars(opts) / 3) - CONTEXT_MARGIN;
+    budget = Math.min(budget, Math.max(1024, room));
+  }
+  return budget;
+}
+
 export function toWorkingMessages(opts: CompleteOptions): ChatCompletionMessageParam[] {
   const messages: ChatCompletionMessageParam[] = [];
   if (opts.system) messages.push({ role: "system", content: opts.system });
@@ -45,6 +79,15 @@ export function toWorkingMessages(opts: CompleteOptions): ChatCompletionMessageP
 // `reasoning` / `reasoning_content` field when they spend their whole turn
 // "thinking" — especially under a tight max_tokens budget. Treat that as the
 // answer rather than showing the user nothing.
+// The same two fields, read off one streamed delta. OpenRouter names it
+// `reasoning`, most self-hosted OpenAI-compatible servers `reasoning_content`.
+export function reasoningOf(delta: unknown): string {
+  if (!delta || typeof delta !== "object") return "";
+  const loose = delta as { reasoning?: unknown; reasoning_content?: unknown };
+  const value = loose.reasoning ?? loose.reasoning_content;
+  return typeof value === "string" ? value : "";
+}
+
 export function extractText(message: { content?: string | null }): string {
   const content = message.content;
   if (content && content.trim()) return content;

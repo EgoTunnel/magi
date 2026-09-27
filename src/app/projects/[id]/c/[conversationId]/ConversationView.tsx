@@ -1,17 +1,21 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Input, Tag, Textarea } from "@/components/ui";
 import { IconAttach, IconChevronDown, IconChevronRight, IconDocument, IconDownload, IconEdit, IconRefresh, IconSend, IconStop, IconTrash } from "@/components/icons";
 import type { ContextProvenance } from "@/lib/contextBuilder";
 import { renderMarkdown } from "@/lib/markdownToReact";
+import { splitStreamingMarkdown } from "@/lib/streamingMarkdown";
+import { takePendingSend } from "@/lib/pendingSend";
+import { startNewConversation } from "@/lib/newConversation";
 import { arrayBufferToBase64 } from "@/lib/clientFiles";
 import { ArtifactViewerButton } from "@/components/ArtifactHistory";
 import { MagiSpinner } from "@/components/MagiSpinner";
 import { MoveConversationControl } from "@/components/MoveConversationControl";
 import { EpisodeClosePanel, type ClosureDraft } from "@/components/EpisodeClosePanel";
+import { CouncilSpinner } from "@/components/CouncilSpinner";
 
 interface Sibling {
   id: string;
@@ -59,28 +63,56 @@ interface ArtifactFile {
   message_id: string | null;
 }
 
-export function ConversationView({ projectId, conversationId }: { projectId: string; conversationId: string }) {
+// A Council asked from this conversation that hasn't answered into it yet.
+interface PendingCouncil {
+  id: string;
+  question: string;
+  mode: string;
+  status: string;
+}
+
+// What the server already knows when it renders the page — see page.tsx.
+export interface ConversationInitialData {
+  title: string;
+  messages: Message[];
+  pendingCouncils: PendingCouncil[];
+  projectName: string;
+  skills: Skill[];
+  roles: RoleInfo[];
+  artifacts: ArtifactFile[];
+  people: PersonOption[];
+}
+
+export function ConversationView({
+  projectId,
+  conversationId,
+  initial,
+}: {
+  projectId: string;
+  conversationId: string;
+  initial?: ConversationInitialData;
+}) {
   const router = useRouter();
-  const [projectName, setProjectName] = useState("");
-  const [title, setTitle] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [draft, setDraft] = useState("");
+  const [projectName, setProjectName] = useState(initial?.projectName ?? "");
+  const [title, setTitle] = useState(initial?.title ?? "");
+  const [messages, setMessages] = useState<Message[]>(initial?.messages ?? []);
+  const [pendingCouncils, setPendingCouncils] = useState<PendingCouncil[]>(initial?.pendingCouncils ?? []);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [skills, setSkills] = useState<Skill[]>([]);
+  const [skills, setSkills] = useState<Skill[]>(initial?.skills ?? []);
   const [skillId, setSkillId] = useState<string>("");
-  const [roles, setRoles] = useState<RoleInfo[]>([]);
+  const [roles, setRoles] = useState<RoleInfo[]>(initial?.roles ?? []);
   const [modelRole, setModelRole] = useState("default");
   const [contextOpen, setContextOpen] = useState(false);
   const [savingArtifactFor, setSavingArtifactFor] = useState<string | null>(null);
   const [artifactTitleDraft, setArtifactTitleDraft] = useState("");
-  const [people, setPeople] = useState<PersonOption[]>([]);
+  const [people, setPeople] = useState<PersonOption[]>(initial?.people ?? []);
   const [rememberPersonFor, setRememberPersonFor] = useState<string | null>(null);
   const [rememberPersonId, setRememberPersonId] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
-  const [artifactFiles, setArtifactFiles] = useState<ArtifactFile[]>([]);
+  const [artifactFiles, setArtifactFiles] = useState<ArtifactFile[]>(initial?.artifacts ?? []);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const [closureDraft, setClosureDraft] = useState<ClosureDraft | null>(null);
@@ -121,6 +153,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     const convData = await convRes.json();
     setTitle(convData.conversation?.title ?? "");
     setMessages(convData.messages ?? []);
+    setPendingCouncils(convData.pendingCouncils ?? []);
     setSkills((await skillsRes.json()).skills ?? []);
     setRoles((await modelsRes.json()).roles ?? []);
     setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
@@ -137,15 +170,34 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   // needlessly slow. Artifacts still need a refresh: an edited or
   // regenerated turn can produce a new one via tool use, same as a normal
   // send.
-  async function reloadMessages() {
-    const [convRes, artifactsRes] = await Promise.all([
-      fetch(`/api/conversations/${conversationId}`),
-      fetch(`/api/artifacts?conversationId=${conversationId}`),
-    ]);
-    const data = await convRes.json();
-    setTitle(data.conversation?.title ?? "");
-    setMessages(data.messages ?? []);
-    setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
+  //
+  // `until`, when given, is what the refetched conversation should show; it is
+  // retried briefly until it does. A stopped reply is saved as the server's
+  // side of the stream unwinds, which is after the browser has already hung
+  // up — a single refetch can arrive first and drop the partial reply from
+  // view until the next reload.
+  async function reloadMessages(until?: (messages: Message[]) => boolean) {
+    for (let attempt = 0; ; attempt++) {
+      const [convRes, artifactsRes] = await Promise.all([
+        fetch(`/api/conversations/${conversationId}`),
+        fetch(`/api/artifacts?conversationId=${conversationId}`),
+      ]);
+      const data = await convRes.json();
+      if (until && attempt < 10 && !until(data.messages ?? [])) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        continue;
+      }
+      setTitle(data.conversation?.title ?? "");
+      setMessages(data.messages ?? []);
+      setPendingCouncils((current) => {
+        // Keep a Council that failed on screen (with its error) until the page
+        // is left; the server only lists ones still on their way.
+        const failed = current.filter((c) => c.status === "error");
+        return [...(data.pendingCouncils ?? []), ...failed];
+      });
+      setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
+      return;
+    }
   }
 
   // An existing draft is fetched, never re-drafted: reopening a conversation
@@ -172,7 +224,16 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
 
   useEffect(() => {
     initialScrollDoneRef.current = false;
-    load();
+    // Server-rendered with its data already in hand, a conversation needs no
+    // fetch to show itself — only the (rare) client-only mount does.
+    if (!initial) load();
+    // A conversation started from the Home composer arrives with its first
+    // message waiting to be sent — see src/lib/pendingSend.ts.
+    const pending = takePendingSend(conversationId);
+    if (pending) {
+      if (pending.modelRole) setModelRole(pending.modelRole);
+      send(pending.content, { modelRole: pending.modelRole });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
@@ -224,6 +285,53 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     return () => el.removeEventListener("scroll", recomputeJumpToLatest);
   }, [messages, recomputeJumpToLatest]);
 
+  // A Council asked from here deliberates in the background, and its answer is
+  // posted into the conversation when done. Checked every few seconds while
+  // one is out; not while a reply is streaming, whose own end refetches.
+  const sendingRef = useRef(false);
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+  useEffect(() => {
+    const waiting = pendingCouncils.filter((c) => c.status !== "error");
+    if (!waiting.length) return;
+    const timer = setInterval(async () => {
+      const results = await Promise.all(
+        waiting.map((c) =>
+          fetch(`/api/councils/runs/${c.id}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        )
+      );
+      const failed = new Set<string>();
+      let answered = false;
+      results.forEach((data, i) => {
+        const run = data?.run as { result_message_id?: string | null; status?: string } | undefined;
+        if (run?.result_message_id) answered = true;
+        else if (run?.status === "error") failed.add(waiting[i].id);
+      });
+      if (failed.size) setPendingCouncils((cs) => cs.map((c) => (failed.has(c.id) ? { ...c, status: "error" } : c)));
+      if (answered && !sendingRef.current) await reloadMessages();
+    }, 2500);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCouncils]);
+
+  function councilStarted(council: PendingCouncil) {
+    setPendingCouncils((cs) => [...cs, council]);
+    // The card lands at the end of the thread; take the reader there.
+    requestAnimationFrame(() => scrollToLatest());
+  }
+
+  // What to prefill "Ask the Council" with, for a reply: the question it was
+  // answering — minus the marker on a question that was itself put to a Council.
+  function councilQuestionFor(index: number): string {
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].content.replace(/^Asked the Magi Council \([^)]*\): /, "");
+    }
+    return "";
+  }
+
   function scrollToLatest() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }
@@ -259,16 +367,20 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
 
   // Reads one chat/regenerate NDJSON stream, updating the live "typing"
   // preview as chunks arrive. Persistence already happened server-side by
-  // the time this returns (or throws) — the caller reloads from the API
-  // afterward rather than trusting anything accumulated here.
-  async function streamChatResponse(res: Response) {
+  // the time this returns (or throws). Returns the saved reply when the
+  // stream delivered one (its closing `done` line), so the caller can put it
+  // in place immediately rather than clearing the live text and waiting on a
+  // refetch to show it again.
+  async function streamChatResponse(res: Response, progress: { text: string }): Promise<Message | null> {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let full = "";
+    let reasoning = "";
     let buffer = "";
+    let saved: Message | null = null;
     const handleLine = (line: string) => {
       if (!line.trim()) return;
-      let event: { type: string; text?: string; name?: string };
+      let event: { type: string; text?: string; name?: string; message?: Message };
       try {
         event = JSON.parse(line);
       } catch {
@@ -276,14 +388,22 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       }
       if (event.type === "text" && event.text) {
         full += event.text;
+        progress.text = full;
         // Always the whole accumulated reply, never a delta — so a call that
         // lands before the streaming block has mounted costs nothing beyond
         // itself; the next token carries everything anyway.
         streamRef.current?.setText(full);
+      } else if (event.type === "reasoning" && event.text) {
+        reasoning += event.text;
+        streamRef.current?.setReasoning(reasoning);
+      } else if (event.type === "status" && event.text) {
+        streamRef.current?.setStatus(event.text);
       } else if (event.type === "tool_start" && event.name) {
         streamRef.current?.setTool(event.name);
       } else if (event.type === "tool_end") {
         streamRef.current?.setTool(null);
+      } else if (event.type === "done" && event.message) {
+        saved = event.message;
       }
     };
     for (;;) {
@@ -295,32 +415,52 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       for (const line of lines) handleLine(line);
     }
     if (buffer) handleLine(buffer);
+    return saved;
   }
 
-  async function send() {
-    const content = draft.trim();
-    if ((!content && pendingAttachments.length === 0) || sending) return;
-    const attachmentIds = pendingAttachments.map((a) => a.id);
-    setDraft("");
-    setPendingAttachments([]);
-    setSending(true);
-    setError(null);
-    setMessages((m) => [
-      ...m,
-      { id: `local-${Date.now()}`, role: "user", content, model: null, provenance: null, created_at: new Date().toISOString(), parent_id: null },
-    ]);
+  // Ends a turn: the saved reply (if the stream delivered one) takes the live
+  // block's place in the same render, then the conversation is refetched in
+  // the background to pick up server-side ids and branch annotations — which
+  // changes nothing visible, so nothing flashes.
+  //
+  // A stopped reply has no saved copy yet, so the text already on screen stays
+  // there as a stand-in until the server's copy can replace it.
+  async function finishTurn(saved: Message | null, stoppedText: string) {
+    if (saved) {
+      setMessages((m) => (m.some((x) => x.id === saved.id) ? m : [...m, saved]));
+    } else if (stoppedText) {
+      setMessages((m) => [
+        ...m,
+        { id: `local-reply-${Date.now()}`, role: "assistant", content: stoppedText, model: null, provenance: null, created_at: new Date().toISOString(), parent_id: null },
+      ]);
+    }
+    streamRef.current?.reset();
+    setSending(false);
+    abortRef.current = null;
+    // Not load(): a turn can't change the Project's skills, the model roles,
+    // or the people roster, so refetching those five endpoints only delayed
+    // the finished reply appearing.
+    if (!saved && stoppedText) await reloadMessages((m) => m[m.length - 1]?.role === "assistant");
+    else await reloadMessages();
+  }
+
+  // One assistant turn, start to finish — shared by send, regenerate, and
+  // edit, which each set up their own optimistic view first.
+  async function runTurn(url: string, body: Record<string, unknown>) {
     streamRef.current?.reset();
     const controller = new AbortController();
     abortRef.current = controller;
+    const progress = { text: "" };
+    let saved: Message | null = null;
+    let stopped = false;
 
     try {
-      const res = await fetch(`/api/conversations/${conversationId}/chat`, {
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, skillId: skillId || undefined, modelRole, attachmentIds }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
-
       if (res.status === 412) {
         const data = await res.json();
         setError(data.message ?? "No API key configured.");
@@ -330,22 +470,43 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
         setError("Something went wrong reaching the model.");
         return;
       }
-      await streamChatResponse(res);
-    } catch (err) {
-      // The user pressed Stop — the partial reply Magi already streamed was
-      // persisted server-side (see chatTurn.ts), so this isn't an error.
-      if (!(err instanceof DOMException && err.name === "AbortError")) {
-        setError("Connection interrupted.");
+      saved = await streamChatResponse(res, progress);
+      // A stream that ends without a saved reply failed before the model
+      // produced anything (the server streams its error as text) — say so,
+      // rather than letting the live block vanish with nothing in its place.
+      if (!saved) {
+        const reason = /\[Magi encountered an error: (.*)\]\s*$/.exec(progress.text)?.[1];
+        setError(reason ? `Magi couldn't answer: ${reason}` : "Magi couldn't finish that reply.");
       }
+    } catch (err) {
+      // The user pressed Stop — the partial reply Magi already streamed is
+      // persisted server-side (see chatTurn.ts), so this isn't an error.
+      if (err instanceof DOMException && err.name === "AbortError") stopped = true;
+      else setError("Connection interrupted.");
     } finally {
-      streamRef.current?.reset();
-      setSending(false);
-      abortRef.current = null;
-      // Not load(): a turn can't change the Project's skills, the model roles,
-      // or the people roster, so refetching those five endpoints only delayed
-      // the finished reply appearing.
-      await reloadMessages();
+      await finishTurn(saved, stopped ? progress.text : "");
     }
+  }
+
+  // Returns whether the message was taken, so the composer knows to clear
+  // itself — a send refused because a turn is already running keeps the draft.
+  function send(rawContent: string, overrides?: { modelRole?: string }): boolean {
+    const content = rawContent.trim();
+    if ((!content && pendingAttachments.length === 0) || sending) return false;
+    void runSend(content, overrides?.modelRole ?? modelRole);
+    return true;
+  }
+
+  async function runSend(content: string, role: string) {
+    const attachmentIds = pendingAttachments.map((a) => a.id);
+    setPendingAttachments([]);
+    setSending(true);
+    setError(null);
+    setMessages((m) => [
+      ...m,
+      { id: `local-${Date.now()}`, role: "user", content, model: null, provenance: null, created_at: new Date().toISOString(), parent_id: null },
+    ]);
+    await runTurn(`/api/conversations/${conversationId}/chat`, { content, skillId: skillId || undefined, modelRole: role, attachmentIds });
   }
 
   function stop() {
@@ -366,37 +527,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
     setMessages((m) => m.slice(0, index));
     setSending(true);
     setError(null);
-    streamRef.current?.reset();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const res = await fetch(`/api/conversations/${conversationId}/chat/regenerate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messageId: targetId, skillId: skillId || undefined, modelRole }),
-        signal: controller.signal,
-      });
-      if (res.status === 412) {
-        const data = await res.json();
-        setError(data.message ?? "No API key configured.");
-        return;
-      }
-      if (!res.ok || !res.body) {
-        setError("Something went wrong reaching the model.");
-        return;
-      }
-      await streamChatResponse(res);
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === "AbortError")) {
-        setError("Connection interrupted.");
-      }
-    } finally {
-      streamRef.current?.reset();
-      setSending(false);
-      abortRef.current = null;
-      await reloadMessages();
-    }
+    await runTurn(`/api/conversations/${conversationId}/chat/regenerate`, { messageId: targetId, skillId: skillId || undefined, modelRole });
   }
 
   function startEdit(messageId: string, content: string) {
@@ -425,37 +556,7 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
       ...m.slice(0, index),
       { ...m[index], content, branchIndex: undefined, branchTotal: undefined, siblings: undefined },
     ]);
-    streamRef.current?.reset();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const res = await fetch(`/api/conversations/${conversationId}/messages/${messageId}/edit`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content, skillId: skillId || undefined, modelRole }),
-        signal: controller.signal,
-      });
-      if (res.status === 412) {
-        const data = await res.json();
-        setError(data.message ?? "No API key configured.");
-        return;
-      }
-      if (!res.ok || !res.body) {
-        setError("Something went wrong reaching the model.");
-        return;
-      }
-      await streamChatResponse(res);
-    } catch (err) {
-      if (!(err instanceof DOMException && err.name === "AbortError")) {
-        setError("Connection interrupted.");
-      }
-    } finally {
-      streamRef.current?.reset();
-      setSending(false);
-      abortRef.current = null;
-      await reloadMessages();
-    }
+    await runTurn(`/api/conversations/${conversationId}/messages/${messageId}/edit`, { content, skillId: skillId || undefined, modelRole });
   }
 
   async function switchBranch(messageId: string) {
@@ -619,6 +720,13 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
             Close episode
           </button>
           <button
+            onClick={() => void startNewConversation(router, `/projects/${projectId}`)}
+            className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors"
+            title="New conversation in this Project (Ctrl+Shift+O)"
+          >
+            New
+          </button>
+          <button
             onClick={() => setContextOpen((v) => !v)}
             className="focus-ring rounded-[3px] border border-[var(--color-border)] px-2 py-1 text-[11px] uppercase tracking-[0.08em] text-[var(--color-text-faint)] font-technical hover:text-[var(--color-text)] transition-colors"
           >
@@ -679,8 +787,15 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                     onToggleBranchPanel={() => setExpandedBranchFor((cur) => (cur === m.id ? null : m.id))}
                     onSwitchBranch={switchBranch}
                     switchingBranch={switchingBranch}
+                    conversationId={conversationId}
+                    councilQuestion={m.role === "assistant" ? councilQuestionFor(i) : ""}
+                    onCouncilStarted={councilStarted}
+                    onMemoryChanged={reloadMessages}
                   />
                 </div>
+              ))}
+              {pendingCouncils.map((c) => (
+                <PendingCouncilCard key={c.id} council={c} />
               ))}
               {sending && <StreamingMessage ref={streamRef} onGrow={recomputeJumpToLatest} />}
               {error && (
@@ -740,6 +855,12 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                 <div>{provenance.usedBrandGuide ? "Brand Guide applied" : "No Brand Guide set"}</div>
                 <div>{provenance.globalMemoryCount} global memory item(s)</div>
                 <div>{provenance.projectMemoryCount} Project memory item(s)</div>
+                {(provenance.decisionsInContext ?? 0) + (provenance.openQuestionsInContext ?? 0) > 0 && (
+                  <div>
+                    {provenance.decisionsInContext ?? 0} settled decision(s), {provenance.openQuestionsInContext ?? 0} open
+                    question(s)
+                  </div>
+                )}
                 {provenance.peopleOnProject > 0 && (
                   <div>
                     {provenance.peopleOnProject} person/people named on this Project (names only — facts come from
@@ -810,6 +931,24 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
                 {provenance.autoSelectedRole && (
                   <div>
                     Auto-selected: {roles.find((r) => r.id === provenance.autoSelectedRole)?.label ?? provenance.autoSelectedRole}
+                    {provenance.autoSelection && (
+                      <div className="text-[11.5px] text-[var(--color-text-faint)]">
+                        {provenance.autoSelection.decidedBy === "jev"
+                          ? `by Jev${
+                              provenance.autoSelection.confidence !== undefined
+                                ? `, ${Math.round(provenance.autoSelection.confidence * 100)}% confident`
+                                : ""
+                            }${
+                              provenance.autoSelectedRole === "default" &&
+                              (provenance.autoSelection.confidence ?? 1) < 0.5
+                                ? " — too unsure to override Default"
+                                : ""
+                            }`
+                          : provenance.autoSelection.decidedBy === "model"
+                            ? "by the Fast model"
+                            : "couldn't classify — used Default"}
+                      </div>
+                    )}
                   </div>
                 )}
                 {provenance.usage && (
@@ -907,28 +1046,12 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
             <Button variant="ghost" onClick={() => attachFileInputRef.current?.click()} disabled={uploadingAttachment}>
               <IconAttach />
             </Button>
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
-              }}
-              placeholder="Say something to Magi…"
-              rows={2}
-              className="focus-ring w-full resize-none rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-3 py-2 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-faint)]"
+            <Composer
+              sending={sending}
+              hasAttachments={pendingAttachments.length > 0}
+              onSend={send}
+              onStop={stop}
             />
-            {sending ? (
-              <Button variant="danger" onClick={stop} aria-label="Stop generating" title="Stop generating">
-                <IconStop />
-              </Button>
-            ) : (
-              <Button variant="accent" onClick={send} disabled={!draft.trim() && pendingAttachments.length === 0}>
-                <IconSend />
-              </Button>
-            )}
           </div>
         </div>
       </div>
@@ -936,12 +1059,80 @@ export function ConversationView({ projectId, conversationId }: { projectId: str
   );
 }
 
+// The message box. Its text lives here, not in ConversationView: held there,
+// every keystroke re-rendered the whole conversation — every message, and
+// every assistant reply's markdown re-parsed — which is what made typing lag
+// in a long conversation.
+function Composer({
+  sending,
+  hasAttachments,
+  onSend,
+  onStop,
+}: {
+  sending: boolean;
+  hasAttachments: boolean;
+  onSend: (content: string) => boolean;
+  onStop: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Ready to type the moment a conversation opens, the way a chat app is.
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  function submit() {
+    if (onSend(draft)) setDraft("");
+  }
+
+  return (
+    <>
+      <textarea
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            submit();
+          }
+        }}
+        placeholder="Say something to Magi…"
+        rows={2}
+        // Grows with what's typed, up to a limit, in CSS rather than a resize
+        // effect — measuring scrollHeight on every keystroke forced a layout
+        // of the whole conversation each time.
+        className="focus-ring w-full resize-none [field-sizing:content] min-h-[3.25rem] max-h-60 rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-3 py-2 text-[14px] text-[var(--color-text)] placeholder:text-[var(--color-text-faint)]"
+      />
+      {sending ? (
+        <Button variant="danger" onClick={onStop} aria-label="Stop generating" title="Stop generating">
+          <IconStop />
+        </Button>
+      ) : (
+        <Button variant="accent" onClick={submit} disabled={!draft.trim() && !hasAttachments}>
+          <IconSend />
+        </Button>
+      )}
+    </>
+  );
+}
+
+// A finished message's markdown, parsed once. Memoized on the text itself, so
+// nothing that re-renders a message — a hover action, a branch switch
+// elsewhere, a streaming reply below it — re-parses it.
+const MarkdownBody = memo(function MarkdownBody({ content }: { content: string }) {
+  return <>{renderMarkdown(content)}</>;
+});
+
 // The live reply, and the only thing on the page that re-renders while one is
 // streaming. It owns its own text so that arriving tokens never touch
 // ConversationView's state — see streamRef there. The handle is imperative for
 // the same reason: a prop would put the text back in the parent.
 export interface StreamHandle {
   setText: (text: string) => void;
+  setReasoning: (text: string) => void;
+  setStatus: (text: string | null) => void;
   setTool: (name: string | null) => void;
   reset: () => void;
 }
@@ -951,26 +1142,72 @@ const StreamingMessage = forwardRef<StreamHandle, { onGrow?: () => void }>(funct
   ref
 ) {
   const [text, setText] = useState("");
+  const [reasoning, setReasoning] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
   const [tool, setTool] = useState<string | null>(null);
+
+  // Tokens can arrive far faster than the screen redraws. Text and reasoning
+  // are held here and committed at most once per frame, so a fast model costs
+  // one render per frame rather than one per token.
+  const pending = useRef<{ text?: string; reasoning?: string }>({});
+  const frame = useRef(0);
+  const flush = useCallback(() => {
+    frame.current = 0;
+    const { text: nextText, reasoning: nextReasoning } = pending.current;
+    pending.current = {};
+    if (nextText !== undefined) setText(nextText);
+    if (nextReasoning !== undefined) setReasoning(nextReasoning);
+  }, []);
+  const schedule = useCallback(() => {
+    if (!frame.current) frame.current = requestAnimationFrame(flush);
+  }, [flush]);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   useImperativeHandle(
     ref,
     () => ({
-      setText,
+      setText: (next) => {
+        pending.current.text = next;
+        schedule();
+      },
+      setReasoning: (next) => {
+        pending.current.reasoning = next;
+        schedule();
+      },
+      setStatus,
       setTool,
       reset: () => {
+        cancelAnimationFrame(frame.current);
+        frame.current = 0;
+        pending.current = {};
         setText("");
+        setReasoning("");
+        setStatus(null);
         setTool(null);
       },
     }),
-    []
+    [schedule]
   );
 
   // Growing text pushes the page out from under a scroll position that used to
   // be at the bottom, so "jump to latest" has to be reconsidered as it arrives.
   useEffect(() => {
     onGrow?.();
-  }, [text, onGrow]);
+  }, [text, reasoning, onGrow]);
+
+  // Finished blocks are parsed once (MarkdownBody is memoized on its text) and
+  // only the block still being written re-parses per frame — so the reply is
+  // formatted as it arrives, without the cost growing with its length.
+  const { stable, tail } = splitStreamingMarkdown(text);
+  const label = tool
+    ? `using ${tool}…`
+    : text
+      ? "writing…"
+      : reasoning
+        ? "thinking…"
+        : status
+          ? `${status.toLowerCase()}…`
+          : "thinking…";
 
   return (
     <div className="group">
@@ -980,15 +1217,30 @@ const StreamingMessage = forwardRef<StreamHandle, { onGrow?: () => void }>(funct
         </span>
         <span className="flex items-center gap-1.5 text-[10.5px] text-[var(--color-accent)] font-technical">
           <MagiSpinner />
-          {tool ? `using ${tool}…` : text ? "writing…" : "thinking…"}
+          {label}
         </span>
       </div>
-      {/* Deliberately not parsed as markdown and deliberately not split into
-          per-line elements: both cost the whole reply's length on every token,
-          which is what made a long answer slow down as it wrote itself. The
-          finished message re-renders as real markdown a moment later. */}
+      {/* The model's thinking, while it's the only thing arriving: the tail of
+          it, faint, so a reasoning model visibly works instead of sitting on a
+          static label. Folded away once the answer itself starts. */}
+      {reasoning && !text && (
+        <div className="mb-2 max-h-28 overflow-hidden whitespace-pre-wrap border-l-2 border-[var(--color-border)] pl-3 text-[12.5px] leading-relaxed text-[var(--color-text-faint)] [mask-image:linear-gradient(to_bottom,transparent,black_40%)]">
+          {reasoning.slice(-600)}
+        </div>
+      )}
+      {reasoning && text && (
+        <details className="mb-2 text-[12px] text-[var(--color-text-faint)]">
+          <summary className="cursor-pointer select-none font-technical text-[10.5px] uppercase tracking-[0.08em]">
+            Reasoning
+          </summary>
+          <div className="mt-1 max-h-60 overflow-y-auto whitespace-pre-wrap border-l-2 border-[var(--color-border)] pl-3 leading-relaxed">
+            {reasoning}
+          </div>
+        </details>
+      )}
       <div className="prose-magi">
-        <p className="whitespace-pre-wrap">{text}</p>
+        {stable && <MarkdownBody content={stable} />}
+        {tail && renderMarkdown(tail)}
       </div>
     </div>
   );
@@ -1024,6 +1276,10 @@ function MessageBlock({
   onToggleBranchPanel,
   onSwitchBranch,
   switchingBranch,
+  conversationId,
+  councilQuestion,
+  onCouncilStarted,
+  onMemoryChanged,
 }: {
   message: Message;
   files?: ArtifactFile[];
@@ -1054,8 +1310,29 @@ function MessageBlock({
   onToggleBranchPanel?: () => void;
   onSwitchBranch?: (messageId: string) => void;
   switchingBranch?: boolean;
+  conversationId?: string;
+  councilQuestion?: string;
+  onCouncilStarted?: (council: PendingCouncil) => void;
+  onMemoryChanged?: () => void;
 }) {
   const isUser = message.role === "user";
+  const [askingCouncil, setAskingCouncil] = useState(false);
+  const parsedProvenance = useMemo(() => {
+    if (!message.provenance) return null;
+    try {
+      return JSON.parse(message.provenance) as {
+        memorySuggestion?: MemorySuggestionState;
+        councilQuestion?: boolean;
+        councilRunId?: string;
+      };
+    } catch {
+      return null;
+    }
+  }, [message.provenance]);
+  // The Council's own exchange in the thread: its answer isn't something a
+  // chat model can regenerate, and its question isn't one to edit into a chat turn.
+  const isCouncilAnswer = message.model === "magi-council";
+  const isCouncilQuestion = !!parsedProvenance?.councilQuestion;
   const branchTotal = message.branchTotal ?? 1;
   const branchIndex = message.branchIndex ?? 0;
   const siblings = message.siblings ?? [];
@@ -1070,7 +1347,7 @@ function MessageBlock({
         <span className="text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
           {isUser ? "You" : "Magi"}
         </span>
-        {message.model && <Tag>{message.model}</Tag>}
+        {message.model && <Tag>{isCouncilAnswer ? "Magi Council" : message.model}</Tag>}
         {branchTotal > 1 && (
           <span className="flex items-center gap-0.5 text-[10.5px] text-[var(--color-text-faint)] font-technical">
             <button
@@ -1126,7 +1403,7 @@ function MessageBlock({
         </div>
       ) : (
       <div className={isUser ? "text-[15px] leading-relaxed text-[var(--color-text)]" : "prose-magi"}>
-        {!isUser ? renderMarkdown(message.content) : message.content.split("\n").map((line, i) => (
+        {!isUser ? <MarkdownBody content={message.content} /> : message.content.split("\n").map((line, i) => (
           <p key={i}>{line || " "}</p>
         ))}
       </div>
@@ -1208,7 +1485,23 @@ function MessageBlock({
           >
             Save as artifact
           </button>
-          {onRegenerate && (
+          {isCouncilAnswer && parsedProvenance?.councilRunId && (
+            <Link
+              href={`/councils/runs/${parsedProvenance.councilRunId}#decision`}
+              className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
+            >
+              Record as a decision
+            </Link>
+          )}
+          {conversationId && onCouncilStarted && (
+            <button
+              onClick={() => setAskingCouncil((v) => !v)}
+              className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
+            >
+              Ask the Council
+            </button>
+          )}
+          {onRegenerate && !isCouncilAnswer && (
             <button
               onClick={onRegenerate}
               disabled={sending}
@@ -1219,7 +1512,7 @@ function MessageBlock({
           )}
         </div>
       )}
-      {isUser && !isEditing && onStartEdit && !message.hasAttachments && (
+      {isUser && !isEditing && onStartEdit && !message.hasAttachments && !isCouncilQuestion && (
         <div className="mt-2 flex gap-3 opacity-0 transition-opacity group-hover:opacity-100">
           <button
             onClick={onStartEdit}
@@ -1229,6 +1522,26 @@ function MessageBlock({
             <IconEdit /> Edit
           </button>
         </div>
+      )}
+      {!isUser && parsedProvenance?.memorySuggestion && conversationId && (
+        <MemorySuggestionRow
+          conversationId={conversationId}
+          messageId={message.id}
+          suggestion={parsedProvenance.memorySuggestion}
+          onChanged={onMemoryChanged}
+        />
+      )}
+      {askingCouncil && conversationId && onCouncilStarted && (
+        <AskCouncilPanel
+          conversationId={conversationId}
+          messageId={message.id}
+          defaultQuestion={councilQuestion ?? ""}
+          onStarted={(council) => {
+            setAskingCouncil(false);
+            onCouncilStarted(council);
+          }}
+          onCancel={() => setAskingCouncil(false)}
+        />
       )}
       {savingArtifact && (
         <div className="mt-2 flex items-center gap-2">
@@ -1282,6 +1595,255 @@ function MessageBlock({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ask the Council
+// ---------------------------------------------------------------------------
+
+const CONVERSATION_COUNCIL_MODES: Array<{ id: string; label: string; hint: string }> = [
+  { id: "independent", label: "Independent Analysis", hint: "Reasoner, Critic and Researcher analyze, critique each other, then synthesize" },
+  { id: "debate", label: "Debate", hint: "An Advocate and a Skeptic argue it out" },
+  { id: "redTeam", label: "Red Team", hint: "A Proposer answers, the Red Team tries to break it" },
+];
+
+function AskCouncilPanel({
+  conversationId,
+  messageId,
+  defaultQuestion,
+  onStarted,
+  onCancel,
+}: {
+  conversationId: string;
+  messageId: string;
+  defaultQuestion: string;
+  onStarted: (council: PendingCouncil) => void;
+  onCancel: () => void;
+}) {
+  const [question, setQuestion] = useState(defaultQuestion);
+  const [mode, setMode] = useState("independent");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function convene() {
+    if (!question.trim() || starting) return;
+    setStarting(true);
+    setError(null);
+    const res = await fetch(`/api/conversations/${conversationId}/council`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId, question, mode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setStarting(false);
+    if (!res.ok || !data.run) {
+      setError(data.error ?? "Couldn't convene the Council.");
+      return;
+    }
+    onStarted(data.run);
+  }
+
+  return (
+    <div className="mt-3 rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] p-3">
+      <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+        Ask the Council
+      </div>
+      <Textarea
+        autoFocus
+        rows={2}
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            convene();
+          }
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder="What should the Council deliberate on?"
+        className="text-[14px]"
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
+          aria-label="Council mode"
+          className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-text)]"
+        >
+          {CONVERSATION_COUNCIL_MODES.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <span className="min-w-0 flex-1 text-[11.5px] text-[var(--color-text-faint)]">
+          {CONVERSATION_COUNCIL_MODES.find((m) => m.id === mode)?.hint}. It reads this conversation so far.
+        </span>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="accent" onClick={convene} disabled={!question.trim() || starting}>
+          {starting ? "Convening…" : "Convene"}
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-[var(--color-danger)]">{error}</div>}
+    </div>
+  );
+}
+
+function PendingCouncilCard({ council }: { council: PendingCouncil }) {
+  const failed = council.status === "error";
+  const label = CONVERSATION_COUNCIL_MODES.find((m) => m.id === council.mode)?.label ?? "Council";
+  return (
+    <div className="rounded-[4px] border border-dashed border-[var(--color-border-strong)] px-4 py-3">
+      <div className="mb-1 flex items-center gap-2 text-[10.5px] font-technical">
+        <span className="font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)]">Magi Council</span>
+        {failed ? (
+          <span className="text-[var(--color-danger)]">couldn&apos;t finish</span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-[var(--color-accent)]">
+            <CouncilSpinner /> deliberating · {label}
+          </span>
+        )}
+      </div>
+      <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">{council.question}</p>
+      <div className="mt-1.5 text-[11.5px] text-[var(--color-text-faint)]">
+        {failed
+          ? "The deliberation hit an error. "
+          : "Its conclusion will appear here when it's done — you can keep talking meanwhile. "}
+        <Link
+          href={`/councils/runs/${council.id}`}
+          target="_blank"
+          className="underline decoration-[var(--color-border-strong)] underline-offset-2 hover:text-[var(--color-accent)]"
+        >
+          {failed ? "See what happened" : "Watch the deliberation"}
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Worth remembering?
+// ---------------------------------------------------------------------------
+
+interface MemorySuggestionState {
+  probability: number;
+  scope: "project" | "global";
+  state: "open" | "accepted" | "dismissed";
+  memoryId?: string;
+}
+
+function MemorySuggestionRow({
+  conversationId,
+  messageId,
+  suggestion,
+  onChanged,
+}: {
+  conversationId: string;
+  messageId: string;
+  suggestion: MemorySuggestionState;
+  onChanged?: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [scope, setScope] = useState<"project" | "global">(suggestion.scope);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const endpoint = `/api/conversations/${conversationId}/messages/${messageId}/memory`;
+
+  async function act(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      setError(data.error ?? "That didn't work.");
+      return null;
+    }
+    return data;
+  }
+
+  if (suggestion.state === "dismissed") return null;
+  if (suggestion.state === "accepted") {
+    return (
+      <div className="mt-2 text-[11.5px] text-[var(--color-text-faint)]">
+        Remembered.{" "}
+        <Link href="/memory" className="underline decoration-[var(--color-border-strong)] underline-offset-2 hover:text-[var(--color-accent)]">
+          See memory
+        </Link>
+      </div>
+    );
+  }
+
+  if (draft === null) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11.5px]">
+        <span className="text-[var(--color-text-muted)]">Worth remembering?</span>
+        <button
+          onClick={async () => {
+            const data = await act({ action: "draft" });
+            if (data) {
+              setDraft(data.content);
+              setScope(data.scope);
+            }
+          }}
+          disabled={busy}
+          className="text-[var(--color-accent)] hover:underline disabled:opacity-50"
+        >
+          {busy ? "Drafting…" : "Remember…"}
+        </button>
+        <button
+          onClick={async () => {
+            if (await act({ action: "dismiss" })) onChanged?.();
+          }}
+          disabled={busy}
+          className="text-[var(--color-text-faint)] hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          Not now
+        </button>
+        {error && <span className="text-[var(--color-danger)]">{error}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] p-3">
+      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+        Remember
+      </div>
+      <Textarea autoFocus rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} className="text-[13.5px]" />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select
+          value={scope}
+          onChange={(e) => setScope(e.target.value as "project" | "global")}
+          aria-label="Where to remember it"
+          className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-text)]"
+        >
+          <option value="project">In this Project</option>
+          <option value="global">Everywhere</option>
+        </select>
+        <span className="flex-1" />
+        <Button variant="ghost" onClick={() => setDraft(null)}>
+          Cancel
+        </Button>
+        <Button
+          variant="accent"
+          disabled={!draft.trim() || busy}
+          onClick={async () => {
+            if (await act({ action: "accept", content: draft, scope })) onChanged?.();
+          }}
+        >
+          Keep
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-[var(--color-danger)]">{error}</div>}
     </div>
   );
 }

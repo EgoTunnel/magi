@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Button, Input, Label, Panel } from "@/components/ui";
+import { Button, Input, Label, Panel, Tag } from "@/components/ui";
 
 interface ModelInfo {
   id: string;
@@ -100,6 +100,11 @@ export function SettingsClient() {
   const [tavilyKeyPreview, setTavilyKeyPreview] = useState<string | null>(null);
   const [tavilyInput, setTavilyInput] = useState("");
   const [savingTavily, setSavingTavily] = useState(false);
+  const [typesafeKeySet, setTypesafeKeySet] = useState(false);
+  const [typesafeKeyPreview, setTypesafeKeyPreview] = useState<string | null>(null);
+  const [typesafeModel, setTypesafeModel] = useState("");
+  const [typesafeInput, setTypesafeInput] = useState("");
+  const [savingTypesafe, setSavingTypesafe] = useState(false);
 
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
@@ -149,6 +154,9 @@ export function SettingsClient() {
     setChutesFetchedAt(settings.chutesModelsFetchedAt);
     setTavilyKeySet(settings.tavilyKeySet);
     setTavilyKeyPreview(settings.tavilyKeyPreview);
+    setTypesafeKeySet(settings.typesafeKeySet);
+    setTypesafeKeyPreview(settings.typesafeKeyPreview);
+    setTypesafeModel(settings.typesafeModel ?? "");
     setCrossProjectSearch(settings.crossProjectSearchEnabled);
     setEmbeddingModelIdState(settings.embeddingModelId);
     setLocalEmbeddingInput(settings.localEmbeddingBaseUrl ?? "");
@@ -272,6 +280,18 @@ export function SettingsClient() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tavilyApiKey: "" }),
     });
+    loadAll();
+  }
+
+  async function saveTypesafeKey(value: string) {
+    setSavingTypesafe(true);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ typesafeApiKey: value }),
+    });
+    setTypesafeInput("");
+    setSavingTypesafe(false);
     loadAll();
   }
 
@@ -553,6 +573,46 @@ export function SettingsClient() {
             Backs the web_search and web_fetch tools below. Without a key, models routed through
             OpenRouter fall back to OpenRouter&apos;s own built-in web search — but Anthropic&apos;s
             models have no fallback, and need this key to search the web at all.
+          </p>
+        </Panel>
+
+        <Panel className="mt-3 px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-[13.5px] font-medium text-[var(--color-text)]">TypeSafe (Jev — fast decisions)</div>
+            {typesafeKeySet && typesafeModel && <Tag>{typesafeModel}</Tag>}
+          </div>
+          {typesafeKeySet && (
+            <div className="mb-3 flex items-center justify-between text-[13px]">
+              <span className="text-[var(--color-text-muted)] font-technical">
+                Current key: {typesafeKeyPreview ?? "configured via environment"}
+              </span>
+              <Button variant="danger" onClick={() => saveTypesafeKey("")}>
+                Remove
+              </Button>
+            </div>
+          )}
+          <Label>API key</Label>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder="TypeSafe API key"
+              value={typesafeInput}
+              onChange={(e) => setTypesafeInput(e.target.value)}
+            />
+            <Button
+              variant="accent"
+              onClick={() => saveTypesafeKey(typesafeInput)}
+              disabled={!typesafeInput || savingTypesafe}
+            >
+              {savingTypesafe ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+            Optional. Jev doesn&apos;t chat — it answers typed questions (yes/no, pick one, rate on a scale) in
+            well under a second, with a confidence for each. With a key set, a conversation on{" "}
+            <strong>Auto</strong> is routed by Jev instead of by an extra call to your Fast model, which
+            makes Auto quick enough to leave on. If Jev fails or isn&apos;t sure, Magi falls back exactly as
+            before. The message you send is shared with TypeSafe AI to make that decision.
           </p>
         </Panel>
       </section>

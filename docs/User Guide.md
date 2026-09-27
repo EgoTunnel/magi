@@ -14,10 +14,15 @@ provider you choose to call.
 
 ```bash
 npm install
-npm run dev
+npm run build
+npm start
 ```
 
-Open `http://localhost:3000`. The first thing you'll want is a model. Go to **Settings** and add an
+Open `http://localhost:3000`. (`npm run dev` works too, but it's the slower development server —
+meant for changing Magi, not using it. On Windows, the desktop shortcut from
+`scripts/desktop/Install-Shortcut.ps1` builds and starts Magi for you. The first launch after an
+update rebuilds Magi, which takes a few minutes — a "Getting Magi ready" window shows it's working and
+turns into Magi when it's done. If it never does, `data\launcher.log` in the Magi folder says why.) The first thing you'll want is a model. Go to **Settings** and add an
 API key for at least one provider:
 
 - **Anthropic** — a direct integration. One provider, its own models.
@@ -45,6 +50,10 @@ Home · Projects · Archive · Memory · People · Image Lab · Councils · Skil
 documents, artifacts, Skills, Style Guides, Characters, and people — by wording, not just by title. The status
 bar at the bottom always shows where you are and which model is about to answer.
 
+**Ctrl+Shift+O** (⌘+Shift+O) starts a new conversation: in the current Project if you're inside one,
+otherwise it takes you Home. Home has a message box of its own — pick a Project, type, and send; the
+conversation is created with your first message, so an abandoned draft leaves nothing behind.
+
 ---
 
 ## Projects
@@ -62,7 +71,13 @@ you actually have when you open one: what's unresolved, what's settled, and what
 - **Open questions** and **Decisions** — closing a conversation proposes these, and they arrive tagged
   `PROPOSED` with **Keep** and discard beside them. You can also write either by hand with the **+**;
   anything you type yourself skips the proposal step, since writing it is already the deliberate part.
-  Resolve a question when it stops being open.
+  Resolve a question when it stops being open. A Council's conclusion can be recorded here too (see
+  Magi Council) — those carry a **from a Council** link back to the deliberation.
+
+  Kept decisions and open questions aren't just a list on this page: every conversation in the Project
+  sees them, as the Project's standing agreements and unresolved questions, so Magi builds on what's been
+  settled instead of relitigating it — and says so if something new seems to contradict a decision.
+  Proposals only join once you keep them. The Context panel counts how many were in play for a reply.
 - **Recent activity** — the last dozen things that happened here, of any kind, each a link. No single
   kind can flood it: an afternoon of image generation shows up as an afternoon of image generation, not
   as the entire history of the Project.
@@ -106,12 +121,26 @@ Open one from inside a Project. Two dropdowns sit above the message box:
   a small, cheap model to classify the task first (a real model call, not a keyword guess) and picks
   the best-fit role for you — it's opt-in, not the default, since it adds one extra round-trip and a
   small extra cost to every turn that uses it (both are visible in Settings → Usage & cost, logged
-  under role "classifier").
+  under role "classifier"). With a TypeSafe key in Settings, Jev makes that choice instead — typically
+  in a fraction of a second, for a fraction of a cent per thousand messages.
 
-Type and send. Responses stream in. The model can search your archive or do arithmetic mid-answer —
+Type and send. Responses stream in, formatted as they arrive, and can run long — a reply is allowed
+up to 64,000 tokens (less where the model's own limit is lower), so a long document or a reasoning
+model's thinking doesn't get cut off mid-sentence. While Magi gathers context you'll see
+what it's doing ("reading your Project…"), and a model that reasons before answering shows its
+thinking faintly as it goes — folded away under **Reasoning** once the answer starts, and not kept
+afterwards. Stop keeps whatever had already been written. The model can search your archive or do
+arithmetic mid-answer —
 click **Context** in the top right to see exactly what a given reply drew on: which Project
 instructions applied, how much memory was in play, which tools it actually called, and — on an Auto
 turn — which role got picked.
+
+**Worth remembering?** With a TypeSafe key set (Settings), Jev reads each exchange as it finishes and,
+when it's fairly sure you've stated or settled something durable — a fact about you or your work, a
+preference, a decision — a small "Worth remembering?" appears under the reply. **Remember…** drafts it
+as one line, which you can edit and keep in this Project or everywhere; **Not now** dismisses it.
+Nothing is ever remembered unless you press Keep. Without a key, nothing is suggested, and the
+"Remember in Project / globally" actions work as before.
 
 The **Retrieved for this message** list is the important part. Magi doesn't hand the model the front
 of every document and hope the answer is in there; it indexes everything in the Project as passages
@@ -336,11 +365,42 @@ modes:
 - **Red Team** (default: Proposer, Red Team — 2 or more roles) — the Proposer answers the question, the
   Red Team role(s) attack it aggressively, the Proposer defends, then a Synthesizer assesses which
   attacks actually held up.
+- **Decision Matrix** (default: Reasoner, Critic, Researcher) — for choosing between options. List 2–6
+  options and 1–6 criteria, each weighted from 1 (minor) to 5 (critical). Every member assesses every
+  option against every criterion in their own words — no numbers. Each cell is then rated on a
+  five-step scale (Very poor → Excellent): by **Jev** when a TypeSafe key is set, with a confidence
+  per rating, or otherwise by your Synthesizer model. The weighting is plain arithmetic, done by Magi.
+  The result page shows the grid ranked by weighted score out of 10, marks any rating Jev was less
+  than 50% sure of with a "?", and names the criteria the ranking **turns on** — the ones whose
+  removal would put a different option first. Hover a cell to see how Jev's probability spread across
+  the scale; an unsure rating counts for less in the total. The Synthesizer writes its conclusion
+  from the scored grid.
 
 In every mode, the Synthesizer explicitly **preserves disagreement** rather than smoothing it over —
 Debate's synthesis never declares a winner, and Red Team's never simply says "the attack won" or "the
 proposal survived." The result page shows a Consensus rating (Strong/Moderate/Weak/None), the specific
 disagreement if there is one, and the full transcript by stage.
+
+With a TypeSafe key set, the consensus rating is **measured by Jev** rather than reported by the
+Synthesizer: Jev reads the members' own contributions (never the Synthesizer's summary) and rates how
+much they agree — or, in Red Team, how much of the proposal survived. Under the conclusion, "Consensus
+measured by Jev" opens how its probability spread across the four levels, and says so when the
+Synthesizer had called it differently. Without a key, the Synthesizer's rating is used, as before.
+
+**Ask the Council from a conversation.** Hover any of Magi's replies and choose **Ask the Council**.
+The question it was answering is filled in (edit it freely); pick Independent Analysis, Debate or Red
+Team and **Convene**. The Council reads the conversation up to that reply as its material, plus the
+Project's documents, and deliberates in the background — a card in the thread shows it working, and
+you can keep talking meanwhile. When it's done, your question and the Council's conclusion (consensus,
+where it disagreed, and a link to the full deliberation) are added to the conversation, so what you
+say next builds on it.
+
+**Record a Council's conclusion as a decision.** On a finished deliberation that ran in a Project, **Record
+as a decision…** drafts the decision it reached as a sentence or two — plus, if the Council left
+something unresolved, an open question. Edit both, then **Record in** the Project: the decision is
+settled and the question open straight away, both linked back to the deliberation, and from then on
+part of every conversation there (see Where the work stands). A Council's answer in a conversation has
+a **Record as a decision** link that takes you straight there.
 
 You can also save a named Council configuration (custom roles, custom system prompts, each assigned a
 model role) to reuse later, instead of a default preset — any saved Council can be run through any of
@@ -413,6 +473,12 @@ The Projects never merge. Only the connection between them becomes visible, and 
   Councils, and Connections. Below that, the cross-Project search toggle: whether `search_archive` may
   look beyond the current Project. Skills and individual Agent runs can narrow these further for
   themselves, but never turn something back on that's off here.
+- **TypeSafe (Jev)** — optional. Jev is a "System One" model: it doesn't write text, it answers typed
+  questions (yes/no, pick one of these, rate on this scale) in well under a second, with a confidence
+  for each answer. With a key set, **Auto** in a conversation is decided by Jev instead of by an extra
+  call to your Fast model — quick and cheap enough to leave on. If Jev is less than 50% sure, the turn
+  stays on Default; if Jev fails, Magi asks the Fast model as before. The Context panel shows which
+  one decided and how confident it was. The text of your message is sent to TypeSafe AI to decide.
 - **Semantic search** — requires an OpenRouter key (Anthropic has no embeddings API). Pick an embedding
   model, then click **Build index** once to cover everything already in your archive — new and edited
   content is embedded automatically from then on. Switching the embedding model later doesn't delete

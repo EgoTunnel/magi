@@ -29,8 +29,15 @@ function createDb() {
   return db;
 }
 
+// One connection per process, in production too. Next instantiates server
+// modules once per bundle layer (pages and API routes each get their own copy
+// of this file), which without the global meant two connections to the same
+// file in one process. That was harmless until the passage-vector cache in
+// retrieval.ts, which tells its own writes from anyone else's by SQLite's
+// per-connection data_version — two connections in-process would make every
+// write look foreign, or worse, make two unrelated counters look comparable.
 export const db = globalThis.__magiDb ?? createDb();
-if (process.env.NODE_ENV !== "production") globalThis.__magiDb = db;
+globalThis.__magiDb = db;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS settings (
@@ -410,6 +417,19 @@ addColumnIfMissing("projects", "pinned", "INTEGER NOT NULL DEFAULT 0");
 db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_project_id)`);
 addColumnIfMissing("images", "source", "TEXT NOT NULL DEFAULT 'generated'");
 addColumnIfMissing("council_runs", "attachments", "TEXT NOT NULL DEFAULT '[]'");
+// How the consensus rating was arrived at (measured by Jev, or the
+// Synthesizer's own call), and a Decision Matrix run's options, criteria and
+// scores — both JSON, see CouncilRun in src/lib/repo/councils.ts.
+addColumnIfMissing("council_runs", "consensus_detail", "TEXT");
+addColumnIfMissing("council_runs", "matrix", "TEXT");
+// A Council asked from inside a conversation ("Ask the Council"): where it
+// was asked from, and the reply its conclusion was posted back as.
+addColumnIfMissing("council_runs", "conversation_id", "TEXT REFERENCES conversations(id) ON DELETE SET NULL");
+addColumnIfMissing("council_runs", "source_message_id", "TEXT");
+addColumnIfMissing("council_runs", "result_message_id", "TEXT");
+// A decision or open question recorded from a Council's conclusion — which
+// deliberation it came from, so the note can link back to its reasoning.
+addColumnIfMissing("project_notes", "council_run_id", "TEXT REFERENCES council_runs(id) ON DELETE SET NULL");
 // Rolling summary of the turns that have aged out of a conversation's live
 // window — see src/lib/conversationWindow.ts. through_id is how the fold stays
 // incremental: only messages after it need summarizing again.

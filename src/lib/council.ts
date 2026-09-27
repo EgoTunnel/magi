@@ -1,6 +1,7 @@
 import { getModel, modelForRole, reasoningEffortForRole } from "@/lib/models/registry";
 import type { ModelRoleId, TokenUsage, ToolCallRecord } from "@/lib/models/types";
-import type { CouncilMode, CouncilRole, CouncilTranscriptEntry, RunAttachment } from "@/lib/repo/councils";
+import type { CouncilMode, CouncilRole, CouncilTranscriptEntry, MatrixResult, RunAttachment } from "@/lib/repo/councils";
+import { matrixTable, measureConsensus, scoreMatrix } from "@/lib/councilJudgment";
 import { updateCouncilRun } from "@/lib/repo/councils";
 import { getProject } from "@/lib/repo/projects";
 import { listDocuments } from "@/lib/repo/documents";
@@ -80,7 +81,10 @@ async function completeAs(
     model: modelId,
     system: `${composeSystemPrompt(skill, role.systemPrompt)}\n\n${COUNCIL_TOOL_GUIDANCE}${opts.contextBlock}`,
     messages: [{ role: "user", content: prompt }],
-    maxTokens: 3000,
+    // A member's analysis, or the Synthesizer's whole conclusion — and, on a
+    // reasoning model, its thinking too, which counts against the same limit.
+    // 3,000 cut long syntheses off mid-section.
+    maxTokens: 8000,
     tools,
     onToolCall: opts.withTools
       ? (name, input) => executeTool(name, input, { projectId: opts.projectId, allowedToolNames })
@@ -123,6 +127,39 @@ interface PipelineOpts {
   roles: CouncilRole[];
   projectId?: string | null;
   contextBlock: string;
+  mode: CouncilMode;
+  matrix?: Pick<MatrixResult, "options" | "criteria">;
+}
+
+// Every mode ends here: the Synthesizer's sections, and a consensus rating —
+// measured by Jev over the members' own words when it's configured, the
+// Synthesizer's own call otherwise (see measureConsensus).
+async function finishRun(
+  opts: PipelineOpts,
+  transcript: CouncilTranscriptEntry[],
+  synthesisRaw: string,
+  extra: { matrix?: MatrixResult } = {}
+) {
+  const { consensus: said, disagreement, synthesis } = parseSynthesis(synthesisRaw);
+  const detail = await measureConsensus({
+    runId: opts.runId,
+    projectId: opts.projectId,
+    mode: opts.mode,
+    question: opts.question,
+    transcript,
+    synthesizerSaid: said,
+  });
+  updateCouncilRun(opts.runId, {
+    transcript,
+    // The measured level when there is one; the Synthesizer's words when
+    // there isn't (including the rare reply that named no level at all).
+    consensus: detail.level ?? said,
+    consensus_detail: detail,
+    disagreement,
+    synthesis,
+    status: "complete",
+    ...extra,
+  });
 }
 
 async function runIndependentAnalysis(opts: PipelineOpts) {
@@ -192,8 +229,7 @@ async function runIndependentAnalysis(opts: PipelineOpts) {
   });
   transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
 
-  const { consensus, disagreement, synthesis } = parseSynthesis(synthesisRaw);
-  updateCouncilRun(opts.runId, { transcript, consensus, disagreement, synthesis, status: "complete" });
+  await finishRun(opts, transcript, synthesisRaw);
 }
 
 // "Models argue opposing positions" (Product Vision §42) — pairwise only.
@@ -257,8 +293,7 @@ async function runDebate(opts: PipelineOpts) {
   });
   transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
 
-  const { consensus, disagreement, synthesis } = parseSynthesis(synthesisRaw);
-  updateCouncilRun(opts.runId, { transcript, consensus, disagreement, synthesis, status: "complete" });
+  await finishRun(opts, transcript, synthesisRaw);
 }
 
 // "A model attacks the argument" (Product Vision §42) — role 1 proposes,
@@ -322,8 +357,83 @@ async function runRedTeam(opts: PipelineOpts) {
   });
   transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
 
-  const { consensus, disagreement, synthesis } = parseSynthesis(synthesisRaw);
-  updateCouncilRun(opts.runId, { transcript, consensus, disagreement, synthesis, status: "complete" });
+  await finishRun(opts, transcript, synthesisRaw);
+}
+
+// Decision Matrix (the Product Vision's "decision rules", §42's Expert Panel
+// pointed at a choice). Members assess every option against every criterion
+// in prose — they are not asked for numbers, because a number a model writes
+// into prose is a number nothing can check. The scoring is a separate, typed
+// step (scoreMatrix: Jev when configured), and the weighting is arithmetic.
+// The Synthesizer then writes from the scored grid, so its conclusion and the
+// table can't quietly disagree.
+async function runDecisionMatrix(opts: PipelineOpts) {
+  if (!opts.matrix) throw new Error("Decision Matrix needs options and criteria.");
+  const { options, criteria } = opts.matrix;
+  const transcript: CouncilTranscriptEntry[] = [];
+
+  const optionList = options.map((o) => `- ${o}`).join("\n");
+  const criteriaList = criteria.map((c) => `- ${c.name} (weight ${c.weight} of 5)`).join("\n");
+  const assessmentPrompt =
+    `Decision put to the Magi Council:\n\n${opts.question}\n\nOptions:\n${optionList}\n\nCriteria:\n${criteriaList}\n\n` +
+    `Assess every option against every criterion. Give each option its own heading, written exactly as the ` +
+    `option's name (e.g. "### ${options[0]}"), and under it address each criterion in turn — concretely, with ` +
+    `reasons, and saying plainly where you're unsure or where the material doesn't say. Don't give numeric ` +
+    `scores; they are assigned separately from what you write.`;
+  const assessments = await Promise.all(
+    opts.roles.map(async (role) => {
+      const { content, modelId, toolCalls } = await completeAs(role, assessmentPrompt, {
+        withTools: true,
+        projectId: opts.projectId,
+        runId: opts.runId,
+        contextBlock: opts.contextBlock,
+      });
+      return { role, modelId, content, toolCalls };
+    })
+  );
+  for (const a of assessments) {
+    transcript.push({
+      role: a.role.name,
+      modelRole: a.role.modelRole,
+      modelId: a.modelId,
+      stage: "assessment",
+      content: a.content,
+      toolCalls: a.toolCalls,
+    });
+  }
+  updateCouncilRun(opts.runId, { transcript, status: "running" });
+
+  const scored = await scoreMatrix({
+    runId: opts.runId,
+    projectId: opts.projectId,
+    question: opts.question,
+    options,
+    criteria,
+    assessments: assessments.map((a) => ({ member: a.role.name, text: a.content })),
+  });
+  updateCouncilRun(opts.runId, { transcript, matrix: scored, status: "running" });
+
+  const synthesisRole: CouncilRole = {
+    name: "Synthesizer",
+    modelRole: "synthesizer",
+    systemPrompt:
+      "You are the Synthesizer for a Magi Council Decision Matrix. You are given the members' assessments and the " +
+      "scored matrix. Write from the matrix — do not re-score or contradict it; if you think a rating is wrong, say " +
+      "so and why, as a caveat. Say what the result turns on and how close it is. Structure your response with " +
+      "exactly these labeled sections: 'Consensus: <Strong|Moderate|Weak|None>' (how much the members agree on " +
+      "which option is best), 'Key disagreement: <where the members' assessments diverge in a way that affects " +
+      "the ranking, or \"None\">', and 'Synthesis: <the recommendation, its strength, and what would change it>'.",
+  };
+  const record = assessments.map((a) => `${a.role.name} (assessment):\n${a.content}`).join("\n\n");
+  const synthesisPrompt = `Decision: ${opts.question}\n\nScored matrix:\n\n${matrixTable(scored)}\n\nMembers' assessments:\n\n${record}`;
+  const { content: synthesisRaw, modelId: synthModel } = await completeAs(synthesisRole, synthesisPrompt, {
+    projectId: opts.projectId,
+    runId: opts.runId,
+    contextBlock: opts.contextBlock,
+  });
+  transcript.push({ role: "Synthesizer", modelRole: "synthesizer", modelId: synthModel, stage: "synthesis", content: synthesisRaw });
+
+  await finishRun(opts, transcript, synthesisRaw, { matrix: scored });
 }
 
 export async function runCouncilDeliberation(opts: {
@@ -333,14 +443,16 @@ export async function runCouncilDeliberation(opts: {
   projectId?: string | null;
   mode?: CouncilMode;
   attachments?: RunAttachment[];
+  matrix?: Pick<MatrixResult, "options" | "criteria">;
 }) {
   const contextBlock = buildContextBlock(opts.projectId, opts.attachments ?? []);
-  const pipelineOpts: PipelineOpts = { ...opts, contextBlock };
+  const mode = opts.mode ?? "independent";
+  const pipelineOpts: PipelineOpts = { ...opts, mode, contextBlock };
 
   try {
-    const mode = opts.mode ?? "independent";
     if (mode === "debate") await runDebate(pipelineOpts);
     else if (mode === "redTeam") await runRedTeam(pipelineOpts);
+    else if (mode === "matrix") await runDecisionMatrix(pipelineOpts);
     else await runIndependentAnalysis(pipelineOpts);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

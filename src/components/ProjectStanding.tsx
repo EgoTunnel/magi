@@ -11,6 +11,8 @@ export interface ProjectNote {
   content: string;
   status: "proposed" | "open" | "settled" | "resolved";
   conversation_id: string | null;
+  // Set when it was recorded from a Council's conclusion.
+  council_run_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -344,6 +346,14 @@ function NoteColumn({
             <li key={n.id} className="group text-[12.5px] leading-relaxed">
               <div className={n.status === "proposed" ? "text-[var(--color-text-muted)]" : "text-[var(--color-text)]"}>
                 {n.content}
+                {n.council_run_id && (
+                  <Link
+                    href={`/councils/runs/${n.council_run_id}`}
+                    className="ml-1.5 whitespace-nowrap text-[11px] text-[var(--color-text-faint)] underline decoration-[var(--color-border-strong)] underline-offset-2 hover:text-[var(--color-accent)]"
+                  >
+                    from a Council
+                  </Link>
+                )}
               </div>
               {/* A proposal's Keep/discard stays visible: the band announces
                   that there are proposals to review, so hiding the action

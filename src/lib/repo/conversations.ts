@@ -201,6 +201,17 @@ export function getActivePath(conversationId: string): Message[] {
 // can name the message it is about to add and act on that name first — the
 // chat route starts retrieval, which has to exclude this message, before the
 // message itself is written. Pass the result as addMessage's `id`.
+// Replaces a message's provenance — for annotations that arrive after the
+// message itself, like a memory suggestion being accepted or dismissed. The
+// message's content is never touched.
+export function setMessageProvenance(id: string, provenance: unknown) {
+  db.prepare(`UPDATE messages SET provenance = ? WHERE id = ?`).run(JSON.stringify(provenance), id);
+}
+
+export function getMessage(id: string): Message | null {
+  return (db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id) as Message | undefined) ?? null;
+}
+
 export function newMessageId(): string {
   return newId("msg");
 }

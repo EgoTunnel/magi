@@ -1,12 +1,16 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { listProjects, projectCounts } from "@/lib/repo/projects";
 import { isAnyProviderConfigured } from "@/lib/models/registry";
 import { Button, EmptyState, Panel, Tag } from "@/components/ui";
 import { IconArchive, IconCouncil, IconMemory, IconPlus, IconSkills } from "@/components/icons";
+import { HomeComposer } from "./HomeComposer";
 
 const HOMEPAGE_PROJECT_LIMIT = 4;
 
-export default function HomePage() {
+export default async function HomePage() {
+  // Read at request time, never at build time — see the Sidebar.
+  await connection();
   const allProjects = listProjects();
   const projects = allProjects.slice(0, HOMEPAGE_PROJECT_LIMIT);
   const remaining = allProjects.length - projects.length;
@@ -24,6 +28,10 @@ export default function HomePage() {
         Magi holds onto your Projects, memory, and archive no matter which AI model you&rsquo;re using today.
         Switch models whenever you like — the work underneath stays exactly where you left it.
       </p>
+
+      {allProjects.length > 0 && (
+        <HomeComposer projects={allProjects.map((p) => ({ id: p.id, name: p.name }))} />
+      )}
 
       {!configured && (
         <div className="mt-6 flex items-center justify-between gap-4 rounded-[4px] border border-[var(--color-accent)] bg-[var(--color-surface)] px-4 py-3">
