@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Starting Magi</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Shown by Start-Magi.ps1 the moment the shortcut is clicked, while Magi
+  builds (after an update) and starts. It checks for the server itself and
+  turns into Magi as soon as it answers. Colors mirror src/app/globals.css.
+-->
+<style>
+  :root {
+    --bg: #f2ede2; --surface: #e7dfcb; --border: #d6ccb4;
+    --text: #2a241a; --muted: #6b6150; --faint: #8f846c; --accent: #a84a24;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16130e; --surface: #211c15; --border: #3a3226;
+      --text: #ece4d3; --muted: #b3a88f; --faint: #7d7360; --accent: #d97a3f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.6 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  main { max-width: 440px; width: 100%; }
+  .mark { width: 28px; height: 28px; color: var(--accent); margin-bottom: 18px; }
+  .eyebrow {
+    font: 500 11px/1 "IBM Plex Mono", Consolas, monospace; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 8px;
+  }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 10px; letter-spacing: -0.01em; }
+  p { margin: 0 0 10px; color: var(--muted); }
+  .bar { height: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent); border-radius: 2px; overflow: hidden; margin: 18px 0 10px; }
+  .bar::after {
+    content: ""; display: block; height: 100%; width: 30%; background: var(--accent); border-radius: 2px;
+    animation: slide 1.6s ease-in-out infinite;
+  }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  @media (prefers-reduced-motion: reduce) { .bar::after { animation: none; width: 100%; opacity: 0.5; } }
+  .elapsed { font: 12px "IBM Plex Mono", Consolas, monospace; color: var(--faint); }
+  .problem { display: none; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: 4px; background: var(--surface); }
+  .problem p { color: var(--text); }
+  code { font: 12.5px "IBM Plex Mono", Consolas, monospace; word-break: break-all; color: var(--text); }
+  body.failed .bar { display: none; }
+  body.failed .problem { display: block; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" aria-hidden="true">
+    <path d="M4 20V4M20 20V4M8 8l4 5 4-5"/>
+  </svg>
+  <div class="eyebrow">Magi</div>
+  <h1>Getting Magi ready…</h1>
+  <p>After an update, Magi rebuilds itself once before it opens — that can take a few minutes. Launches after that are quick.</p>
+  <div class="bar" role="progressbar" aria-label="Starting"></div>
+  <div class="elapsed" id="elapsed" aria-live="off"></div>
+  <div class="problem" role="alert">
+    <p><strong>Magi hasn't started.</strong> What happened is written in the launcher log:</p>
+    <p><code id="log">data\launcher.log in your Magi folder</code></p>
+    <p>This window will still open Magi if it starts later.</p>
+  </div>
+</main>
+<script>
+  // The server's own icon: loading it is how this page knows Magi is answering.
+  // An <img> works from a local file where fetch() would be blocked.
+  var MAGI = "http://localhost:3000/";
+  var started = Date.now();
+  // Past this, something is wrong rather than slow — the launcher gives a
+  // build 15 minutes and the server 3 more.
+  var GIVE_UP_MS = 19 * 60 * 1000;
+
+  var logParam = new URLSearchParams(location.search).get("log");
+  if (logParam) document.getElementById("log").textContent = logParam;
+
+  function check() {
+    var img = new Image();
+    img.onload = function () { location.replace(MAGI); };
+    img.onerror = function () { setTimeout(check, 1000); };
+    img.src = MAGI + "icon.svg?t=" + Date.now();
+  }
+
+  setInterval(function () {
+    var s = Math.floor((Date.now() - started) / 1000);
+    document.getElementById("elapsed").textContent =
+      Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0") + " elapsed";
+    if (Date.now() - started > GIVE_UP_MS) document.body.classList.add("failed");
+  }, 1000);
+  check();
+</script>
+</body>
+</html>

@@ -20,7 +20,9 @@ npm start
 
 Open `http://localhost:3000`. (`npm run dev` works too, but it's the slower development server —
 meant for changing Magi, not using it. On Windows, the desktop shortcut from
-`scripts/desktop/Install-Shortcut.ps1` builds and starts Magi for you.) The first thing you'll want is a model. Go to **Settings** and add an
+`scripts/desktop/Install-Shortcut.ps1` builds and starts Magi for you. The first launch after an
+update rebuilds Magi, which takes a few minutes — a "Getting Magi ready" window shows it's working and
+turns into Magi when it's done. If it never does, `data\launcher.log` in the Magi folder says why.) The first thing you'll want is a model. Go to **Settings** and add an
 API key for at least one provider:
 
 - **Anthropic** — a direct integration. One provider, its own models.

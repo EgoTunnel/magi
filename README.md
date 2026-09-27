@@ -31,8 +31,10 @@ npm start
 Open [http://localhost:3000](http://localhost:3000). `npm run dev` also works and is what you want
 while changing Magi's code, but it compiles each page on first visit and ships React's development
 build, so it is noticeably slower to use day to day. Rebuild after pulling new code. On Windows,
-`scripts/desktop/Install-Shortcut.ps1` creates a desktop shortcut that does this for you: it rebuilds
-only when the code has changed, starts the server, and opens Magi in its own window. On first run, go to **Settings** and add an
+`scripts/desktop/Install-Shortcut.ps1` creates a desktop shortcut that does this for you: it shows a
+"Getting Magi ready" window straight away, rebuilds only when the code has changed (a few minutes the
+first time after an update), starts the server, and the window becomes Magi when it's ready. Everything
+it does is written to `data\launcher.log` — the first place to look if Magi doesn't open. On first run, go to **Settings** and add an
 API key for at least one provider — Magi needs one before it can think. Anthropic is a direct
 integration; OpenRouter is a one-stop shop for most other providers' models, with its catalog fetched
 live from OpenRouter's own API rather than hardcoded. Keys are stored locally in Magi's own SQLite
