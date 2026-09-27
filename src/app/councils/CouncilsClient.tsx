@@ -45,7 +45,14 @@ interface PendingAttachment {
   dataBase64: string;
 }
 
-type CouncilMode = "independent" | "debate" | "redTeam";
+type CouncilMode = "independent" | "debate" | "redTeam" | "matrix";
+
+interface MatrixCriterionDraft {
+  name: string;
+  weight: number;
+}
+
+const WEIGHT_LABEL: Record<number, string> = { 1: "Minor", 2: "Low", 3: "Medium", 4: "High", 5: "Critical" };
 
 // "Historian → research tools" (Product Vision §45) — the Researcher's job is
 // to go find things, so it gets search + web.
@@ -120,6 +127,7 @@ const MODE_LABEL: Record<CouncilMode, string> = {
   independent: "Independent Analysis",
   debate: "Debate",
   redTeam: "Red Team",
+  matrix: "Decision Matrix",
 };
 
 function defaultRolesForMode(mode: CouncilMode): CouncilRole[] {
@@ -134,6 +142,19 @@ function defaultRolesForMode(mode: CouncilMode): CouncilRole[] {
 function modeRoleError(mode: CouncilMode, roleCount: number): string | null {
   if (mode === "debate" && roleCount !== 2) return "Debate mode needs exactly 2 roles.";
   if (mode === "redTeam" && roleCount < 2) return "Red Team mode needs at least 2 roles.";
+  return null;
+}
+
+// Mirrors readMatrixInput in src/lib/councilJudgment.ts, for the same reason.
+function matrixError(options: string[], criteria: MatrixCriterionDraft[]): string | null {
+  const named = options.map((o) => o.trim()).filter(Boolean);
+  if (named.length < 2) return "Add at least two options to decide between.";
+  if (new Set(named.map((o) => o.toLowerCase())).size !== named.length) return "Each option needs a different name.";
+  const crit = criteria.filter((c) => c.name.trim());
+  if (crit.length < 1) return "Add at least one criterion to judge them on.";
+  if (new Set(crit.map((c) => c.name.trim().toLowerCase())).size !== crit.length) {
+    return "Each criterion needs a different name.";
+  }
   return null;
 }
 
@@ -152,6 +173,8 @@ export function CouncilsClient() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [matrixOptions, setMatrixOptions] = useState<string[]>(["", ""]);
+  const [matrixCriteria, setMatrixCriteria] = useState<MatrixCriterionDraft[]>([{ name: "", weight: 3 }]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [formOpen, setFormOpen] = useState(false);
@@ -213,6 +236,12 @@ export function CouncilsClient() {
     setRunning(true);
     setError(null);
     const payload: Record<string, unknown> = { question, projectId: projectId || undefined, mode, attachments };
+    if (mode === "matrix") {
+      payload.matrix = {
+        options: matrixOptions.map((o) => o.trim()).filter(Boolean),
+        criteria: matrixCriteria.filter((c) => c.name.trim()).map((c) => ({ name: c.name.trim(), weight: c.weight })),
+      };
+    }
     if (selectedCouncilId === "__default") {
       payload.roles = defaultRolesForMode(mode);
     } else {
@@ -276,7 +305,8 @@ export function CouncilsClient() {
     selectedCouncilId === "__default"
       ? defaultRolesForMode(mode).length
       : councils.find((c) => c.id === selectedCouncilId)?.roles.length ?? 0;
-  const roleError = modeRoleError(mode, effectiveRoleCount);
+  const roleError =
+    modeRoleError(mode, effectiveRoleCount) ?? (mode === "matrix" ? matrixError(matrixOptions, matrixCriteria) : null);
 
   return (
     <div className="mx-auto max-w-2xl px-8 py-8">
@@ -286,7 +316,7 @@ export function CouncilsClient() {
         </h2>
         <Panel className="px-5 py-5">
           <Label>Question</Label>
-          <Textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3} placeholder="Put a substantial question to the Council…" className="mb-2" />
+          <Textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3} placeholder={mode === "matrix" ? "What are you deciding? e.g. Which database should the new service use?" : "Put a substantial question to the Council…"} className="mb-2" />
           <input
             ref={fileInputRef}
             type="file"
@@ -353,6 +383,89 @@ export function CouncilsClient() {
               ))}
             </select>
           </div>
+          {mode === "matrix" && (
+            <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <Label>Options</Label>
+                <div className="flex flex-col gap-1.5">
+                  {matrixOptions.map((o, i) => (
+                    <div key={i} className="flex gap-1.5">
+                      <Input
+                        value={o}
+                        onChange={(e) => setMatrixOptions((os) => os.map((x, idx) => (idx === i ? e.target.value : x)))}
+                        placeholder={`Option ${i + 1}`}
+                      />
+                      {matrixOptions.length > 2 && (
+                        <button
+                          onClick={() => setMatrixOptions((os) => os.filter((_, idx) => idx !== i))}
+                          className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                          aria-label={`Remove option ${i + 1}`}
+                        >
+                          <IconTrash />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {matrixOptions.length < 6 && (
+                    <Button variant="ghost" onClick={() => setMatrixOptions((os) => [...os, ""])}>
+                      <IconPlus /> Add option
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <div>
+                <Label>Criteria &amp; weight</Label>
+                <div className="flex flex-col gap-1.5">
+                  {matrixCriteria.map((c, i) => (
+                    <div key={i} className="flex gap-1.5">
+                      <Input
+                        value={c.name}
+                        onChange={(e) =>
+                          setMatrixCriteria((cs) => cs.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))
+                        }
+                        placeholder={i === 0 ? "e.g. Cost" : `Criterion ${i + 1}`}
+                      />
+                      <select
+                        value={c.weight}
+                        onChange={(e) =>
+                          setMatrixCriteria((cs) =>
+                            cs.map((x, idx) => (idx === i ? { ...x, weight: Number(e.target.value) } : x))
+                          )
+                        }
+                        aria-label={`Weight of criterion ${i + 1}`}
+                        className="focus-ring shrink-0 rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-1.5 text-[12.5px] text-[var(--color-text)]"
+                      >
+                        {[1, 2, 3, 4, 5].map((w) => (
+                          <option key={w} value={w}>
+                            {w} · {WEIGHT_LABEL[w]}
+                          </option>
+                        ))}
+                      </select>
+                      {matrixCriteria.length > 1 && (
+                        <button
+                          onClick={() => setMatrixCriteria((cs) => cs.filter((_, idx) => idx !== i))}
+                          className="focus-ring text-[var(--color-text-faint)] hover:text-[var(--color-danger)]"
+                          aria-label={`Remove criterion ${i + 1}`}
+                        >
+                          <IconTrash />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {matrixCriteria.length < 6 && (
+                    <Button variant="ghost" onClick={() => setMatrixCriteria((cs) => [...cs, { name: "", weight: 3 }])}>
+                      <IconPlus /> Add criterion
+                    </Button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[11.5px] leading-relaxed text-[var(--color-text-faint)] sm:col-span-2">
+                Members assess every option against every criterion in their own words; each cell is then rated
+                separately — by Jev when a TypeSafe key is set — and weighted in code. You see the scores, how sure
+                each one is, and which criteria the ranking actually turns on.
+              </p>
+            </div>
+          )}
           {roleError && (
             <p className="mb-3 text-[12px] text-[var(--color-text-muted)]">{roleError}</p>
           )}

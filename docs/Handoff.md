@@ -761,8 +761,25 @@ src/
     if the real shape differs, `readAnswers` is the one place to change, and a mismatch fails closed.
     First consumer: **Auto** (`classifyModelRole`) asks Jev a `choice` over `ROLE_ROUTING` and keeps
     Default below 50% confidence; provenance records `autoSelection: { decidedBy, confidence }`, shown
-    in the Context panel. Next candidates: Council consensus (a `score`), a Decision Matrix mode,
-    whether a turn needs retrieval (replacing `worthEmbedding`), and "worth remembering?" suggestions.
+    in the Context panel. Further consumers below; still to do: whether a turn needs retrieval
+    (replacing `worthEmbedding`), and "worth remembering?" suggestions.
+  - **Council consensus, measured** (`src/lib/councilJudgment.ts`, `measureConsensus`). Every mode now
+    finishes through `finishRun()` in `council.ts`, which asks Jev a `score` over None/Weak/Moderate/Strong
+    with a per-mode instruction (Red Team's is "how much of the proposal survived"). The state is the
+    members' own contributions only — the Synthesizer's text is deliberately excluded (a test enforces it),
+    or Jev would be rating a summary of the answer instead of the evidence. `council_runs.consensus` holds
+    the measured level; `consensus_detail` (JSON) keeps the distribution, confidence, and what the
+    Synthesizer said. No key or any failure → the Synthesizer's rating, exactly as before.
+  - **Decision Matrix mode** (`mode: "matrix"`, `council_runs.matrix` JSON). Members write prose
+    assessments with one heading per option (`sectionsByOption` splits them; a member who ignores the
+    structure is judged on their whole assessment). `scoreMatrix` then asks Jev one call per option, all
+    criteria at once, on a five-level scale, giving each option only what was said about *it*. Each cell's
+    value is its level averaged over Jev's distribution (`expectedScore`), so an unsure rating weighs less;
+    totals and "decisive criteria" (drop one, re-rank, see if the leader changes) are arithmetic in
+    `computeMatrixTotals`. Without Jev, the Synthesizer-role model returns the grid as JSON, validated as
+    strictly as a typed answer (`readModelScores`) — an incomplete or invented rating fails the run with a
+    clear reason rather than rendering a guessed table. Input limits (2–6 options, 1–6 criteria, weights
+    1–5) live in `readMatrixInput`.
   - **Starting a conversation**: a composer on Home (creates the conversation with the first message and
     hands it over via `lib/pendingSend.ts`), Ctrl/⌘+Shift+O and a palette entry (`lib/newConversation.ts`),
     and a **New** button in the conversation header.

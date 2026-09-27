@@ -348,11 +348,27 @@ modes:
 - **Red Team** (default: Proposer, Red Team — 2 or more roles) — the Proposer answers the question, the
   Red Team role(s) attack it aggressively, the Proposer defends, then a Synthesizer assesses which
   attacks actually held up.
+- **Decision Matrix** (default: Reasoner, Critic, Researcher) — for choosing between options. List 2–6
+  options and 1–6 criteria, each weighted from 1 (minor) to 5 (critical). Every member assesses every
+  option against every criterion in their own words — no numbers. Each cell is then rated on a
+  five-step scale (Very poor → Excellent): by **Jev** when a TypeSafe key is set, with a confidence
+  per rating, or otherwise by your Synthesizer model. The weighting is plain arithmetic, done by Magi.
+  The result page shows the grid ranked by weighted score out of 10, marks any rating Jev was less
+  than 50% sure of with a "?", and names the criteria the ranking **turns on** — the ones whose
+  removal would put a different option first. Hover a cell to see how Jev's probability spread across
+  the scale; an unsure rating counts for less in the total. The Synthesizer writes its conclusion
+  from the scored grid.
 
 In every mode, the Synthesizer explicitly **preserves disagreement** rather than smoothing it over —
 Debate's synthesis never declares a winner, and Red Team's never simply says "the attack won" or "the
 proposal survived." The result page shows a Consensus rating (Strong/Moderate/Weak/None), the specific
 disagreement if there is one, and the full transcript by stage.
+
+With a TypeSafe key set, the consensus rating is **measured by Jev** rather than reported by the
+Synthesizer: Jev reads the members' own contributions (never the Synthesizer's summary) and rates how
+much they agree — or, in Red Team, how much of the proposal survived. Under the conclusion, "Consensus
+measured by Jev" opens how its probability spread across the four levels, and says so when the
+Synthesizer had called it differently. Without a key, the Synthesizer's rating is used, as before.
 
 You can also save a named Council configuration (custom roles, custom system prompts, each assigned a
 model role) to reuse later, instead of a default preset — any saved Council can be run through any of

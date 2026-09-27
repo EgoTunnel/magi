@@ -417,6 +417,11 @@ addColumnIfMissing("projects", "pinned", "INTEGER NOT NULL DEFAULT 0");
 db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_project_id)`);
 addColumnIfMissing("images", "source", "TEXT NOT NULL DEFAULT 'generated'");
 addColumnIfMissing("council_runs", "attachments", "TEXT NOT NULL DEFAULT '[]'");
+// How the consensus rating was arrived at (measured by Jev, or the
+// Synthesizer's own call), and a Decision Matrix run's options, criteria and
+// scores — both JSON, see CouncilRun in src/lib/repo/councils.ts.
+addColumnIfMissing("council_runs", "consensus_detail", "TEXT");
+addColumnIfMissing("council_runs", "matrix", "TEXT");
 // Rolling summary of the turns that have aged out of a conversation's live
 // window — see src/lib/conversationWindow.ts. through_id is how the fold stays
 // incremental: only messages after it need summarizing again.

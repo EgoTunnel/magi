@@ -87,13 +87,72 @@ export function deleteCouncil(id: string) {
   db.prepare(`DELETE FROM councils WHERE id = ?`).run(id);
 }
 
-export type CouncilMode = "independent" | "debate" | "redTeam";
+export type CouncilMode = "independent" | "debate" | "redTeam" | "matrix";
+
+export const CONSENSUS_LEVELS = ["None", "Weak", "Moderate", "Strong"] as const;
+export type ConsensusLevel = (typeof CONSENSUS_LEVELS)[number];
+
+// How a run's consensus rating was arrived at. With Jev configured it is
+// measured — a typed rating over the members' own words, with a distribution
+// and a confidence — and the Synthesizer's self-reported rating is kept
+// alongside, because when the two differ that is itself worth seeing.
+export interface ConsensusDetail {
+  source: "jev" | "synthesizer";
+  level: ConsensusLevel | null;
+  confidence?: number;
+  probabilities?: Partial<Record<ConsensusLevel, number>>;
+  synthesizerSaid: ConsensusLevel | null;
+}
+
+// Decision Matrix: what was being decided between, and on what.
+export interface MatrixCriterion {
+  name: string;
+  // 1 (minor) to 5 (critical).
+  weight: number;
+}
+
+export const MATRIX_LEVELS = ["Very poor", "Poor", "Fair", "Good", "Excellent"] as const;
+
+export interface MatrixCell {
+  option: string;
+  criterion: string;
+  // The most likely level, and its position on MATRIX_LEVELS (0-4).
+  label: string;
+  level: number;
+  // The level averaged over its distribution, on a 0-10 scale — what the
+  // weighting uses, so an uncertain "Good" counts for less than a sure one.
+  expected: number;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+}
+
+export interface MatrixResult {
+  options: string[];
+  criteria: MatrixCriterion[];
+  // Present once scored.
+  scoredBy?: "jev" | "model";
+  cells?: MatrixCell[];
+  // Weighted score out of 10 per option, best first.
+  totals?: Array<{ option: string; score: number }>;
+  // Criteria whose removal would change which option comes first — what the
+  // decision actually turns on.
+  decisiveCriteria?: string[];
+}
 
 export interface CouncilTranscriptEntry {
   role: string;
   modelRole: string;
   modelId: string;
-  stage: "analysis" | "critique" | "synthesis" | "opening" | "rebuttal" | "proposal" | "attack" | "defense";
+  stage:
+    | "analysis"
+    | "critique"
+    | "synthesis"
+    | "opening"
+    | "rebuttal"
+    | "proposal"
+    | "attack"
+    | "defense"
+    | "assessment";
   content: string;
   toolCalls?: { name: string; input: unknown; result: string }[];
 }
@@ -109,6 +168,8 @@ export interface CouncilRun {
   consensus: string | null;
   disagreement: string | null;
   synthesis: string | null;
+  consensus_detail: ConsensusDetail | null;
+  matrix: MatrixResult | null;
   status: "running" | "complete" | "error";
   created_at: string;
 }
@@ -124,6 +185,8 @@ interface CouncilRunRow {
   consensus: string | null;
   disagreement: string | null;
   synthesis: string | null;
+  consensus_detail: string | null;
+  matrix: string | null;
   status: "running" | "complete" | "error";
   created_at: string;
 }
@@ -133,6 +196,8 @@ function parseRun(row: CouncilRunRow): CouncilRun {
     ...row,
     attachments: JSON.parse(row.attachments) as RunAttachment[],
     transcript: JSON.parse(row.transcript) as CouncilTranscriptEntry[],
+    consensus_detail: row.consensus_detail ? (JSON.parse(row.consensus_detail) as ConsensusDetail) : null,
+    matrix: row.matrix ? (JSON.parse(row.matrix) as MatrixResult) : null,
   };
 }
 
@@ -142,12 +207,14 @@ export function createCouncilRun(input: {
   question: string;
   mode?: CouncilMode;
   attachments?: RunAttachment[];
+  // A Decision Matrix run's options and criteria; scored later.
+  matrix?: Pick<MatrixResult, "options" | "criteria">;
 }): CouncilRun {
   const id = newId("run");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO council_runs (id, council_id, project_id, question, mode, attachments, transcript, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, '[]', 'running', ?)`
+    `INSERT INTO council_runs (id, council_id, project_id, question, mode, attachments, matrix, transcript, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '[]', 'running', ?)`
   ).run(
     id,
     input.councilId ?? null,
@@ -155,6 +222,7 @@ export function createCouncilRun(input: {
     input.question,
     input.mode ?? "independent",
     JSON.stringify(input.attachments ?? []),
+    input.matrix ? JSON.stringify(input.matrix) : null,
     ts
   );
   return getCouncilRun(id)!;
@@ -176,19 +244,25 @@ export function listCouncilRuns(opts: { projectId?: string } = {}): CouncilRun[]
 
 export function updateCouncilRun(
   id: string,
-  patch: Partial<Pick<CouncilRun, "transcript" | "consensus" | "disagreement" | "synthesis" | "status">>
+  patch: Partial<
+    Pick<CouncilRun, "transcript" | "consensus" | "disagreement" | "synthesis" | "status" | "consensus_detail" | "matrix">
+  >
 ) {
   const existing = getCouncilRun(id);
   if (!existing) return null;
   const next = { ...existing, ...patch };
   db.prepare(
-    `UPDATE council_runs SET transcript = ?, consensus = ?, disagreement = ?, synthesis = ?, status = ? WHERE id = ?`
+    `UPDATE council_runs
+     SET transcript = ?, consensus = ?, disagreement = ?, synthesis = ?, status = ?, consensus_detail = ?, matrix = ?
+     WHERE id = ?`
   ).run(
     JSON.stringify(next.transcript),
     next.consensus,
     next.disagreement,
     next.synthesis,
     next.status,
+    next.consensus_detail ? JSON.stringify(next.consensus_detail) : null,
+    next.matrix ? JSON.stringify(next.matrix) : null,
     id
   );
   return getCouncilRun(id);

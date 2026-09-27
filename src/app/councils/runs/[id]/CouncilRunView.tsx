@@ -21,18 +21,189 @@ interface RunAttachment {
   filename: string;
   extractedText: string;
 }
+const CONSENSUS_LEVELS = ["None", "Weak", "Moderate", "Strong"] as const;
+interface ConsensusDetail {
+  source: "jev" | "synthesizer";
+  level: string | null;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+  synthesizerSaid: string | null;
+}
+interface MatrixCell {
+  option: string;
+  criterion: string;
+  label: string;
+  level: number;
+  expected: number;
+  confidence?: number;
+  probabilities?: Record<string, number>;
+}
+interface MatrixResult {
+  options: string[];
+  criteria: Array<{ name: string; weight: number }>;
+  scoredBy?: "jev" | "model";
+  cells?: MatrixCell[];
+  totals?: Array<{ option: string; score: number }>;
+  decisiveCriteria?: string[];
+}
 interface CouncilRun {
   id: string;
   question: string;
+  mode: string;
   status: "running" | "complete" | "error";
   attachments: RunAttachment[];
   transcript: CouncilTranscriptEntry[];
   consensus: string | null;
+  consensus_detail: ConsensusDetail | null;
+  matrix: MatrixResult | null;
   disagreement: string | null;
   synthesis: string | null;
 }
 
+// Below this, a rating is shown as uncertain — marked with "?" and faded, not
+// only by its tone, so it reads the same without color.
+const UNSURE = 0.5;
+const pct = (p: number) => `${Math.round(p * 100)}%`;
+
+// A 0-10 value as a thin bar on a track of the same hue: magnitude only, one
+// series, so one color and no legend.
+function Meter({ value, label }: { value: number; label: string }) {
+  return (
+    <div
+      className="h-1.5 w-full overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--color-accent)_16%,transparent)]"
+      role="img"
+      aria-label={label}
+    >
+      <div className="h-full rounded-full bg-[var(--color-accent)]" style={{ width: `${Math.max(0, Math.min(10, value)) * 10}%` }} />
+    </div>
+  );
+}
+
+function cellTitle(cell: MatrixCell): string {
+  const parts = [`${cell.option} — ${cell.criterion}: ${cell.label}`];
+  if (cell.confidence !== undefined) parts.push(`${pct(cell.confidence)} confident`);
+  const dist = Object.entries(cell.probabilities ?? {})
+    .filter(([, p]) => p >= 0.05)
+    .sort((a, b) => b[1] - a[1])
+    .map(([l, p]) => `${l} ${pct(p)}`);
+  if (dist.length > 1) parts.push(dist.join(", "));
+  return parts.join(" · ");
+}
+
+function MatrixPanel({ matrix }: { matrix: MatrixResult }) {
+  if (!matrix.cells || !matrix.totals) return null;
+  const cellFor = (option: string, criterion: string) =>
+    matrix.cells!.find((c) => c.option === option && c.criterion === criterion);
+  return (
+    <Panel className="mb-8 px-5 py-5">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+          Decision matrix
+        </span>
+        <Tag>{matrix.scoredBy === "jev" ? "Scored by Jev" : "Scored by the Synthesizer model"}</Tag>
+      </div>
+      <div className="-mx-1 overflow-x-auto">
+        <table className="w-full min-w-[480px] border-separate border-spacing-x-1 border-spacing-y-1 text-[12.5px]">
+          <thead>
+            <tr className="text-left text-[11px] text-[var(--color-text-faint)] font-technical">
+              <th className="px-1 pb-1 font-medium">Option</th>
+              {matrix.criteria.map((c) => (
+                <th key={c.name} className="px-1 pb-1 font-medium">
+                  {c.name}
+                  <span className="ml-1 text-[var(--color-text-faint)]">×{c.weight}</span>
+                </th>
+              ))}
+              <th className="px-1 pb-1 text-right font-medium">Weighted /10</th>
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.totals.map((t, rank) => (
+              <tr key={t.option}>
+                <td className="px-1 py-1.5 align-top">
+                  <span className={rank === 0 ? "font-semibold text-[var(--color-text)]" : "text-[var(--color-text)]"}>
+                    {t.option}
+                  </span>
+                </td>
+                {matrix.criteria.map((c) => {
+                  const cell = cellFor(t.option, c.name);
+                  if (!cell) return <td key={c.name} className="px-1 py-1.5 text-[var(--color-text-faint)]">—</td>;
+                  const unsure = cell.confidence !== undefined && cell.confidence < UNSURE;
+                  return (
+                    <td key={c.name} className="px-1 py-1.5 align-top" title={cellTitle(cell)}>
+                      <div className={unsure ? "opacity-60" : ""}>
+                        <div className="mb-1 text-[var(--color-text-muted)]">
+                          {cell.label}
+                          {unsure && <span className="ml-0.5 text-[var(--color-text-faint)]">?</span>}
+                        </div>
+                        <Meter value={cell.expected} label={cellTitle(cell)} />
+                      </div>
+                    </td>
+                  );
+                })}
+                <td className="w-28 px-1 py-1.5 align-top">
+                  <div className="mb-1 text-right font-technical text-[var(--color-text)]">{t.score.toFixed(1)}</div>
+                  <Meter value={t.score} label={`${t.option}: ${t.score.toFixed(1)} of 10`} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 flex flex-col gap-1 text-[12px] leading-relaxed text-[var(--color-text-muted)]">
+        {matrix.decisiveCriteria && matrix.decisiveCriteria.length > 0 ? (
+          <p>
+            The ranking turns on <strong className="text-[var(--color-text)]">{matrix.decisiveCriteria.join(", ")}</strong> —
+            without {matrix.decisiveCriteria.length === 1 ? "it" : "any one of these"}, a different option would come first.
+          </p>
+        ) : (
+          <p>No single criterion decides it — the leader stays ahead with any one of them removed.</p>
+        )}
+        {matrix.scoredBy === "jev" && (
+          <p className="text-[11.5px] text-[var(--color-text-faint)]">
+            Bars average each rating over Jev&apos;s probabilities, so an unsure rating counts for less. A “?” marks
+            a rating Jev was less than {pct(UNSURE)} sure of. Hover a cell for its distribution.
+          </p>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// How the consensus rating was arrived at — and, when Jev measured it, how the
+// probability spread across the four levels.
+function ConsensusNote({ detail }: { detail: ConsensusDetail }) {
+  if (detail.source !== "jev") return null;
+  const disagrees = detail.synthesizerSaid && detail.synthesizerSaid !== detail.level;
+  return (
+    <details className="mt-4 border-t border-[var(--color-border)] pt-3 text-[12px] text-[var(--color-text-muted)]">
+      <summary className="cursor-pointer select-none">
+        Consensus measured by Jev
+        {detail.confidence !== undefined ? `, ${pct(detail.confidence)} confident` : ""}
+        {disagrees ? ` — the Synthesizer called it ${detail.synthesizerSaid}` : ""}
+      </summary>
+      {detail.probabilities && (
+        <div className="mt-2 grid max-w-sm grid-cols-[5.5rem_1fr_2.5rem] items-center gap-x-2 gap-y-1">
+          {CONSENSUS_LEVELS.map((level) => {
+            const p = detail.probabilities?.[level] ?? 0;
+            return (
+              <div key={level} className="contents">
+                <span className={level === detail.level ? "text-[var(--color-text)]" : ""}>{level}</span>
+                <Meter value={p * 10} label={`${level}: ${pct(p)}`} />
+                <span className="text-right font-technical text-[11px]">{pct(p)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <p className="mt-2 text-[11.5px] text-[var(--color-text-faint)]">
+        Rated from the members&apos; own contributions, not the Synthesizer&apos;s summary of them.
+      </p>
+    </details>
+  );
+}
+
 const STAGE_LABEL: Record<string, string> = {
+  assessment: "Assessments",
   analysis: "Independent analysis",
   critique: "Critique",
   opening: "Opening",
@@ -46,7 +217,7 @@ const STAGE_LABEL: Record<string, string> = {
 // Every possible stage across all three modes, in a sensible read order — a
 // given run only ever populates the stages its mode actually uses, so the
 // empty ones below are simply skipped.
-const STAGES = ["analysis", "critique", "opening", "rebuttal", "proposal", "attack", "defense", "synthesis"] as const;
+const STAGES = ["assessment", "analysis", "critique", "opening", "rebuttal", "proposal", "attack", "defense", "synthesis"] as const;
 
 const STATUS_LABEL: Record<CouncilRun["status"], string> = {
   running: "Deliberating",
@@ -111,6 +282,8 @@ export function CouncilRunView({ runId }: { runId: string }) {
         <Panel className="mb-6 px-4 py-3 text-[13px] text-[var(--color-danger)]">{run.synthesis}</Panel>
       )}
 
+      {run.matrix?.cells && <MatrixPanel matrix={run.matrix} />}
+
       {run.status === "complete" && (
         <Panel className="mb-8 px-5 py-5">
           <div className="mb-3 flex items-center gap-2">
@@ -128,6 +301,7 @@ export function CouncilRunView({ runId }: { runId: string }) {
               <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">{run.disagreement}</p>
             </div>
           )}
+          {run.consensus_detail && <ConsensusNote detail={run.consensus_detail} />}
         </Panel>
       )}
 

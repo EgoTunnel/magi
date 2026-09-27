@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createCouncilRun, getCouncil, type CouncilMode, type CouncilRole, type RunAttachment } from "@/lib/repo/councils";
+import {
+  createCouncilRun,
+  getCouncil,
+  type CouncilMode,
+  type CouncilRole,
+  type MatrixCriterion,
+  type RunAttachment,
+} from "@/lib/repo/councils";
+import { readMatrixInput } from "@/lib/councilJudgment";
 import { runCouncilDeliberation } from "@/lib/council";
 import { extractText, isExtractableFileType } from "@/lib/files/extractText";
 
@@ -63,6 +71,12 @@ export async function POST(req: NextRequest) {
   if (mode === "redTeam" && roles.length < 2) {
     return NextResponse.json({ error: "Red Team mode needs at least 2 roles." }, { status: 400 });
   }
+  let matrix: { options: string[]; criteria: MatrixCriterion[] } | undefined;
+  if (mode === "matrix") {
+    const read = readMatrixInput(body.matrix);
+    if (!read.ok) return NextResponse.json({ error: read.error }, { status: 400 });
+    matrix = read.matrix;
+  }
 
   const extracted = await extractAttachments(body.attachments);
   if (!extracted.ok) return NextResponse.json({ error: extracted.error }, { status: 400 });
@@ -73,6 +87,7 @@ export async function POST(req: NextRequest) {
     question,
     mode,
     attachments: extracted.attachments,
+    matrix,
   });
 
   // Fire-and-forget: Magi runs as a long-lived local server, not a serverless
@@ -88,6 +103,7 @@ export async function POST(req: NextRequest) {
     projectId: body.projectId,
     mode,
     attachments: extracted.attachments,
+    matrix,
   }).catch(() => {});
 
   return NextResponse.json({ run }, { status: 201 });
