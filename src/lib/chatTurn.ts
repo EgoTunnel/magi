@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { attachArtifactsToMessage } from "@/lib/repo/artifacts";
-import { addMessage, type Message } from "@/lib/repo/conversations";
+import { addMessage, setMessageProvenance, type Message } from "@/lib/repo/conversations";
+import { judgeMemoryWorth } from "@/lib/memorySuggestions";
 import { buildSystemPrompt, type ContextProvenance } from "@/lib/contextBuilder";
 import type { RetrievedChunk } from "@/lib/retrieval";
 import { getModel, modelForRole, classifyModelRole, reasoningEffortForRole } from "@/lib/models/registry";
@@ -345,15 +346,27 @@ export async function runChatTurn(opts: {
           if (event.type === "text") full += event.text;
           safeEnqueue(event);
         }
-        const assistantMessage = addMessage({
+        const turnProvenance = finalProvenance();
+        let assistantMessage = addMessage({
           conversationId,
           role: "assistant",
           content: full || "(no response)",
           model: modelId,
-          provenance: finalProvenance(),
+          provenance: turnProvenance,
           parentId: opts.parentId,
         });
         if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
+        // "Worth remembering?" — a quick Jev check on this exchange (bounded,
+        // and a no-op without a TypeSafe key; see memorySuggestions.ts). Done
+        // before `done` so the suggestion arrives with the reply rather than
+        // on some later refresh.
+        const memorySuggestion = full
+          ? await judgeMemoryWorth({ projectId, conversationId, userText: query, replyText: full })
+          : null;
+        if (memorySuggestion) {
+          setMessageProvenance(assistantMessage.id, { ...turnProvenance, memorySuggestion });
+          assistantMessage = { ...assistantMessage, provenance: JSON.stringify({ ...turnProvenance, memorySuggestion }) };
+        }
         // The saved reply, so the page can put it in place the moment the
         // stream ends instead of clearing the live text and refetching.
         safeEnqueue({ type: "done", message: assistantMessage });

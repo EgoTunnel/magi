@@ -15,6 +15,7 @@ import { ArtifactViewerButton } from "@/components/ArtifactHistory";
 import { MagiSpinner } from "@/components/MagiSpinner";
 import { MoveConversationControl } from "@/components/MoveConversationControl";
 import { EpisodeClosePanel, type ClosureDraft } from "@/components/EpisodeClosePanel";
+import { CouncilSpinner } from "@/components/CouncilSpinner";
 
 interface Sibling {
   id: string;
@@ -62,10 +63,19 @@ interface ArtifactFile {
   message_id: string | null;
 }
 
+// A Council asked from this conversation that hasn't answered into it yet.
+interface PendingCouncil {
+  id: string;
+  question: string;
+  mode: string;
+  status: string;
+}
+
 // What the server already knows when it renders the page — see page.tsx.
 export interface ConversationInitialData {
   title: string;
   messages: Message[];
+  pendingCouncils: PendingCouncil[];
   projectName: string;
   skills: Skill[];
   roles: RoleInfo[];
@@ -86,6 +96,7 @@ export function ConversationView({
   const [projectName, setProjectName] = useState(initial?.projectName ?? "");
   const [title, setTitle] = useState(initial?.title ?? "");
   const [messages, setMessages] = useState<Message[]>(initial?.messages ?? []);
+  const [pendingCouncils, setPendingCouncils] = useState<PendingCouncil[]>(initial?.pendingCouncils ?? []);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [skills, setSkills] = useState<Skill[]>(initial?.skills ?? []);
@@ -142,6 +153,7 @@ export function ConversationView({
     const convData = await convRes.json();
     setTitle(convData.conversation?.title ?? "");
     setMessages(convData.messages ?? []);
+    setPendingCouncils(convData.pendingCouncils ?? []);
     setSkills((await skillsRes.json()).skills ?? []);
     setRoles((await modelsRes.json()).roles ?? []);
     setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
@@ -177,6 +189,12 @@ export function ConversationView({
       }
       setTitle(data.conversation?.title ?? "");
       setMessages(data.messages ?? []);
+      setPendingCouncils((current) => {
+        // Keep a Council that failed on screen (with its error) until the page
+        // is left; the server only lists ones still on their way.
+        const failed = current.filter((c) => c.status === "error");
+        return [...(data.pendingCouncils ?? []), ...failed];
+      });
       setArtifactFiles((await artifactsRes.json()).artifacts ?? []);
       return;
     }
@@ -266,6 +284,53 @@ export function ConversationView({
     el.addEventListener("scroll", recomputeJumpToLatest);
     return () => el.removeEventListener("scroll", recomputeJumpToLatest);
   }, [messages, recomputeJumpToLatest]);
+
+  // A Council asked from here deliberates in the background, and its answer is
+  // posted into the conversation when done. Checked every few seconds while
+  // one is out; not while a reply is streaming, whose own end refetches.
+  const sendingRef = useRef(false);
+  useEffect(() => {
+    sendingRef.current = sending;
+  }, [sending]);
+  useEffect(() => {
+    const waiting = pendingCouncils.filter((c) => c.status !== "error");
+    if (!waiting.length) return;
+    const timer = setInterval(async () => {
+      const results = await Promise.all(
+        waiting.map((c) =>
+          fetch(`/api/councils/runs/${c.id}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        )
+      );
+      const failed = new Set<string>();
+      let answered = false;
+      results.forEach((data, i) => {
+        const run = data?.run as { result_message_id?: string | null; status?: string } | undefined;
+        if (run?.result_message_id) answered = true;
+        else if (run?.status === "error") failed.add(waiting[i].id);
+      });
+      if (failed.size) setPendingCouncils((cs) => cs.map((c) => (failed.has(c.id) ? { ...c, status: "error" } : c)));
+      if (answered && !sendingRef.current) await reloadMessages();
+    }, 2500);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCouncils]);
+
+  function councilStarted(council: PendingCouncil) {
+    setPendingCouncils((cs) => [...cs, council]);
+    // The card lands at the end of the thread; take the reader there.
+    requestAnimationFrame(() => scrollToLatest());
+  }
+
+  // What to prefill "Ask the Council" with, for a reply: the question it was
+  // answering — minus the marker on a question that was itself put to a Council.
+  function councilQuestionFor(index: number): string {
+    for (let i = index - 1; i >= 0; i--) {
+      if (messages[i].role === "user") return messages[i].content.replace(/^Asked the Magi Council \([^)]*\): /, "");
+    }
+    return "";
+  }
 
   function scrollToLatest() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -722,8 +787,15 @@ export function ConversationView({
                     onToggleBranchPanel={() => setExpandedBranchFor((cur) => (cur === m.id ? null : m.id))}
                     onSwitchBranch={switchBranch}
                     switchingBranch={switchingBranch}
+                    conversationId={conversationId}
+                    councilQuestion={m.role === "assistant" ? councilQuestionFor(i) : ""}
+                    onCouncilStarted={councilStarted}
+                    onMemoryChanged={reloadMessages}
                   />
                 </div>
+              ))}
+              {pendingCouncils.map((c) => (
+                <PendingCouncilCard key={c.id} council={c} />
               ))}
               {sending && <StreamingMessage ref={streamRef} onGrow={recomputeJumpToLatest} />}
               {error && (
@@ -1198,6 +1270,10 @@ function MessageBlock({
   onToggleBranchPanel,
   onSwitchBranch,
   switchingBranch,
+  conversationId,
+  councilQuestion,
+  onCouncilStarted,
+  onMemoryChanged,
 }: {
   message: Message;
   files?: ArtifactFile[];
@@ -1228,8 +1304,29 @@ function MessageBlock({
   onToggleBranchPanel?: () => void;
   onSwitchBranch?: (messageId: string) => void;
   switchingBranch?: boolean;
+  conversationId?: string;
+  councilQuestion?: string;
+  onCouncilStarted?: (council: PendingCouncil) => void;
+  onMemoryChanged?: () => void;
 }) {
   const isUser = message.role === "user";
+  const [askingCouncil, setAskingCouncil] = useState(false);
+  const parsedProvenance = useMemo(() => {
+    if (!message.provenance) return null;
+    try {
+      return JSON.parse(message.provenance) as {
+        memorySuggestion?: MemorySuggestionState;
+        councilQuestion?: boolean;
+        councilRunId?: string;
+      };
+    } catch {
+      return null;
+    }
+  }, [message.provenance]);
+  // The Council's own exchange in the thread: its answer isn't something a
+  // chat model can regenerate, and its question isn't one to edit into a chat turn.
+  const isCouncilAnswer = message.model === "magi-council";
+  const isCouncilQuestion = !!parsedProvenance?.councilQuestion;
   const branchTotal = message.branchTotal ?? 1;
   const branchIndex = message.branchIndex ?? 0;
   const siblings = message.siblings ?? [];
@@ -1244,7 +1341,7 @@ function MessageBlock({
         <span className="text-[10.5px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
           {isUser ? "You" : "Magi"}
         </span>
-        {message.model && <Tag>{message.model}</Tag>}
+        {message.model && <Tag>{isCouncilAnswer ? "Magi Council" : message.model}</Tag>}
         {branchTotal > 1 && (
           <span className="flex items-center gap-0.5 text-[10.5px] text-[var(--color-text-faint)] font-technical">
             <button
@@ -1382,7 +1479,15 @@ function MessageBlock({
           >
             Save as artifact
           </button>
-          {onRegenerate && (
+          {conversationId && onCouncilStarted && (
+            <button
+              onClick={() => setAskingCouncil((v) => !v)}
+              className="text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-accent)] transition-colors"
+            >
+              Ask the Council
+            </button>
+          )}
+          {onRegenerate && !isCouncilAnswer && (
             <button
               onClick={onRegenerate}
               disabled={sending}
@@ -1393,7 +1498,7 @@ function MessageBlock({
           )}
         </div>
       )}
-      {isUser && !isEditing && onStartEdit && !message.hasAttachments && (
+      {isUser && !isEditing && onStartEdit && !message.hasAttachments && !isCouncilQuestion && (
         <div className="mt-2 flex gap-3 opacity-0 transition-opacity group-hover:opacity-100">
           <button
             onClick={onStartEdit}
@@ -1403,6 +1508,26 @@ function MessageBlock({
             <IconEdit /> Edit
           </button>
         </div>
+      )}
+      {!isUser && parsedProvenance?.memorySuggestion && conversationId && (
+        <MemorySuggestionRow
+          conversationId={conversationId}
+          messageId={message.id}
+          suggestion={parsedProvenance.memorySuggestion}
+          onChanged={onMemoryChanged}
+        />
+      )}
+      {askingCouncil && conversationId && onCouncilStarted && (
+        <AskCouncilPanel
+          conversationId={conversationId}
+          messageId={message.id}
+          defaultQuestion={councilQuestion ?? ""}
+          onStarted={(council) => {
+            setAskingCouncil(false);
+            onCouncilStarted(council);
+          }}
+          onCancel={() => setAskingCouncil(false)}
+        />
       )}
       {savingArtifact && (
         <div className="mt-2 flex items-center gap-2">
@@ -1456,6 +1581,255 @@ function MessageBlock({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ask the Council
+// ---------------------------------------------------------------------------
+
+const CONVERSATION_COUNCIL_MODES: Array<{ id: string; label: string; hint: string }> = [
+  { id: "independent", label: "Independent Analysis", hint: "Reasoner, Critic and Researcher analyze, critique each other, then synthesize" },
+  { id: "debate", label: "Debate", hint: "An Advocate and a Skeptic argue it out" },
+  { id: "redTeam", label: "Red Team", hint: "A Proposer answers, the Red Team tries to break it" },
+];
+
+function AskCouncilPanel({
+  conversationId,
+  messageId,
+  defaultQuestion,
+  onStarted,
+  onCancel,
+}: {
+  conversationId: string;
+  messageId: string;
+  defaultQuestion: string;
+  onStarted: (council: PendingCouncil) => void;
+  onCancel: () => void;
+}) {
+  const [question, setQuestion] = useState(defaultQuestion);
+  const [mode, setMode] = useState("independent");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function convene() {
+    if (!question.trim() || starting) return;
+    setStarting(true);
+    setError(null);
+    const res = await fetch(`/api/conversations/${conversationId}/council`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messageId, question, mode }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setStarting(false);
+    if (!res.ok || !data.run) {
+      setError(data.error ?? "Couldn't convene the Council.");
+      return;
+    }
+    onStarted(data.run);
+  }
+
+  return (
+    <div className="mt-3 rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] p-3">
+      <div className="mb-2 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+        Ask the Council
+      </div>
+      <Textarea
+        autoFocus
+        rows={2}
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            convene();
+          }
+          if (e.key === "Escape") onCancel();
+        }}
+        placeholder="What should the Council deliberate on?"
+        className="text-[14px]"
+      />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
+          aria-label="Council mode"
+          className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-text)]"
+        >
+          {CONVERSATION_COUNCIL_MODES.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <span className="min-w-0 flex-1 text-[11.5px] text-[var(--color-text-faint)]">
+          {CONVERSATION_COUNCIL_MODES.find((m) => m.id === mode)?.hint}. It reads this conversation so far.
+        </span>
+        <Button variant="ghost" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="accent" onClick={convene} disabled={!question.trim() || starting}>
+          {starting ? "Convening…" : "Convene"}
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-[var(--color-danger)]">{error}</div>}
+    </div>
+  );
+}
+
+function PendingCouncilCard({ council }: { council: PendingCouncil }) {
+  const failed = council.status === "error";
+  const label = CONVERSATION_COUNCIL_MODES.find((m) => m.id === council.mode)?.label ?? "Council";
+  return (
+    <div className="rounded-[4px] border border-dashed border-[var(--color-border-strong)] px-4 py-3">
+      <div className="mb-1 flex items-center gap-2 text-[10.5px] font-technical">
+        <span className="font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)]">Magi Council</span>
+        {failed ? (
+          <span className="text-[var(--color-danger)]">couldn&apos;t finish</span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-[var(--color-accent)]">
+            <CouncilSpinner /> deliberating · {label}
+          </span>
+        )}
+      </div>
+      <p className="text-[13.5px] leading-relaxed text-[var(--color-text-muted)]">{council.question}</p>
+      <div className="mt-1.5 text-[11.5px] text-[var(--color-text-faint)]">
+        {failed
+          ? "The deliberation hit an error. "
+          : "Its conclusion will appear here when it's done — you can keep talking meanwhile. "}
+        <Link
+          href={`/councils/runs/${council.id}`}
+          target="_blank"
+          className="underline decoration-[var(--color-border-strong)] underline-offset-2 hover:text-[var(--color-accent)]"
+        >
+          {failed ? "See what happened" : "Watch the deliberation"}
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Worth remembering?
+// ---------------------------------------------------------------------------
+
+interface MemorySuggestionState {
+  probability: number;
+  scope: "project" | "global";
+  state: "open" | "accepted" | "dismissed";
+  memoryId?: string;
+}
+
+function MemorySuggestionRow({
+  conversationId,
+  messageId,
+  suggestion,
+  onChanged,
+}: {
+  conversationId: string;
+  messageId: string;
+  suggestion: MemorySuggestionState;
+  onChanged?: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [scope, setScope] = useState<"project" | "global">(suggestion.scope);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const endpoint = `/api/conversations/${conversationId}/messages/${messageId}/memory`;
+
+  async function act(body: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (!res.ok) {
+      setError(data.error ?? "That didn't work.");
+      return null;
+    }
+    return data;
+  }
+
+  if (suggestion.state === "dismissed") return null;
+  if (suggestion.state === "accepted") {
+    return (
+      <div className="mt-2 text-[11.5px] text-[var(--color-text-faint)]">
+        Remembered.{" "}
+        <Link href="/memory" className="underline decoration-[var(--color-border-strong)] underline-offset-2 hover:text-[var(--color-accent)]">
+          See memory
+        </Link>
+      </div>
+    );
+  }
+
+  if (draft === null) {
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11.5px]">
+        <span className="text-[var(--color-text-muted)]">Worth remembering?</span>
+        <button
+          onClick={async () => {
+            const data = await act({ action: "draft" });
+            if (data) {
+              setDraft(data.content);
+              setScope(data.scope);
+            }
+          }}
+          disabled={busy}
+          className="text-[var(--color-accent)] hover:underline disabled:opacity-50"
+        >
+          {busy ? "Drafting…" : "Remember…"}
+        </button>
+        <button
+          onClick={async () => {
+            if (await act({ action: "dismiss" })) onChanged?.();
+          }}
+          disabled={busy}
+          className="text-[var(--color-text-faint)] hover:text-[var(--color-text)] disabled:opacity-50"
+        >
+          Not now
+        </button>
+        {error && <span className="text-[var(--color-danger)]">{error}</span>}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-[4px] border border-[var(--color-border-strong)] bg-[var(--color-bg-raised)] p-3">
+      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.1em] text-[var(--color-text-faint)] font-technical">
+        Remember
+      </div>
+      <Textarea autoFocus rows={2} value={draft} onChange={(e) => setDraft(e.target.value)} className="text-[13.5px]" />
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <select
+          value={scope}
+          onChange={(e) => setScope(e.target.value as "project" | "global")}
+          aria-label="Where to remember it"
+          className="focus-ring rounded-[3px] border border-[var(--color-border-strong)] bg-[var(--color-bg)] px-2 py-1 text-[12.5px] text-[var(--color-text)]"
+        >
+          <option value="project">In this Project</option>
+          <option value="global">Everywhere</option>
+        </select>
+        <span className="flex-1" />
+        <Button variant="ghost" onClick={() => setDraft(null)}>
+          Cancel
+        </Button>
+        <Button
+          variant="accent"
+          disabled={!draft.trim() || busy}
+          onClick={async () => {
+            if (await act({ action: "accept", content: draft, scope })) onChanged?.();
+          }}
+        >
+          Keep
+        </Button>
+      </div>
+      {error && <div className="mt-2 text-[12px] text-[var(--color-danger)]">{error}</div>}
     </div>
   );
 }

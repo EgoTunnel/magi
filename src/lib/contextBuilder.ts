@@ -125,6 +125,14 @@ export interface ContextProvenance {
   // How that role was picked — Jev with its confidence, the fast chat model,
   // or a fallback to Default when neither could decide.
   autoSelection?: { decidedBy: "jev" | "model" | "fallback"; confidence?: number };
+  // Set when Jev judged this exchange worth remembering — see
+  // src/lib/memorySuggestions.ts. Only ever a suggestion until the user acts.
+  memorySuggestion?: {
+    probability: number;
+    scope: "project" | "global";
+    state: "open" | "accepted" | "dismissed";
+    memoryId?: string;
+  };
 }
 
 // Starts the retrieval a turn needs without waiting for it. Retrieval is two

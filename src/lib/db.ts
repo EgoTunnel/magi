@@ -422,6 +422,11 @@ addColumnIfMissing("council_runs", "attachments", "TEXT NOT NULL DEFAULT '[]'");
 // scores — both JSON, see CouncilRun in src/lib/repo/councils.ts.
 addColumnIfMissing("council_runs", "consensus_detail", "TEXT");
 addColumnIfMissing("council_runs", "matrix", "TEXT");
+// A Council asked from inside a conversation ("Ask the Council"): where it
+// was asked from, and the reply its conclusion was posted back as.
+addColumnIfMissing("council_runs", "conversation_id", "TEXT REFERENCES conversations(id) ON DELETE SET NULL");
+addColumnIfMissing("council_runs", "source_message_id", "TEXT");
+addColumnIfMissing("council_runs", "result_message_id", "TEXT");
 // Rolling summary of the turns that have aged out of a conversation's live
 // window — see src/lib/conversationWindow.ts. through_id is how the fold stays
 // incremental: only messages after it need summarizing again.

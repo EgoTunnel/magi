@@ -780,6 +780,22 @@ src/
     strictly as a typed answer (`readModelScores`) — an incomplete or invented rating fails the run with a
     clear reason rather than rendering a guessed table. Input limits (2–6 options, 1–6 criteria, weights
     1–5) live in `readMatrixInput`.
+  - **Ask the Council from a conversation** (`src/lib/councilInConversation.ts`,
+    `POST /api/conversations/[id]/council`). The run records `conversation_id` / `source_message_id`; the
+    conversation up to the asked-about message (plus its rolling summary) goes in as a `RunAttachment`.
+    When deliberation completes, `postCouncilResult` appends a user message ("Asked the Magi Council
+    (mode): …") and the conclusion as an assistant message (`model: "magi-council"`), and sets
+    `result_message_id` — once. **It waits while the head is a user message** (a chat reply in flight):
+    posting then would put the Council's pair between that message and its reply, which is saved against
+    its user message explicitly and would land on a hidden side branch. Pending runs come with the
+    conversation (`pendingCouncils` in `loadConversationView`) and the page polls them. Default members per
+    mode now live in `src/lib/councilRoles.ts`, shared with the Councils page.
+  - **"Worth remembering?"** (`src/lib/memorySuggestions.ts`). After each reply is saved, `runChatTurn`
+    asks Jev a `noul` (durable fact/preference/decision?) and a `choice` (Project or global), capped at
+    1.5s so it never slows a turn; ≥0.7 puts `memorySuggestion` on the message's provenance, which ships
+    in the `done` event. Drafting (Fast model, `<<<MEMORY>>>` delimiters so pre-answer reasoning can't be
+    drafted into memory) happens only when the user clicks; accepting creates established memory linked
+    to the reply. Deliberate memory is unchanged: nothing is kept without the user pressing Keep.
   - **Starting a conversation**: a composer on Home (creates the conversation with the first message and
     hands it over via `lib/pendingSend.ts`), Ctrl/⌘+Shift+O and a palette entry (`lib/newConversation.ts`),
     and a **New** button in the conversation header.

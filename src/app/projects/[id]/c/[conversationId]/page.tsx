@@ -20,6 +20,7 @@ export default async function ConversationPage({ params }: PageProps<"/projects/
   const initial: ConversationInitialData = {
     title: view.conversation.title ?? "",
     messages: view.messages,
+    pendingCouncils: view.pendingCouncils,
     projectName: getProject(id)?.name ?? "",
     // Only the fields the page uses: a Skill carries its whole method, and an
     // artifact its whole body, neither of which the page needs to paint.

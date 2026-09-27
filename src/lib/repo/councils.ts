@@ -170,6 +170,11 @@ export interface CouncilRun {
   synthesis: string | null;
   consensus_detail: ConsensusDetail | null;
   matrix: MatrixResult | null;
+  // Set when the Council was asked from a conversation — see
+  // src/lib/councilInConversation.ts.
+  conversation_id: string | null;
+  source_message_id: string | null;
+  result_message_id: string | null;
   status: "running" | "complete" | "error";
   created_at: string;
 }
@@ -187,6 +192,9 @@ interface CouncilRunRow {
   synthesis: string | null;
   consensus_detail: string | null;
   matrix: string | null;
+  conversation_id: string | null;
+  source_message_id: string | null;
+  result_message_id: string | null;
   status: "running" | "complete" | "error";
   created_at: string;
 }
@@ -209,12 +217,15 @@ export function createCouncilRun(input: {
   attachments?: RunAttachment[];
   // A Decision Matrix run's options and criteria; scored later.
   matrix?: Pick<MatrixResult, "options" | "criteria">;
+  conversationId?: string;
+  sourceMessageId?: string;
 }): CouncilRun {
   const id = newId("run");
   const ts = nowIso();
   db.prepare(
-    `INSERT INTO council_runs (id, council_id, project_id, question, mode, attachments, matrix, transcript, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, '[]', 'running', ?)`
+    `INSERT INTO council_runs
+       (id, council_id, project_id, question, mode, attachments, matrix, conversation_id, source_message_id, transcript, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', 'running', ?)`
   ).run(
     id,
     input.councilId ?? null,
@@ -223,6 +234,8 @@ export function createCouncilRun(input: {
     input.mode ?? "independent",
     JSON.stringify(input.attachments ?? []),
     input.matrix ? JSON.stringify(input.matrix) : null,
+    input.conversationId ?? null,
+    input.sourceMessageId ?? null,
     ts
   );
   return getCouncilRun(id)!;
@@ -239,6 +252,24 @@ export function listCouncilRuns(opts: { projectId?: string } = {}): CouncilRun[]
         .prepare(`SELECT * FROM council_runs WHERE project_id = ? ORDER BY created_at DESC`)
         .all(opts.projectId) as CouncilRunRow[])
     : (db.prepare(`SELECT * FROM council_runs ORDER BY created_at DESC`).all() as CouncilRunRow[]);
+  return rows.map(parseRun);
+}
+
+export function setCouncilRunResultMessage(id: string, messageId: string) {
+  db.prepare(`UPDATE council_runs SET result_message_id = ? WHERE id = ?`).run(messageId, id);
+}
+
+// Councils asked from this conversation whose answer hasn't reached it yet —
+// still deliberating, or finished and about to be posted. What the
+// conversation shows as "the Council is deliberating" cards.
+export function listPendingCouncilRunsForConversation(conversationId: string): CouncilRun[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM council_runs
+       WHERE conversation_id = ? AND result_message_id IS NULL AND status != 'error'
+       ORDER BY created_at ASC`
+    )
+    .all(conversationId) as CouncilRunRow[];
   return rows.map(parseRun);
 }
 

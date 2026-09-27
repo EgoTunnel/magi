@@ -125,6 +125,13 @@ click **Context** in the top right to see exactly what a given reply drew on: wh
 instructions applied, how much memory was in play, which tools it actually called, and — on an Auto
 turn — which role got picked.
 
+**Worth remembering?** With a TypeSafe key set (Settings), Jev reads each exchange as it finishes and,
+when it's fairly sure you've stated or settled something durable — a fact about you or your work, a
+preference, a decision — a small "Worth remembering?" appears under the reply. **Remember…** drafts it
+as one line, which you can edit and keep in this Project or everywhere; **Not now** dismisses it.
+Nothing is ever remembered unless you press Keep. Without a key, nothing is suggested, and the
+"Remember in Project / globally" actions work as before.
+
 The **Retrieved for this message** list is the important part. Magi doesn't hand the model the front
 of every document and hope the answer is in there; it indexes everything in the Project as passages
 and, for each message you send, pulls the passages that actually bear on what you asked — from
@@ -369,6 +376,14 @@ Synthesizer: Jev reads the members' own contributions (never the Synthesizer's s
 much they agree — or, in Red Team, how much of the proposal survived. Under the conclusion, "Consensus
 measured by Jev" opens how its probability spread across the four levels, and says so when the
 Synthesizer had called it differently. Without a key, the Synthesizer's rating is used, as before.
+
+**Ask the Council from a conversation.** Hover any of Magi's replies and choose **Ask the Council**.
+The question it was answering is filled in (edit it freely); pick Independent Analysis, Debate or Red
+Team and **Convene**. The Council reads the conversation up to that reply as its material, plus the
+Project's documents, and deliberates in the background — a card in the thread shows it working, and
+you can keep talking meanwhile. When it's done, your question and the Council's conclusion (consensus,
+where it disagreed, and a link to the full deliberation) are added to the conversation, so what you
+say next builds on it.
 
 You can also save a named Council configuration (custom roles, custom system prompts, each assigned a
 model role) to reuse later, instead of a default preset — any saved Council can be run through any of
