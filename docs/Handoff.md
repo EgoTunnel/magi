@@ -67,6 +67,8 @@ src/
       anthropic.ts             Anthropic provider adapter
       openrouter.ts            OpenRouter provider adapter + image generation + capability caching
       registry.ts               Provider list, role→model assignment, default-picking logic
+      judge.ts                  JudgeProvider — typed questions in, probabilities out; LLM fallback + selection
+      typesafe.ts               TypeSafe Jev judge adapter (System One API)
     repo/                      One file per entity: projects, conversations, memory, documents,
                                 artifacts, skills, councils, agents, connections, images, styleGuides,
                                 characters, attachments. Thin wrappers over better-sqlite3 + search index upkeep.
@@ -94,7 +96,9 @@ src/
       repo/peopleInterest.ts      Its runs and findings
       repo/activity.ts            One UNION over everything a Project accumulates, newest first
       repo/projectNotes.ts        Decisions and open questions (proposed → open/settled/resolved)
+      repo/standingSignals.ts     What the Standing watch noticed, per (note, conversation)
       repo/episodes.ts            Episode-closing records
+    standingWatch.ts             Per-turn judge pass over open questions / settled decisions → signals
     chunking.ts                  Splits text into passage-sized chunks on paragraph seams
     retrieval.ts                 Passage index + hybrid (semantic ⊕ bm25) retrieval
     vectors.ts                   Float32 BLOB pack/unpack + cosine, shared by both indexes
@@ -704,6 +708,43 @@ src/
   — focus states and `prefers-reduced-motion` are respected, but nothing beyond that has been verified.
   **No dedicated mobile UI (§75)** — responsive layout with a drawer nav, not a from-scratch mobile
   experience.
+- **Judges and the Standing watch** — a second kind of model call, distinct from the providers.
+  `src/lib/models/judge.ts` defines a `JudgeProvider`: it takes a *state* (one piece of content) and a
+  map of typed questions (`noul` yes/no → probability; `choice` → option + distribution; `score` →
+  level + distribution) and returns typed answers, never prose. Two implementations, tried in order by
+  `getJudge()`: `src/lib/models/typesafe.ts` (TypeSafe AI's Jev, a "System One" model built for exactly
+  this — parallel typed decisions with calibrated probabilities in ~100ms, input-only pricing; opt-in by
+  adding `typesafe_api_key` / `TYPESAFE_API_KEY`), and `llmJudge` in judge.ts (the `fast` role asked to
+  answer in a `<key> :: <answer> :: <confidence>` line format between `<<<JUDGE>>>` markers — the same
+  delimiter posture as episodeClose.ts, generous `maxTokens` per lesson #9). The fallback is what keeps
+  the abstraction honest: nothing depends on one vendor, and the tests exercise the same paths through the
+  mock provider. `__setJudgesForTests()` is the seam. **The TypeSafe *response* shape is read
+  defensively** (`parseTypeSafeResponse` matches a short list of plausible field names and returns
+  nothing rather than throwing) because it was built from the launch description, not verified against a
+  live key — if real responses come back empty against a known-good request, check docs.typesafe.ai
+  for the field names first. Cost is priced from the one published rate (`TYPESAFE_PROMPT_PRICE_PER_M`),
+  the only hand-maintained number in the ledger; `recordUsage` gained a `"typesafe"` provider and a
+  `"standing_watch"` source.
+  The first thing built on a judge is **the Standing watch** (`src/lib/standingWatch.ts`): after every
+  completed chat turn (`runChatTurn` fires it fire-and-forget after the reply is saved — only the three
+  interactive routes call `runChatTurn`, no bulk path, per lesson #10), it asks one yes/no question per
+  *kept* note in the Project — for each `open` question "did this exchange answer it?", for each
+  `settled` decision "did this exchange reopen it?" — in one judge call, and anything ≥ `WATCH_THRESHOLD`
+  (0.7) becomes a `standing_signals` row (`src/lib/repo/standingSignals.ts`): one per (note,
+  conversation), refreshed rather than stacked, and never re-proposed in a conversation where the user
+  dismissed it. `proposed` notes are deliberately not watched — the watch must not build on a note nobody
+  agreed is real. The Standing band (`ProjectStanding.tsx`) shows each signal under its note with the
+  conversation, probability, and Resolve / Reopen-as-question / Dismiss; `POST /api/standing-signals/[id]`
+  with `{action}`. Accepting is the only place the watch touches a note, and it's the user doing it: an
+  answered question is resolved; a revisited decision is **not** unsettled — an open "Revisit: …"
+  question is created pointing back at it, and the decision the user kept stays kept. Settings gains the
+  TypeSafe key panel and a Standing-watch toggle (`standing_watch_enabled`, default on). `never throws`
+  is load-bearing: the watch runs after a turn already succeeded and a judge that is down must not
+  become an error in the conversation. Tests: `tests/unit/judge.test.ts`,
+  `tests/integration/standingWatch.test.ts` (including the chat-turn hook end to end on the mock
+  provider). Not yet built on the judge, but the obvious next callers: `classifyModelRole()` (a 7-way
+  `choice`), memory-proposal triage in episodeClose/importCuration, and a per-passage relevance floor on
+  retrieval — see the design discussion that produced this.
 
 ---
 

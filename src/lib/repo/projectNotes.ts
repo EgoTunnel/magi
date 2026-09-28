@@ -16,6 +16,10 @@ export interface ProjectNote {
   updated_at: string;
 }
 
+export function getProjectNote(id: string): ProjectNote | null {
+  return (db.prepare(`SELECT * FROM project_notes WHERE id = ?`).get(id) as ProjectNote) ?? null;
+}
+
 export function listProjectNotes(
   projectId: string,
   opts: { status?: ProjectNote["status"][]; kind?: ProjectNote["kind"] } = {}

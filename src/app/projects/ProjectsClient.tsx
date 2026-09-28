@@ -32,6 +32,16 @@ interface ClaudeAccountImportSummary {
   memoryItemsImported: number;
 }
 
+interface CurationStatus {
+  status: "idle" | "running" | "complete" | "error";
+  processed: number;
+  total: number;
+  kept: number;
+  dropped: number;
+  proposedProjects: Array<{ name: string; claims: string[] }>;
+  error?: string;
+}
+
 export function ProjectsClient() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,6 +78,7 @@ export function ProjectsClient() {
   const [claudeImporting, setClaudeImporting] = useState(false);
   const [claudeImportError, setClaudeImportError] = useState<string | null>(null);
   const [claudeImportSummary, setClaudeImportSummary] = useState<ClaudeAccountImportSummary | null>(null);
+  const [curationStatus, setCurationStatus] = useState<CurationStatus | null>(null);
 
   async function load() {
     setLoading(true);
@@ -188,8 +199,22 @@ export function ProjectsClient() {
     }
   }
 
+  // Polls until the curation job settles. It is one model call per imported
+  // memory block, so this is seconds, not minutes — but it outlives the import
+  // request, which is why the status lives on the server rather than here.
+  async function pollCuration() {
+    for (let i = 0; i < 120; i++) {
+      const res = await fetch("/api/memory/curation");
+      const data = await res.json();
+      setCurationStatus(data.status);
+      if (data.status?.status !== "running") return;
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
   async function submitClaudeImport() {
     if (!claudeConversationsFile) return;
+    setCurationStatus(null);
     setClaudeImporting(true);
     setClaudeImportError(null);
     setClaudeImportSummary(null);
@@ -208,6 +233,10 @@ export function ProjectsClient() {
       setClaudeConversationsFile(null);
       setClaudeProjectsFile(null);
       setClaudeMemoriesFile(null);
+      // The import kicks off memory curation on the server; poll it so the
+      // user can see their imported memory being re-filed rather than
+      // wondering why nothing happened.
+      if (data.summary?.memoryItemsImported > 0) pollCuration();
       await load();
     } catch {
       setClaudeImportError("Connection interrupted.");
@@ -288,6 +317,38 @@ export function ProjectsClient() {
               conversation(s) ({claudeImportSummary.conversationsSkippedEmpty} skipped as empty),{" "}
               {claudeImportSummary.documentsImported} document(s), {claudeImportSummary.artifactsImported}{" "}
               artifact(s), and {claudeImportSummary.memoryItemsImported} memory item(s).
+            </div>
+          )}
+          {curationStatus && curationStatus.status !== "idle" && (
+            <div className="mb-3 rounded-[4px] border border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-2.5 text-[12.5px] text-[var(--color-text-muted)]">
+              {curationStatus.status === "running" && (
+                <>
+                  Re-filing imported memory… {curationStatus.processed} / {curationStatus.total} block(s).
+                </>
+              )}
+              {curationStatus.status === "complete" && (
+                <>
+                  Imported memory re-filed into {curationStatus.kept} suggested item(s)
+                  {curationStatus.dropped > 0 ? `, ${curationStatus.dropped} dropped as duplicate` : ""}. Nothing
+                  is active until you keep it — review them on the Memory page.
+                  {curationStatus.proposedProjects.length > 0 && (
+                    <>
+                      {" "}
+                      Some of it wants Projects that don&apos;t exist yet:{" "}
+                      <span className="text-[var(--color-text)]">
+                        {curationStatus.proposedProjects.map((p) => p.name).join(", ")}
+                      </span>
+                      .
+                    </>
+                  )}
+                </>
+              )}
+              {curationStatus.status === "error" && (
+                <span className="text-[var(--color-danger)]">
+                  Memory curation stopped after {curationStatus.processed} of {curationStatus.total} block(s):{" "}
+                  {curationStatus.error} Whatever finished was kept; re-running picks up the rest.
+                </span>
+              )}
             </div>
           )}
           <div className="flex justify-end gap-2">

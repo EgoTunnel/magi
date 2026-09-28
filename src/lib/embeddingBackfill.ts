@@ -30,6 +30,54 @@ function setBackfillStatus(status: BackfillStatus) {
   setSetting(STATUS_KEY, JSON.stringify(status));
 }
 
+// Vectors whose search_index row is gone. indexRemove() deletes all three
+// tables together, so nothing on the ordinary delete path leaves these behind
+// — but anything that removed a row another way (a direct SQL cleanup, an
+// older build) did, and semanticSearch reads the embeddings table directly.
+// That makes an orphan a correctness problem and not just wasted bytes:
+// deleted content can still come back as a Meaning-search hit. Reconciling
+// here rather than in a migration means it self-heals however it happened.
+export function pruneOrphanedEmbeddings(): number {
+  // search_index is an FTS5 virtual table, so it has no b-tree on
+  // (kind, ref_id) — a correlated `NOT EXISTS` against it costs a full scan of
+  // the FTS content per candidate row, which on a real archive means tens of
+  // thousands of chunks times thousands of indexed items. Measured at over
+  // three minutes before this was rewritten. Materialising the live keys once
+  // into an indexed temp table turns the whole thing into one scan plus
+  // primary-key lookups.
+  return db.transaction(() => {
+    db.prepare(`DROP TABLE IF EXISTS temp.live_keys`).run();
+    db.prepare(`CREATE TEMP TABLE live_keys (kind TEXT NOT NULL, ref_id TEXT NOT NULL, PRIMARY KEY (kind, ref_id))`).run();
+    db.prepare(`INSERT OR IGNORE INTO temp.live_keys (kind, ref_id) SELECT kind, ref_id FROM search_index`).run();
+
+    const embeddings = db
+      .prepare(
+        `DELETE FROM embeddings WHERE NOT EXISTS (
+           SELECT 1 FROM temp.live_keys k WHERE k.kind = embeddings.kind AND k.ref_id = embeddings.ref_id
+         )`
+      )
+      .run();
+    // FTS5 rows first, and found through the chunks table the next statement
+    // empties — the ordering removeChunks() depends on (src/lib/retrieval.ts).
+    db.prepare(
+      `DELETE FROM chunk_search WHERE chunk_id IN (
+         SELECT c.id FROM chunks c
+         WHERE NOT EXISTS (SELECT 1 FROM temp.live_keys k WHERE k.kind = c.kind AND k.ref_id = c.ref_id)
+       )`
+    ).run();
+    const chunks = db
+      .prepare(
+        `DELETE FROM chunks WHERE NOT EXISTS (
+           SELECT 1 FROM temp.live_keys k WHERE k.kind = chunks.kind AND k.ref_id = chunks.ref_id
+         )`
+      )
+      .run();
+
+    db.prepare(`DROP TABLE temp.live_keys`).run();
+    return embeddings.changes + chunks.changes;
+  })();
+}
+
 // Singleton, fire-and-forget job — same pattern as Agents/Connections
 // (src/lib/agent.ts, src/lib/connections.ts), just tracked as one settings
 // row instead of a table since there's no run history to keep, only "is it
@@ -46,6 +94,7 @@ export async function runEmbeddingBackfill() {
   // below embeds them. This is normally already done (the context builder
   // calls it on the first turn after upgrading), in which case it's a no-op.
   ensureChunkIndex();
+  pruneOrphanedEmbeddings();
 
   // search_index is already a complete, denormalized mirror of every
   // indexable entity's kind/ref_id/project_id/title/content — reusing it

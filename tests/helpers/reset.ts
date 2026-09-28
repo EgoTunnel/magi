@@ -9,6 +9,7 @@ const TABLES = [
   "embeddings",
   "search_index",
   "usage_events",
+  "standing_signals",
   "project_notes",
   "episode_closures",
   "attachments",

@@ -41,6 +41,28 @@ export function getTavilyApiKey(): string | null {
   return getSetting("tavily_api_key") || process.env.TAVILY_API_KEY || null;
 }
 
+// Backs the TypeSafe Jev judge (src/lib/models/typesafe.ts). Setting this is
+// the opt-in to a new data flow: with it, the Standing watch sends each
+// conversation exchange to TypeSafe to be judged. Without it, the judge falls
+// back to the assigned `fast` model, and nothing goes anywhere it wasn't
+// already going.
+export function getTypeSafeApiKey(): string | null {
+  return getSetting("typesafe_api_key") || process.env.TYPESAFE_API_KEY || null;
+}
+
+// Whether each conversation turn is checked against the Project's open
+// questions and settled decisions (src/lib/standingWatch.ts). On by default:
+// the watch only ever proposes, and with no TypeSafe key it runs on the
+// already-configured fast model.
+export function getStandingWatchEnabled(): boolean {
+  const value = getSetting("standing_watch_enabled");
+  return value === null ? true : value === "true";
+}
+
+export function setStandingWatchEnabled(enabled: boolean) {
+  setSetting("standing_watch_enabled", enabled ? "true" : "false");
+}
+
 // Whether Magi's search_archive tool is allowed to look beyond the current
 // Project. Defaults on (the vision treats this as ordinary research, not a
 // silently blurred boundary) but the user can turn it off in Settings.

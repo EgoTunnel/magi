@@ -81,6 +81,11 @@ quickly, and silent regression is the likeliest way it gets hurt.
   history every time. Closing one drafts a summary, the decisions it settled, the questions it left open,
   and proposed memory — all of it inert until kept by hand, which is what the `suggested` memory status
   is for.
+- **The Standing watch** (`src/lib/standingWatch.ts`) — after every turn, one judge call asks whether
+  that exchange answered any of the Project's open questions or reopened any of its settled decisions,
+  and flags what it noticed under the note, with the conversation and the probability. The judge
+  (`src/lib/models/judge.ts`) is a second kind of model call: typed questions in, probabilities out, no
+  prose — TypeSafe's Jev when a key is configured, the assigned fast model otherwise. It only proposes.
 - **Trajectory** (`src/lib/trajectory.ts`) — because every passage is dated, the archive can answer
   when a topic first appeared, how often it came up since, and what was being said at each point.
   The timeline is pure retrieval and costs nothing; having a model characterize the change is a

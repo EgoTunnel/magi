@@ -63,6 +63,13 @@ you actually have when you open one: what's unresolved, what's settled, and what
   `PROPOSED` with **Keep** and discard beside them. You can also write either by hand with the **+**;
   anything you type yourself skips the proposal step, since writing it is already the deliberate part.
   Resolve a question when it stops being open.
+- **The Standing watch** — after every conversation turn in a Project, Magi checks that one exchange
+  against the Project's open questions and settled decisions. When an exchange looks like it answered a
+  question, or walked back a decision, a `WATCH` line appears under that note: which conversation, how
+  likely, and **Resolve** / **Reopen as question** / **Dismiss** beside it. It is a probability from a
+  judge, not a fact, so it only ever proposes — nothing is resolved or reopened until you press the
+  button. Dismissing one silences it for that conversation; the same topic in a different conversation
+  can raise it again. Off switch, and the judge it uses, in Settings.
 - **Recent activity** — the last dozen things that happened here, of any kind, each a link. No single
   kind can flood it: an afternoon of image generation shows up as an afternoon of image generation, not
   as the entire history of the Project.
@@ -400,6 +407,12 @@ The Projects never merge. Only the connection between them becomes visible, and 
 
 - **Providers** — API keys for Anthropic and/or OpenRouter, stored locally. OpenRouter's model catalog
   refreshes automatically when you save its key, or on demand via **Refresh models**.
+- **TypeSafe (Jev, the judge)** — optional. Jev is not a chat model: it answers typed yes/no, choice,
+  and score questions about a piece of content with calibrated probabilities, in well under a second,
+  and cannot answer outside the schema it is given. Magi uses it for decision points rather than for
+  writing — today, the Standing watch. Without a key, those same questions go to whichever model the
+  Fast role is assigned to (slower, less calibrated, but nothing is sent anywhere new). Adding the key
+  is what starts sending each judged exchange to TypeSafe, so it is a deliberate choice.
 - **Model roles** — the mechanism that makes Magi model-agnostic in practice. Every part of Magi asks
   for a *role* ("the reasoner," "the critic"), never a specific model. Reassign a role here — to any
   model from any configured provider — and every caller upgrades at once. If an OpenRouter model
@@ -412,7 +425,8 @@ The Projects never merge. Only the connection between them becomes visible, and 
   (`search_archive`, `calculator`). Turning one off applies everywhere it's used: conversations, Agents,
   Councils, and Connections. Below that, the cross-Project search toggle: whether `search_archive` may
   look beyond the current Project. Skills and individual Agent runs can narrow these further for
-  themselves, but never turn something back on that's off here.
+  themselves, but never turn something back on that's off here. The **Standing watch** toggle is here
+  too — on by default, since it only ever proposes.
 - **Semantic search** — requires an OpenRouter key (Anthropic has no embeddings API). Pick an embedding
   model, then click **Build index** once to cover everything already in your archive — new and edited
   content is embedded automatically from then on. Switching the embedding model later doesn't delete

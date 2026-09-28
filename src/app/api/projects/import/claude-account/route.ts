@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { unzipSync } from "fflate";
 import { importClaudeAccountExport } from "@/lib/importers/claudeAccountExport";
+import { runImportCuration } from "@/lib/importCuration";
 
 // Reads every .json entry under `prefix` inside a zip buffer and parses it.
 // Used for both shapes the real export ships: a single conversations.json
@@ -54,6 +55,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const summary = importClaudeAccountExport({ conversations, projects, memory });
+    // An export's memory files are another system's format written verbatim
+    // into global, established rows — large, multi-claim, and reaching every
+    // prompt. Re-filing them starts as soon as the import lands, without
+    // holding this request open; the client polls /api/memory/curation. It
+    // no-ops when there is nothing to curate or no provider configured.
+    if (summary.memoryItemsImported > 0) void runImportCuration();
     return NextResponse.json({ summary }, { status: 201 });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Import failed." }, { status: 500 });

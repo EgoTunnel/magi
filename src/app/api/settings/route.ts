@@ -11,7 +11,10 @@ import {
   setLocalEmbeddingBaseUrl,
   getDisabledTools,
   setDisabledTools,
+  getStandingWatchEnabled,
+  setStandingWatchEnabled,
 } from "@/lib/settings";
+import { getJudge, listJudges } from "@/lib/models/judge";
 import { isAnyProviderConfigured } from "@/lib/models/registry";
 import { refreshOpenRouterModels, getCachedOpenRouterModels } from "@/lib/models/openrouter";
 import { refreshChutesModels, getCachedChutesModels } from "@/lib/models/chutes";
@@ -26,6 +29,7 @@ export async function GET() {
   const openRouterKey = getSetting("openrouter_api_key");
   const chutesKey = getSetting("chutes_api_key");
   const tavilyKey = getSetting("tavily_api_key");
+  const typeSafeKey = getSetting("typesafe_api_key");
   const { models, fetchedAt } = getCachedOpenRouterModels();
   const { models: chutesModels, fetchedAt: chutesFetchedAt } = getCachedChutesModels();
   return NextResponse.json({
@@ -37,6 +41,12 @@ export async function GET() {
     chutesKeyPreview: preview(chutesKey),
     tavilyKeySet: !!tavilyKey || !!process.env.TAVILY_API_KEY,
     tavilyKeyPreview: preview(tavilyKey),
+    typeSafeKeySet: !!typeSafeKey || !!process.env.TYPESAFE_API_KEY,
+    typeSafeKeyPreview: preview(typeSafeKey),
+    // Which judge the Standing watch would use right now, and what exists.
+    judges: listJudges(),
+    activeJudge: getJudge()?.id ?? null,
+    standingWatchEnabled: getStandingWatchEnabled(),
     openRouterModelCount: models.length,
     openRouterModelsFetchedAt: fetchedAt,
     chutesModelCount: chutesModels.length,
@@ -97,6 +107,18 @@ export async function POST(req: NextRequest) {
     } else {
       deleteSetting("tavily_api_key");
     }
+  }
+
+  if (typeof body.typeSafeApiKey === "string") {
+    if (body.typeSafeApiKey.trim()) {
+      setSetting("typesafe_api_key", body.typeSafeApiKey.trim());
+    } else {
+      deleteSetting("typesafe_api_key");
+    }
+  }
+
+  if (typeof body.standingWatchEnabled === "boolean") {
+    setStandingWatchEnabled(body.standingWatchEnabled);
   }
 
   if (typeof body.crossProjectSearchEnabled === "boolean") {

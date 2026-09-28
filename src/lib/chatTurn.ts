@@ -9,6 +9,7 @@ import { resolveTools, executeTool } from "@/lib/tools/registry";
 import { recordUsage } from "@/lib/repo/usage";
 import { estimateCost } from "@/lib/models/pricing";
 import { composeSkill } from "@/lib/skillComposition";
+import { runStandingWatch } from "@/lib/standingWatch";
 
 export interface ResolvedTurnModel {
   modelRole: ModelRoleId;
@@ -306,6 +307,22 @@ export async function runChatTurn(opts: {
         });
         if (createdArtifactIds.length) attachArtifactsToMessage(createdArtifactIds, assistantMessage.id);
         safeClose();
+        // After the reply is saved and the stream is closed: the watch is a
+        // side effect of a turn that already succeeded, fire-and-forget on
+        // Magi's own server, and never allowed to touch the turn itself.
+        // Only the completed exchange is judged — a stopped reply below is
+        // left alone, since half an answer is not an answer to anything.
+        // runChatTurn is called from the three interactive chat routes and
+        // nowhere else (no bulk path — see docs/Handoff.md lesson #10).
+        if (full.trim()) {
+          void runStandingWatch({
+            conversationId,
+            projectId,
+            messageId: assistantMessage.id,
+            userText: query,
+            assistantText: full,
+          });
+        }
       } catch (err) {
         // Stop was pressed: the SDK call was cancelled via turnAbort.signal
         // (see cancel() below) and rejects with an abort error. That's an

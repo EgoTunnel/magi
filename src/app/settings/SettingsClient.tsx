@@ -101,6 +101,15 @@ export function SettingsClient() {
   const [tavilyInput, setTavilyInput] = useState("");
   const [savingTavily, setSavingTavily] = useState(false);
 
+  // The judge behind the Standing watch (src/lib/models/judge.ts). A TypeSafe
+  // key is the opt-in to Jev; without one the watch runs on the fast model.
+  const [typeSafeKeySet, setTypeSafeKeySet] = useState(false);
+  const [typeSafeKeyPreview, setTypeSafeKeyPreview] = useState<string | null>(null);
+  const [typeSafeInput, setTypeSafeInput] = useState("");
+  const [savingTypeSafe, setSavingTypeSafe] = useState(false);
+  const [activeJudge, setActiveJudge] = useState<string | null>(null);
+  const [standingWatch, setStandingWatch] = useState(true);
+
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [roles, setRoles] = useState<RoleInfo[]>([]);
   const [assignments, setAssignments] = useState<Record<string, string>>({});
@@ -149,6 +158,10 @@ export function SettingsClient() {
     setChutesFetchedAt(settings.chutesModelsFetchedAt);
     setTavilyKeySet(settings.tavilyKeySet);
     setTavilyKeyPreview(settings.tavilyKeyPreview);
+    setTypeSafeKeySet(settings.typeSafeKeySet);
+    setTypeSafeKeyPreview(settings.typeSafeKeyPreview);
+    setActiveJudge(settings.activeJudge ?? null);
+    setStandingWatch(settings.standingWatchEnabled ?? true);
     setCrossProjectSearch(settings.crossProjectSearchEnabled);
     setEmbeddingModelIdState(settings.embeddingModelId);
     setLocalEmbeddingInput(settings.localEmbeddingBaseUrl ?? "");
@@ -273,6 +286,37 @@ export function SettingsClient() {
       body: JSON.stringify({ tavilyApiKey: "" }),
     });
     loadAll();
+  }
+
+  async function saveTypeSafeKey() {
+    setSavingTypeSafe(true);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ typeSafeApiKey: typeSafeInput }),
+    });
+    setTypeSafeInput("");
+    setSavingTypeSafe(false);
+    loadAll();
+  }
+
+  async function removeTypeSafeKey() {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ typeSafeApiKey: "" }),
+    });
+    loadAll();
+  }
+
+  async function toggleStandingWatch() {
+    const next = !standingWatch;
+    setStandingWatch(next);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ standingWatchEnabled: next }),
+    });
   }
 
   async function refreshModels() {
@@ -555,6 +599,49 @@ export function SettingsClient() {
             models have no fallback, and need this key to search the web at all.
           </p>
         </Panel>
+
+        <Panel className="mt-3 px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-[13.5px] font-medium text-[var(--color-text)]">TypeSafe (Jev, the judge)</div>
+            <span className="text-[11.5px] text-[var(--color-text-faint)] font-technical">
+              {activeJudge === "typesafe"
+                ? "Judging with Jev"
+                : activeJudge === "llm"
+                  ? "Judging with the Fast role"
+                  : "No judge available"}
+            </span>
+          </div>
+          {typeSafeKeySet && (
+            <div className="mb-3 flex items-center justify-between text-[13px]">
+              <span className="text-[var(--color-text-muted)] font-technical">
+                Current key: {typeSafeKeyPreview ?? "configured via environment"}
+              </span>
+              <Button variant="danger" onClick={removeTypeSafeKey}>
+                Remove
+              </Button>
+            </div>
+          )}
+          <Label>API key</Label>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              placeholder="TypeSafe API key"
+              value={typeSafeInput}
+              onChange={(e) => setTypeSafeInput(e.target.value)}
+            />
+            <Button variant="accent" onClick={saveTypeSafeKey} disabled={!typeSafeInput || savingTypeSafe}>
+              {savingTypeSafe ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          <p className="mt-2 text-[12px] text-[var(--color-text-muted)]">
+            A judge, not a chat model: Jev answers typed yes/no, choice, and score questions about a
+            piece of content with calibrated probabilities, in well under a second, and cannot answer
+            outside the schema it is given. Magi uses it for decision points rather than for writing —
+            today, the Standing watch below. Without a key, the same questions go to whichever model the
+            Fast role is assigned to, which is slower and less calibrated but sends nothing anywhere new.
+            Adding this key is what sends each judged exchange to TypeSafe.
+          </p>
+        </Panel>
       </section>
 
       <section>
@@ -682,6 +769,29 @@ export function SettingsClient() {
             <span
               className="absolute top-[1px] h-[17px] w-[17px] rounded-full bg-[var(--color-bg-raised)] transition-transform"
               style={{ transform: crossProjectSearch ? "translateX(17px)" : "translateX(1px)" }}
+            />
+          </button>
+        </Panel>
+        <Panel className="mt-3 flex items-center justify-between px-4 py-3.5">
+          <div>
+            <div className="text-[13.5px] font-medium text-[var(--color-text)]">Standing watch</div>
+            <div className="text-[12px] text-[var(--color-text-muted)]">
+              After each conversation turn, check the exchange against the Project&apos;s open questions
+              and settled decisions, and flag on the Project page anything that looks answered or
+              reopened. Only ever a proposal — nothing is resolved or reopened until you say so. Uses
+              the judge configured above.
+            </div>
+          </div>
+          <button
+            onClick={toggleStandingWatch}
+            className="focus-ring relative h-5 w-9 shrink-0 rounded-full border border-[var(--color-border-strong)] transition-colors"
+            style={{ background: standingWatch ? "var(--color-accent)" : "var(--color-surface-2)" }}
+            aria-pressed={standingWatch}
+            aria-label="Toggle the Standing watch"
+          >
+            <span
+              className="absolute top-[1px] h-[17px] w-[17px] rounded-full bg-[var(--color-bg-raised)] transition-transform"
+              style={{ transform: standingWatch ? "translateX(17px)" : "translateX(1px)" }}
             />
           </button>
         </Panel>
@@ -886,7 +996,10 @@ export function SettingsClient() {
           proposes people when you close a conversation, can trace how your work with one of them
           developed over time, and can ask which of the people you know might genuinely care about a
           Project. It stays local, nothing is ever more than a proposal until you keep it, and deleting
-          someone really deletes them.
+          someone really deletes them. The Standing watch checks each conversation turn against a
+          Project&apos;s open questions and settled decisions and flags what looks answered or reopened —
+          through a judge (TypeSafe&apos;s Jev, or the Fast role as a fallback) that returns probabilities
+          rather than prose.
         </p>
         <p className="mt-3 text-[13px] leading-relaxed text-[var(--color-text-muted)]">
           Anthropic is supported directly, along with every model OpenRouter proxies and Chutes&apos;

@@ -10,7 +10,15 @@ export type UsageSource =
   | "archive_ask"
   // "Who might be interested in this?" — one model call per person, so it is
   // worth being able to see its cost separately from cross-Project Connections.
-  | "people_interest";
+  | "people_interest"
+  // Re-filing imported memory into atomic, routed, suggested items — one call
+  // per imported block, and the only spend an import triggers on its own.
+  | "import_curation"
+  // One judge call per conversation turn, checking the exchange against the
+  // Project's open questions and settled decisions (src/lib/standingWatch.ts).
+  | "standing_watch";
+
+export type UsageProvider = "anthropic" | "openrouter" | "chutes" | "typesafe";
 
 export interface UsageEvent {
   id: string;
@@ -34,7 +42,7 @@ export function recordUsage(input: {
   projectId?: string | null;
   source: UsageSource;
   sourceId?: string | null;
-  provider: "anthropic" | "openrouter" | "chutes";
+  provider: UsageProvider;
   model: string;
   role?: string | null;
   usage?: TokenUsage[];

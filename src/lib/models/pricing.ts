@@ -1,6 +1,7 @@
 import { getSetting, setSetting } from "@/lib/settings";
 import { getOpenRouterCapabilities } from "@/lib/models/openrouter";
 import { getChutesCapabilities } from "@/lib/models/chutes";
+import { TYPESAFE_PROMPT_PRICE_PER_M } from "@/lib/models/typesafe";
 import type { TokenUsage } from "@/lib/models/types";
 
 const ANTHROPIC_PRICING_KEY = "anthropic_pricing";
@@ -29,10 +30,14 @@ export function setAnthropicPricing(pricing: Record<string, AnthropicModelPrice>
 
 // Returns null whenever the rate isn't known, rather than fabricating a cost.
 export function estimateCost(
-  provider: "anthropic" | "openrouter" | "chutes",
+  provider: "anthropic" | "openrouter" | "chutes" | "typesafe",
   modelId: string,
   usage: TokenUsage
 ): number | null {
+  if (provider === "typesafe") {
+    // Input-only pricing, one published rate — see typesafe.ts.
+    return (usage.promptTokens * TYPESAFE_PROMPT_PRICE_PER_M) / 1_000_000;
+  }
   if (provider === "openrouter" || provider === "chutes") {
     const caps = provider === "openrouter" ? getOpenRouterCapabilities(modelId) : getChutesCapabilities(modelId);
     // Loose nullish checks on purpose: a capabilities cache written before

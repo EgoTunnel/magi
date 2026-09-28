@@ -21,6 +21,17 @@ interface ActivityEntry {
   at: string;
   href: string;
 }
+// Something the Standing watch noticed about a note — see
+// src/lib/standingWatch.ts. Rendered under the note it is about.
+interface StandingSignal {
+  id: string;
+  note_id: string;
+  kind: "answered" | "revisited";
+  conversation_id: string;
+  conversation_title: string;
+  probability: number;
+  updated_at: string;
+}
 interface ProjectPerson {
   id: string;
   name: string;
@@ -65,6 +76,7 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
   const [notes, setNotes] = useState<ProjectNote[]>([]);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [people, setPeople] = useState<ProjectPerson[]>([]);
+  const [signals, setSignals] = useState<StandingSignal[]>([]);
   const [adding, setAdding] = useState<"decision" | "question" | null>(null);
   const [draft, setDraft] = useState("");
 
@@ -75,7 +87,17 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
     setNotes(data.notes ?? []);
     setActivity(data.activity ?? []);
     setPeople(data.people ?? []);
+    setSignals(data.signals ?? []);
   }, [projectId]);
+
+  async function actOnSignal(id: string, action: "accept" | "dismiss") {
+    await fetch(`/api/standing-signals/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    load();
+  }
 
   useEffect(() => {
     load();
@@ -137,6 +159,9 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
   const decisions = notes.filter((n) => n.kind === "decision");
   const proposedPeople = people.filter((p) => p.status === "suggested" || p.association_status === "suggested");
   const proposedCount = notes.filter((n) => n.status === "proposed").length + proposedPeople.length;
+  // Strongest signal per note; the API already orders by probability.
+  const signalByNote = new Map<string, StandingSignal>();
+  for (const s of signals) if (!signalByNote.has(s.note_id)) signalByNote.set(s.note_id, s);
 
   // Nothing recorded and nothing to show: say what this band is for rather
   // than rendering three empty boxes.
@@ -149,9 +174,12 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
           <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--color-text-faint)] font-technical">
             Where the work stands
           </div>
-          {proposedCount > 0 && (
+          {(proposedCount > 0 || signalByNote.size > 0) && (
             <div className="text-[11.5px] text-[var(--color-text-muted)]">
-              {proposedCount} proposed by a closed episode — keep or discard below
+              {proposedCount > 0 && `${proposedCount} proposed by a closed episode — keep or discard below`}
+              {proposedCount > 0 && signalByNote.size > 0 && " · "}
+              {signalByNote.size > 0 &&
+                `${signalByNote.size} noticed by the watch — confirm or dismiss below`}
             </div>
           )}
         </div>
@@ -164,18 +192,24 @@ export function ProjectStanding({ projectId }: { projectId: string }) {
             keepStatus="open"
             resolveLabel="Resolve"
             resolveStatus="resolved"
+            signals={signalByNote}
+            projectId={projectId}
             onSetStatus={setStatus}
             onRemove={remove}
             onAdd={() => setAdding("question")}
+            onSignal={actOnSignal}
           />
           <NoteColumn
             title="Decisions"
             empty="Nothing settled yet."
             notes={decisions}
             keepStatus="settled"
+            signals={signalByNote}
+            projectId={projectId}
             onSetStatus={setStatus}
             onRemove={remove}
             onAdd={() => setAdding("decision")}
+            onSignal={actOnSignal}
           />
 
           <div>
@@ -308,9 +342,12 @@ function NoteColumn({
   keepStatus,
   resolveLabel,
   resolveStatus,
+  signals,
+  projectId,
   onSetStatus,
   onRemove,
   onAdd,
+  onSignal,
 }: {
   title: string;
   empty: string;
@@ -318,9 +355,12 @@ function NoteColumn({
   keepStatus: ProjectNote["status"];
   resolveLabel?: string;
   resolveStatus?: ProjectNote["status"];
+  signals: Map<string, StandingSignal>;
+  projectId: string;
   onSetStatus: (id: string, status: ProjectNote["status"]) => void;
   onRemove: (id: string) => void;
   onAdd: () => void;
+  onSignal: (id: string, action: "accept" | "dismiss") => void;
 }) {
   return (
     <div>
@@ -340,51 +380,87 @@ function NoteColumn({
         <p className="text-[12.5px] text-[var(--color-text-faint)]">{empty}</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {notes.map((n) => (
-            <li key={n.id} className="group text-[12.5px] leading-relaxed">
-              <div className={n.status === "proposed" ? "text-[var(--color-text-muted)]" : "text-[var(--color-text)]"}>
-                {n.content}
-              </div>
-              {/* A proposal's Keep/discard stays visible: the band announces
-                  that there are proposals to review, so hiding the action
-                  behind a hover would be advertising a door with no handle.
-                  Settled items reveal their controls on hover, since acting on
-                  them is the exception. */}
-              <div
-                className={`mt-0.5 flex items-center gap-2 transition-opacity ${
-                  n.status === "proposed" ? "" : "opacity-0 group-hover:opacity-100"
-                }`}
-              >
-                {n.status === "proposed" ? (
-                  <>
-                    <Tag>Proposed</Tag>
+          {notes.map((n) => {
+            const signal = signals.get(n.id);
+            return (
+              <li key={n.id} className="group text-[12.5px] leading-relaxed">
+                <div className={n.status === "proposed" ? "text-[var(--color-text-muted)]" : "text-[var(--color-text)]"}>
+                  {n.content}
+                </div>
+                {/* What the watch noticed, under the note it is about. Same
+                    rule as a proposal: the band announced it, so the actions
+                    stay visible. "May have" is deliberate — this is a judge's
+                    probability, not a fact, and the number says how strong. */}
+                {signal && (
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] text-[var(--color-text-muted)]">
+                    <Tag>Watch</Tag>
+                    <span>
+                      May have been {signal.kind === "answered" ? "answered" : "revisited"} in{" "}
+                      <Link
+                        href={`/projects/${projectId}/c/${signal.conversation_id}`}
+                        className="text-[var(--color-text)] transition-colors hover:text-[var(--color-accent)]"
+                      >
+                        {signal.conversation_title}
+                      </Link>{" "}
+                      <span className="font-technical text-[var(--color-text-faint)]">
+                        {Math.round(signal.probability * 100)}% · {ago(signal.updated_at)}
+                      </span>
+                    </span>
                     <button
-                      onClick={() => onSetStatus(n.id, keepStatus)}
+                      onClick={() => onSignal(signal.id, "accept")}
                       className="text-[11px] text-[var(--color-accent)] transition-colors hover:underline"
                     >
-                      Keep
+                      {signal.kind === "answered" ? "Resolve" : "Reopen as question"}
                     </button>
-                  </>
-                ) : (
-                  resolveStatus && (
                     <button
-                      onClick={() => onSetStatus(n.id, resolveStatus)}
-                      className="text-[11px] text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-accent)]"
+                      onClick={() => onSignal(signal.id, "dismiss")}
+                      className="text-[11px] text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-text)]"
                     >
-                      {resolveLabel}
+                      Dismiss
                     </button>
-                  )
+                  </div>
                 )}
-                <button
-                  onClick={() => onRemove(n.id)}
-                  aria-label="Remove"
-                  className="focus-ring text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-danger)]"
+                {/* A proposal's Keep/discard stays visible: the band announces
+                    that there are proposals to review, so hiding the action
+                    behind a hover would be advertising a door with no handle.
+                    Settled items reveal their controls on hover, since acting on
+                    them is the exception. */}
+                <div
+                  className={`mt-0.5 flex items-center gap-2 transition-opacity ${
+                    n.status === "proposed" ? "" : "opacity-0 group-hover:opacity-100"
+                  }`}
                 >
-                  <IconTrash />
-                </button>
-              </div>
-            </li>
-          ))}
+                  {n.status === "proposed" ? (
+                    <>
+                      <Tag>Proposed</Tag>
+                      <button
+                        onClick={() => onSetStatus(n.id, keepStatus)}
+                        className="text-[11px] text-[var(--color-accent)] transition-colors hover:underline"
+                      >
+                        Keep
+                      </button>
+                    </>
+                  ) : (
+                    resolveStatus && (
+                      <button
+                        onClick={() => onSetStatus(n.id, resolveStatus)}
+                        className="text-[11px] text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-accent)]"
+                      >
+                        {resolveLabel}
+                      </button>
+                    )
+                  )}
+                  <button
+                    onClick={() => onRemove(n.id)}
+                    aria-label="Remove"
+                    className="focus-ring text-[var(--color-text-faint)] transition-colors hover:text-[var(--color-danger)]"
+                  >
+                    <IconTrash />
+                  </button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

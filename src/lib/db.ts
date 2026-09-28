@@ -280,6 +280,30 @@ CREATE TABLE IF NOT EXISTS project_notes (
   updated_at TEXT NOT NULL
 );
 
+-- What the Standing watch noticed: one conversation exchange that looks like
+-- it answered an open question ('answered') or reopened a settled decision
+-- ('revisited'), with the judge's probability. A signal is a proposal about a
+-- note, never a change to it — 'proposed' until the user resolves the
+-- question or reopens the decision ('accepted'), or waves it off
+-- ('dismissed'). One row per note per conversation: a conversation that
+-- keeps circling the same question refreshes its signal rather than stacking
+-- them. See src/lib/standingWatch.ts.
+CREATE TABLE IF NOT EXISTS standing_signals (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  note_id TEXT NOT NULL REFERENCES project_notes(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  message_id TEXT,
+  probability REAL NOT NULL,
+  confidence REAL,
+  judge TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'proposed',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (note_id, conversation_id)
+);
+
 -- The people connected to the user's work. Deliberately not a contact record:
 -- there is no phone number, no email, no address book, and nothing syncs. What
 -- is actually stored about a person is their *facts*, which are ordinary memory
@@ -360,6 +384,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_model ON chunks(model);
 CREATE INDEX IF NOT EXISTS idx_episode_closures_conversation ON episode_closures(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_project_notes_project ON project_notes(project_id);
+CREATE INDEX IF NOT EXISTS idx_standing_signals_project ON standing_signals(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_people_status ON people(status);
 CREATE INDEX IF NOT EXISTS idx_people_interest_runs_project ON people_interest_runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_project_people_person ON project_people(person_id);
